@@ -871,6 +871,63 @@ test_spawn_symlinked_project_prefix_avoids_false_refusal() {
   pass "fm-spawn.sh: a project reached through a symlinked prefix (e.g. macOS /tmp -> /private/tmp) does not trip the isolation guard's false refusal"
 }
 
+# Exercise the public launch boundary with real Git worktrees and a backend
+# that reports acquisition's intermediate cwd before its final destination.
+# Only the fixture clock is accelerated; production keeps its existing bound.
+test_spawn_waits_for_isolated_root() {
+  local mode dir proj wt interim final id fb data state config log out rc polls
+  for mode in nonrepo nested missing primary symlink-primary invalid-primary invalid-nested invalid-nonrepo; do
+    dir="$TMP_ROOT/discovery-$mode"
+    proj="$dir/proj"; wt="$dir/wt"; id="discovery$mode"
+    fm_git_worktree "$proj" "$wt" "fm/$id"
+    mkdir -p "$wt/nested" "$dir/nonrepo"
+    ln -s "$proj" "$dir/primary-link"
+    case "$mode" in
+      nonrepo|invalid-nonrepo) interim="$dir/nonrepo" ;;
+      nested|invalid-nested) interim="$wt/nested" ;;
+      missing) interim="$dir/missing" ;;
+      primary|invalid-primary) interim="$proj" ;;
+      symlink-primary) interim="$dir/primary-link" ;;
+    esac
+    final="$wt"
+    case "$mode" in invalid-*) final="$interim" ;; esac
+    fb=$(make_spawn_symlink_fakebin "$dir" "$interim" "$final")
+    cat > "$fb/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+    chmod +x "$fb/sleep"
+    data="$dir/data"; state="$dir/state"; config="$dir/config"; log="$dir/launch.log"
+    mkdir -p "$data/$id" "$state" "$config"
+    printf 'discovery brief\n' > "$data/$id/brief.md"
+    out=$(run_spawn_case "$ROOT" "$fb" "$log" "$state" "$data" "$config" "$proj" -- "$id" "$proj" claude 2>&1)
+    rc=$?
+    polls=$(wc -c < "$dir/poll-count" | tr -d '[:space:]')
+    case "$mode" in
+      invalid-*)
+        expect_code 1 "$rc" "permanent $mode must refuse launch"$'\n'"$out"
+        [ "$polls" = 60 ] || fail "$mode did not exhaust the existing 60-poll bound ($polls)"
+        [ ! -e "$state/$id.meta" ] || fail "$mode published task metadata despite refusing isolation"
+        [ ! -e "$wt/.claude/settings.local.json" ] || fail "$mode installed a hook despite refusing isolation"
+        assert_not_contains "$(cat "$log")" 'claude --' "$mode launched the agent despite refusing isolation"
+        ;;
+      *)
+        expect_code 0 "$rc" "transient $mode must reach the isolated root"$'\n'"$out"
+        [ "$polls" = 2 ] || fail "$mode did not continue past the intermediate cwd ($polls)"
+        assert_contains "$out" "worktree=$wt" "$mode launched outside the final worktree"
+        assert_contains "$(cat "$state/$id.meta")" "worktree=$wt" "$mode persisted the wrong destination"
+        [ -s "$wt/.claude/settings.local.json" ] || fail "$mode did not install the final worktree hook"
+        assert_contains "$(cat "$log")" 'claude --' "$mode never sent the agent launch"
+        ;;
+    esac
+    [ ! -e "$proj/.claude/settings.local.json" ] || fail "$mode wrote a hook into the primary checkout"
+    [ ! -e "$wt/nested/.claude/settings.local.json" ] || fail "$mode wrote a hook into a nested directory"
+    [ ! -e "$dir/nonrepo/.claude/settings.local.json" ] || fail "$mode wrote a hook into a nonrepository directory"
+    rm -rf "/tmp/fm-$id"
+  done
+  pass "fm-spawn.sh: transient cwd waits for an isolated root; permanent invalid paths refuse within the original bound"
+}
+
 # --- old vs new: fm-teardown.sh ----------------------------------------------
 
 make_teardown_fakebin() {  # <dir> -> echoes fakebin dir; logs tmux+treehouse calls
@@ -1084,6 +1141,7 @@ test_backend_of_selector_matches_explicit_target_meta
 test_send_conformance_old_vs_new
 test_peek_conformance_old_vs_new
 test_spawn_symlinked_project_prefix_avoids_false_refusal
+test_spawn_waits_for_isolated_root
 test_teardown_conformance_old_vs_new
 test_spawn_refuses_unknown_backend_flag
 test_spawn_refuses_codex_app_backend_flag

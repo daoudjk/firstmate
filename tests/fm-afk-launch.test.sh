@@ -774,7 +774,7 @@ e2e_herdr() {
   # shellcheck source=bin/fm-backend.sh
   . "$ROOT/bin/fm-backend.sh"
 
-  local SESSION home_tmp cap_ws cap_tab cap_pane target
+  local SESSION home_tmp cap_ws cap_tab cap_pane target=
   local before during after ws_before ws_during ws_after out dtgt dtab
   SESSION="fm-lab-afk-launch-e2e-$$"
   export HERDR_SESSION="$SESSION"
@@ -782,30 +782,30 @@ e2e_herdr() {
   E2E_HERDR_CLEANUP() {
     FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
       FM_SUPERVISOR_TARGET="$target" FM_SUPERVISOR_BACKEND=herdr "$LAUNCH" stop >/dev/null 2>&1 || true
-    herdr_safe_stop_and_delete "$SESSION" >/dev/null 2>&1 || true
+    herdr_safe_stop_and_delete "$SESSION" || fail "herdr e2e: guarded cleanup or default-state tripwire failed"
     rm -rf "$home_tmp" 2>/dev/null || true
   }
-  fm_herdr_lab_prepare "$SESSION" || { fail "herdr e2e: could not prepare isolated lab session"; return 0; }
-  fm_backend_source herdr || { E2E_HERDR_CLEANUP; fail "herdr e2e: fm_backend_source herdr failed"; return 0; }
-  fm_backend_herdr_server_ensure "$SESSION" || { E2E_HERDR_CLEANUP; fail "herdr e2e: lab server did not start"; return 0; }
+  trap 'E2E_HERDR_CLEANUP; GLOBAL_CLEANUP' EXIT
+  fm_herdr_lab_provision "$SESSION" || { E2E_HERDR_CLEANUP; trap GLOBAL_CLEANUP EXIT; fail "herdr e2e: could not provision isolated lab session"; return 0; }
+  fm_backend_source herdr || { E2E_HERDR_CLEANUP; trap GLOBAL_CLEANUP EXIT; fail "herdr e2e: fm_backend_source herdr failed"; return 0; }
 
-  out=$(fm_backend_herdr_cli "$SESSION" workspace create --cwd "$ROOT" --label captain --no-focus 2>/dev/null)
+  out=$(fm_herdr_lab_cli "$SESSION" workspace create --cwd "$ROOT" --label captain --no-focus 2>/dev/null)
   cap_ws=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty')
   cap_tab=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty')
   cap_pane=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty')
-  if [ -z "$cap_ws" ] || [ -z "$cap_pane" ]; then E2E_HERDR_CLEANUP; fail "herdr e2e: could not create captain workspace"; return 0; fi
+  if [ -z "$cap_ws" ] || [ -z "$cap_pane" ]; then E2E_HERDR_CLEANUP; trap GLOBAL_CLEANUP EXIT; fail "herdr e2e: could not create captain workspace"; return 0; fi
   target="$SESSION:$cap_pane"
-  before=$(fm_backend_herdr_cli "$SESSION" pane list --workspace "$cap_ws" 2>/dev/null | jq --arg t "$cap_tab" '[.result.panes[]?|select(.tab_id==$t)]|length')
-  ws_before=$(fm_backend_herdr_cli "$SESSION" workspace list 2>/dev/null | jq '[.result.workspaces[]?]|length')
+  before=$(fm_herdr_lab_cli "$SESSION" pane list --workspace "$cap_ws" 2>/dev/null | jq --arg t "$cap_tab" '[.result.panes[]?|select(.tab_id==$t)]|length')
+  ws_before=$(fm_herdr_lab_cli "$SESSION" workspace list 2>/dev/null | jq '[.result.workspaces[]?]|length')
 
   FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
     FM_SUPERVISOR_TARGET="$target" FM_SUPERVISOR_BACKEND=herdr FM_AFK_LAUNCH_ENTRY="$SLEEPER" \
     "$LAUNCH" start >/dev/null 2>&1
 
-  during=$(fm_backend_herdr_cli "$SESSION" pane list --workspace "$cap_ws" 2>/dev/null | jq --arg t "$cap_tab" '[.result.panes[]?|select(.tab_id==$t)]|length')
-  ws_during=$(fm_backend_herdr_cli "$SESSION" workspace list 2>/dev/null | jq '[.result.workspaces[]?]|length')
+  during=$(fm_herdr_lab_cli "$SESSION" pane list --workspace "$cap_ws" 2>/dev/null | jq --arg t "$cap_tab" '[.result.panes[]?|select(.tab_id==$t)]|length')
+  ws_during=$(fm_herdr_lab_cli "$SESSION" workspace list 2>/dev/null | jq '[.result.workspaces[]?]|length')
   dtgt=$(cut -f2 "$home_tmp/state/.afk-daemon-terminal" 2>/dev/null || true)
-  dtab=$(fm_backend_herdr_cli "$SESSION" pane get "${dtgt#*:}" 2>/dev/null | jq -r '.result.pane.tab_id // empty')
+  dtab=$(fm_herdr_lab_cli "$SESSION" pane get "${dtgt#*:}" 2>/dev/null | jq -r '.result.pane.tab_id // empty')
 
   if [ "$before" = "$during" ]; then pass "herdr e2e: captain tab pane count unchanged after start (no split)"; else fail "herdr e2e: captain tab pane count changed ($before -> $during)"; fi
   if [ "$ws_during" -gt "$ws_before" ]; then pass "herdr e2e: daemon launched in a separate non-visible workspace"; else fail "herdr e2e: no separate daemon workspace created"; fi
@@ -815,13 +815,14 @@ e2e_herdr() {
   FM_HOME="$home_tmp" FM_STATE_OVERRIDE="$home_tmp/state" \
     FM_SUPERVISOR_TARGET="$target" FM_SUPERVISOR_BACKEND=herdr "$LAUNCH" stop >/dev/null 2>&1
 
-  after=$(fm_backend_herdr_cli "$SESSION" pane list --workspace "$cap_ws" 2>/dev/null | jq --arg t "$cap_tab" '[.result.panes[]?|select(.tab_id==$t)]|length')
-  ws_after=$(fm_backend_herdr_cli "$SESSION" workspace list 2>/dev/null | jq '[.result.workspaces[]?]|length')
+  after=$(fm_herdr_lab_cli "$SESSION" pane list --workspace "$cap_ws" 2>/dev/null | jq --arg t "$cap_tab" '[.result.panes[]?|select(.tab_id==$t)]|length')
+  ws_after=$(fm_herdr_lab_cli "$SESSION" workspace list 2>/dev/null | jq '[.result.workspaces[]?]|length')
   if [ "$after" = "$before" ]; then pass "herdr e2e: captain tab pane count restored after stop"; else fail "herdr e2e: captain tab pane count not restored ($before -> $after)"; fi
   if [ "$ws_after" = "$ws_before" ]; then pass "herdr e2e: daemon workspace removed by exact id on stop"; else fail "herdr e2e: daemon workspace leaked ($ws_before -> $ws_after)"; fi
   if [ ! -e "$home_tmp/state/.afk-daemon-terminal" ] && [ ! -e "$home_tmp/state/.afk" ]; then pass "herdr e2e: record + .afk cleared on stop"; else fail "herdr e2e: record or .afk not cleared"; fi
 
   E2E_HERDR_CLEANUP
+  trap GLOBAL_CLEANUP EXIT
 }
 
 # ---------------------------------------------------------------------------

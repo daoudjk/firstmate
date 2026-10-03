@@ -33,7 +33,7 @@ cleanup_all() {
   herdr_safe_stop_and_delete "$SESSION"
 }
 trap cleanup_all EXIT
-fm_herdr_lab_prepare "$SESSION" || fail "could not prepare the isolated Herdr lab session"
+fm_herdr_lab_provision "$SESSION" || fail "could not prepare the isolated Herdr lab session"
 
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
