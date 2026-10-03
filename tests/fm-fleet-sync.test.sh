@@ -173,7 +173,7 @@ if [ "$is_fetch" = 1 ]; then
     lock="$dir/.git/packed-refs.lock"
     echo "error: could not delete reference refs/remotes/origin/feature: Unable to create '$lock': File exists." >&2
     rm -f "$lock"
-    exit 1
+    exit "${GIT_FETCH_FAIL_RC:-1}"
   fi
 fi
 exec "$real" "$@"
@@ -624,4 +624,59 @@ test_orphaned_stale_packed_refs_lock_recovers
 test_live_packed_refs_lock_is_never_removed
 test_live_git_cwd_in_clone_dir_blocks_removal
 test_transient_packed_refs_lock_self_clears
+# Git 2.34 exits 0 while still emitting the packed-refs.lock prune error.
+test_zero_status_packed_refs_lock_error_is_retried() {
+  local home fakebin clone out err counter
+  home=$(new_home)
+  fakebin="$home/fb-lockzero"; rm -rf "$fakebin"; mkdir -p "$fakebin"
+  clone=$(build_packed_prunable "$home" lockzero)
+  plant_packed_refs_lock "$clone"
+  git_transient_packed_refs_lock "$fakebin"
+  counter="$home/git-fetch-count"; : > "$counter"
+  out="$home/out-lockzero"; err="$home/err-lockzero"
+
+  set +e
+  GIT_FETCH_COUNTER="$counter" GIT_FETCH_FAIL_RC=0 \
+  FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRIES=3 \
+  FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=0 \
+    run_sync_guarded "$home" "$fakebin" "$out" "$err" lockzero
+  set -e
+
+  assert_grep "cleared on its own" "$err" "zero-status lock: guard did not treat the exit-0 lock error as a failure"
+  assert_contains "$(cat "$out")" "lockzero: synced" "zero-status lock: clone did not sync after self-clear"
+  assert_absent "$clone/.git/packed-refs.lock" "zero-status lock: lock should be gone after self-clear"
+  pass "a packed-refs.lock error with git exit 0 still enters the guard and recovers"
+}
+
+test_zero_status_unrelated_error_is_not_retried() {
+  local home fakebin clone out err
+  home=$(new_home)
+  fakebin="$home/fb-lockzerounrel"; rm -rf "$fakebin"; mkdir -p "$fakebin"
+  clone=$(build_pair "$home" lockzerounrel)
+  cat > "$fakebin/git" <<'SH'
+#!/usr/bin/env bash
+for a in "$@"; do
+  if [ "$a" = fetch ]; then
+    echo "error: Unable to create '/x/other.lock': File exists." >&2
+    exit 0
+  fi
+done
+exec "${REAL_GIT_FOR_TEST:?}" "$@"
+SH
+  chmod +x "$fakebin/git"
+  out="$home/out-lockzerounrel"; err="$home/err-lockzerounrel"
+
+  set +e
+  FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRIES=3 \
+  FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=0 \
+    run_sync_guarded "$home" "$fakebin" "$out" "$err" lockzerounrel
+  set -e
+
+  assert_no_grep "packed-refs lock" "$err" "zero-status unrelated: a non-packed-refs error entered the lock guard"
+  assert_no_grep "waiting" "$err" "zero-status unrelated: was wrongly retried"
+  pass "a zero-status fetch with an unrelated File exists error does not enter the lock guard"
+}
+
+test_zero_status_packed_refs_lock_error_is_retried
+test_zero_status_unrelated_error_is_not_retried
 test_non_signature_fetch_failure_is_not_retried

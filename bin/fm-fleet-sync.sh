@@ -148,6 +148,16 @@ packed_refs_lock_path() {
   esac
 }
 
+# One fetch attempt. Sets FETCH_OUTPUT and the caller's rc. Some Git versions
+# (2.34) exit 0 even when pruning a ref failed on packed-refs.lock, so that
+# signature counts as a failure regardless of the exit status.
+fetch_once() {
+  FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+  if [ "$rc" -eq 0 ] && is_packed_refs_lock_error "$FETCH_OUTPUT"; then
+    rc=1
+  fi
+}
+
 # Run `git -C "$PROJ" fetch origin --prune --quiet`, tolerating an orphaned
 # packed-refs.lock left by a killed ref rewrite. Sets FETCH_OUTPUT to the git
 # command's combined output and returns its exit status. On the packed-refs.lock
@@ -161,7 +171,7 @@ packed_refs_lock_path() {
 # a session-start refresh (which discards fleet-sync stderr) still surfaces it.
 fetch_with_packed_refs_lock_guard() {
   local rc attempt=0 lock lock_desc
-  FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+  fetch_once
   [ "$rc" -eq 0 ] && return 0
   is_packed_refs_lock_error "$FETCH_OUTPUT" || return "$rc"
 
@@ -171,7 +181,7 @@ fetch_with_packed_refs_lock_guard() {
     attempt=$(( attempt + 1 ))
     echo "$label: fetch blocked by packed-refs lock ($lock_desc); waiting ${FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${FLEET_SYNC_PACKED_REFS_LOCK_RETRIES}) (owning process may be exiting)" >&2
     sleep "$FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS"
-    FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+    fetch_once
     if [ "$rc" -eq 0 ]; then
       echo "$label: fetch succeeded on retry; packed-refs lock cleared on its own" >&2
       # One stdout summary so a session-start refresh (which discards fleet-sync
@@ -195,7 +205,7 @@ fetch_with_packed_refs_lock_guard() {
         return "$rc"
       fi
       echo "$label: removed provably-stale packed-refs lock $lock (age >= ${FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS}s, no live holder) and retrying fetch" >&2
-      FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+      fetch_once
       if [ "$rc" -eq 0 ]; then
         echo "$label: fetch succeeded after stale packed-refs lock cleanup" >&2
         echo "$label: recovered: removed a stale packed-refs lock (no live holder)"

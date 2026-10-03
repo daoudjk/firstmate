@@ -7,10 +7,13 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-pi-watch-extension)
 EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
-# Node 24 warns when these test-only dynamic imports load tracked ESM plugins
-# from a clean checkout with no tracked .opencode/package.json. The warning is
+# Test-only Node invocations import tracked .ts/ESM plugins. Node 22 needs type
+# stripping enabled for .ts, and its experimental/ESM-package warnings are
 # unrelated to plugin output, which the assertions intentionally require empty.
-export NODE_NO_WARNINGS=1
+# Scoped to these invocations; inherited NODE_OPTIONS are preserved.
+node() {
+  NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--experimental-strip-types" NODE_NO_WARNINGS=1 command node "$@"
+}
 
 install_pi_watch_extension_fixture() {
   local repo=$1
