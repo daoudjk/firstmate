@@ -384,6 +384,12 @@ Fill `## Firstmate spec` (`{FIRSTMATE_SPEC}`) with only the build instructions t
 `bin/fm-dod-lib.sh` owns intent authoring without added speaker labels or direct address, its provenance markers, what a no-mistakes worker may pass as `--intent`, and the string's self-sufficiency rule.
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
 
+Describe authorized work in faithful, neutral technical terms: the component's actual function, interfaces and contract, with visible authorization, scope and containment boundaries.
+Avoid attacker-persona or sensational phrasing when it misdescribes ordinary platform engineering, but preserve actual security capabilities, sensitive behavior, code identifiers and historical evidence.
+Apply this rule to newly authored specifications and context relays, never by rewriting captain words or changing the no-mistakes intent provenance contract.
+Never conceal a capability or substitute synonyms to bypass a model's refusal.
+On a genuine provider policy refusal, workers stop and report the exact refusal to firstmate without rephrasing loops; firstmate uses an appropriate permitted harness or the existing exemption/escalation path within the authorized scope and applicable provider rules.
+
 Every ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
 If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
 If a task will drive Herdr lifecycle behavior, scaffold with `--herdr-lab`; if that need appears after an unguarded scaffold, stop and regenerate rather than adding commands by hand.

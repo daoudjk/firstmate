@@ -105,6 +105,8 @@
 # additions of missing knowledge. A correction edits only the wrong text and
 # never runs fm-ensure-agents-md.sh, whose inserted sections and created
 # pointer file are themselves additions.
+# AGENTS.md section 11 owns faithful technical task description and refusal
+# handling; ship and scout scaffolds share one reminder at the task boundary.
 # Scaffolds carry no role scope: fm-spawn.sh supplies fm_brief_worker_role from
 # fm-dod-lib.sh to every ship/scout launch brief, so this file never becomes a
 # second owner of a contract that must stay current across relaunches.
@@ -536,6 +538,13 @@ IFS= read -r -d '' TASK_SECTION <<'EOF' || true
 EOF
 TASK_SECTION=${TASK_SECTION%$'\n'}
 
+# One deliberate reinforcement of AGENTS.md section 11 at the worker risk point.
+IFS= read -r -d '' TASK_DESCRIPTION_REMINDER <<'EOF' || true
+# Technical description and policy refusals
+Describe the actual function, interfaces, contract, authorization and scope faithfully (authoring rule: Firstmate AGENTS.md section 11); never conceal capabilities or substitute synonyms to bypass a refusal, and on a genuine provider policy refusal stop and report its exact text to firstmate without rephrasing loops.
+EOF
+TASK_DESCRIPTION_REMINDER=${TASK_DESCRIPTION_REMINDER%$'\n'}
+
 # One shared string keeps the ship and scout infrastructure rule identical.
 # Rule 2 governs file edits, so it does not prohibit pool administration.
 # The secondmate charter deliberately omits this rule because a secondmate
@@ -576,6 +585,8 @@ cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 $TASK_SECTION
+
+$TASK_DESCRIPTION_REMINDER
 
 $HERDR_SECTION
 
@@ -647,6 +658,8 @@ cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 $TASK_SECTION
+
+$TASK_DESCRIPTION_REMINDER
 
 $HERDR_SECTION
 

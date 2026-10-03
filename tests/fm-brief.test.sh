@@ -170,6 +170,25 @@ exit 0;
 PERL
 }
 
+# The generated prompt is the public interface; this checks delivery of the
+# shared reminder, not whether a model will interpret prose correctly.
+test_task_description_reminder_reaches_workers() {
+  local home="$TMP_ROOT/description-home" kind mode brief reminder
+  mkdir -p "$home/data"
+  for mode in no-mistakes direct-PR local-only; do
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "describe-$mode" sample --mode "$mode" >/dev/null || fail "ship scaffold failed"
+  done
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" describe-scout sample --scout >/dev/null || fail "scout scaffold failed"
+  for kind in no-mistakes direct-PR local-only scout; do
+    brief=$(cat "$home/data/describe-$kind/brief.md")
+    reminder=$(printf '%s\n' "$brief" | sed -n '/^# Technical description and policy refusals$/,/^# /p' | sed '$d')
+    assert_contains "$reminder" "actual function, interfaces, contract, authorization and scope" "missing faithful description reminder for $kind"
+    assert_contains "$reminder" "never conceal capabilities or substitute synonyms to bypass a refusal" "missing non-evasion boundary for $kind"
+    assert_contains "$reminder" "stop and report its exact text to firstmate without rephrasing loops" "missing refusal escalation for $kind"
+  done
+  pass "ship modes and scout deliver the shared technical-description reminder"
+}
+
 test_help_includes_entire_header() {
   local help
   help=$("$ROOT/bin/fm-brief.sh" --help)
@@ -1397,6 +1416,7 @@ test_crewmate_scaffolds_forbid_pool_administration() {
 
 test_script_parses
 test_no_heredoc_in_command_substitution
+test_task_description_reminder_reaches_workers
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set
