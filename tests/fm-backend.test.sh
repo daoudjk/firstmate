@@ -1121,6 +1121,76 @@ test_spawn_autodetect_nesting_resolves_tmux_silently() {
   pass "fm-spawn.sh: auto-detect resolves nested tmux-in-herdr to tmux and stays silent end to end"
 }
 
+# Execute the real generated launch command against a recording CLI only.
+# No real agent, forge operation, or backend lifecycle command runs.
+test_generated_delivery_target_reaches_launch_prompt() {
+  local kind dir proj wt id fb data state config log out rc prompt
+  for kind in ship scout local-only unrestricted; do
+    dir="$TMP_ROOT/delivery-launch-$kind"
+    proj="$dir/renamed-repository"; wt="$dir/wt"; id="delivery-$kind"
+    fm_git_worktree "$proj" "$wt" "fm/$id"
+    fb=$(make_spawn_symlink_fakebin "$dir" "$proj" "$wt")
+    # Preserve the backend's cwd simulation; intercept only the launch send.
+    mv "$fb/tmux" "$fb/tmux-record"
+    cat > "$fb/tmux" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = send-keys ]; then
+  for arg in "$@"; do
+    case "$arg" in
+      'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --'*)
+        bash -c "$arg" || exit
+        ;;
+    esac
+  done
+fi
+exec "$(dirname "$0")/tmux-record" "$@"
+SH
+    cat > "$fb/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s' "${@: -1}" > "${FM_TEST_PROMPT:?}"
+SH
+    chmod +x "$fb/tmux" "$fb/claude"
+    data="$dir/data"; state="$dir/state"; config="$dir/config"; log="$dir/launch.log"
+    mkdir -p "$data" "$state" "$config"
+    if [ "$kind" = local-only ]; then
+      printf '%s\n' '- renamed-repository [local-only] - fixture' > "$data/projects.md"
+    fi
+    brief_args=(); spawn_args=()
+    [ "$kind" = unrestricted ] || brief_args+=(--delivery-repo daoudjk/firstmate)
+    if [ "$kind" = scout ]; then brief_args+=(--scout); spawn_args+=(--scout); fi
+    FM_DATA_OVERRIDE="$data" FM_STATE_OVERRIDE="$state" FM_HOME="$dir" \
+      "$ROOT/bin/fm-brief.sh" "$id" renamed-repository "${brief_args[@]}" >/dev/null 2>&1
+    expect_code 0 $? "$kind: scaffold failed"
+    prompt="$dir/prompt.txt"
+    out=$(FM_TEST_PROMPT="$prompt" run_spawn_case "$ROOT" "$fb" "$log" "$state" "$data" "$config" "$proj" \
+      -- "$id" "$proj" claude "${spawn_args[@]}" 2>&1); rc=$?
+    expect_code 0 "$rc" "$kind: fixture launch failed"$'\n'"$out"
+    assert_present "$prompt" "$kind: recording CLI did not receive a prompt"
+    [ "$(cat "$prompt")" = "$(cat "$data/$id/brief.md")" ] \
+      || fail "$kind: launch changed the generated brief"
+    if [ "$kind" = unrestricted ]; then
+      assert_no_grep '# Allowed delivery repository' "$prompt" 'unrestricted launch gained target restriction'
+    else
+      assert_grep 'https://github.com/daoudjk/firstmate' "$prompt" "$kind: allowed target lost at launch"
+      assert_grep 'including an upstream repository' "$prompt" "$kind: upstream PR prohibition lost at launch"
+    fi
+    case "$kind" in
+      scout|local-only) assert_grep 'Never push to any remote and never open a PR.' "$prompt" \
+        "$kind: launch granted remote authority" ;;
+    esac
+    # Recovery consumes the retained brief, without reauthoring or re-supplying policy.
+    : > "$dir/poll-count"
+    rm "$prompt"
+    out=$(FM_TEST_PROMPT="$prompt" run_spawn_case "$ROOT" "$fb" "$log" "$state" "$data" "$config" "$proj" \
+      -- "$id" "$proj" claude "${spawn_args[@]}" 2>&1); rc=$?
+    expect_code 0 "$rc" "$kind: retained-brief recovery launch failed"$'\n'"$out"
+    assert_present "$prompt" "$kind: recovery CLI did not receive prompt"
+    [ "$(cat "$prompt")" = "$(cat "$data/$id/brief.md")" ] \
+      || fail "$kind: recovery lost retained brief policy"
+  done
+  pass 'fm-spawn.sh: generated ship/scout/local-only/restricted and unrestricted launch prompts preserve delivery rules'
+}
+
 test_backend_name_precedence
 test_backend_detect_precedence
 test_backend_detect_cmux_fallback_bundle_id
@@ -1149,3 +1219,5 @@ test_spawn_refuses_unknown_fm_backend_env
 test_spawn_default_backend_writes_no_meta_field
 test_spawn_explicit_backend_flag_beats_autodetect_herdr_env
 test_spawn_autodetect_nesting_resolves_tmux_silently
+
+test_generated_delivery_target_reaches_launch_prompt

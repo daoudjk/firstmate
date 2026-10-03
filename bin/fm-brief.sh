@@ -6,8 +6,14 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> [--scout] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> [--scout] [--herdr-lab] [--delivery-repo OWNER/REPO]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
+#   --delivery-repo OWNER/REPO explicitly restricts worker outward delivery to
+#   that GitHub repository, including both push destination and PR base.
+#   Firstmate supplies the allowed target from its local project instructions;
+#   REPO is only a caller nickname and never selects this restriction.
+#   Omit this flag for unrestricted contribution workflows. It does not grant
+#   remote delivery to scouts or local-only ships, and is invalid for charters.
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
 #   --secondmate writes a persistent secondmate charter. The project list
@@ -75,15 +81,25 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 KIND=ship
 HERDR_LAB=0
 NO_PROJECTS=0
+DELIVERY_REPO=
 POS=()
-for a in "$@"; do
-  case "$a" in
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --scout) KIND=scout ;;
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
-    *) POS+=("$a") ;;
+    --delivery-repo)
+      [ "$#" -ge 2 ] && [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$ ]] && [ -z "$DELIVERY_REPO" ] || {
+        echo "error: --delivery-repo requires one GitHub OWNER/REPO target" >&2
+        exit 1
+      }
+      DELIVERY_REPO=$2
+      shift
+      ;;
+    *) POS+=("$1") ;;
   esac
+  shift
 done
 ID=${POS[0]}
 
@@ -94,6 +110,11 @@ fi
 
 if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
   echo "error: --no-projects applies only to --secondmate charters" >&2
+  exit 1
+fi
+
+if [ "$KIND" = secondmate ] && [ -n "$DELIVERY_REPO" ]; then
+  echo "error: --delivery-repo applies only to crewmate ship or scout briefs" >&2
   exit 1
 fi
 
@@ -191,6 +212,19 @@ fi
 
 REPO=${POS[1]}
 
+DELIVERY_SECTION=
+if [ -n "$DELIVERY_REPO" ]; then
+  DELIVERY_SECTION=$(cat <<EOF
+# Allowed delivery repository
+Local project instructions restrict outward delivery to https://github.com/$DELIVERY_REPO.
+Before any push or PR creation, verify actual remote URLs, the push destination, and the intended PR base repository against this allowed target, including the no-mistakes delivery configuration when applicable.
+Never push or open a PR against any other repository, including an upstream repository; disabling upstream pushes alone does not prevent upstream PR creation.
+If the delivery target cannot be verified or conflicts with this restriction, stop and report to firstmate before any outward action.
+This restriction does not authorize remote delivery for scout or local-only work; their no-push/no-PR rules still apply.
+EOF
+)
+fi
+
 # One deliberate reinforcement of AGENTS.md section 11 at the worker risk point.
 IFS= read -r -d '' TASK_DESCRIPTION_REMINDER <<'EOF' || true
 # Technical description and policy refusals
@@ -239,6 +273,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 {TASK}
 
 $TASK_DESCRIPTION_REMINDER
+
+$DELIVERY_SECTION
 
 $HERDR_SECTION
 
@@ -345,6 +381,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 {TASK}
 
 $TASK_DESCRIPTION_REMINDER
+
+$DELIVERY_SECTION
 
 $HERDR_SECTION
 

@@ -336,6 +336,56 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
 }
 
+test_explicit_delivery_target() {
+  local home kind id brief rc target
+  home="$TMP_ROOT/delivery-target-home"
+  write_registry "$home"
+  target=daoudjk/firstmate
+  for kind in no-registry-proj direct-proj local-proj scout; do
+    id="restricted-$kind"
+    args=()
+    [ "$kind" != scout ] || args+=(--scout)
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$kind" \
+      --delivery-repo "$target" "${args[@]}" >/dev/null 2>&1; rc=$?
+    expect_code 0 "$rc" "$kind: explicit allowed delivery should succeed"
+    brief="$home/data/$id/brief.md"
+    assert_grep "Local project instructions restrict outward delivery to https://github.com/$target." "$brief" \
+      "$kind: renamed repo lost explicit target"
+    assert_grep 'the intended PR base repository' "$brief" "$kind: PR base verification missing"
+    assert_grep 'including the no-mistakes delivery configuration' "$brief" "$kind: pipeline target check missing"
+    assert_grep 'Never push or open a PR against any other repository, including an upstream repository' "$brief" \
+      "$kind: upstream PR restriction missing"
+    assert_grep 'their no-push/no-PR rules still apply' "$brief" "$kind: target granted extra authority"
+    case "$kind" in
+      local-proj|scout) assert_grep 'Never push to any remote and never open a PR.' "$brief" \
+        "$kind: no remote delivery rule lost" ;;
+    esac
+  done
+  for kind in unrelated firstmate; do
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "unrestricted-$kind" "$kind" >/dev/null 2>&1
+    brief="$home/data/unrestricted-$kind/brief.md"
+    assert_no_grep '# Allowed delivery repository' "$brief" "$kind: nickname inferred restriction"
+    assert_no_grep "$target" "$brief" "$kind: private target leaked to default"
+  done
+  # Configuration errors fail before publishing a usable brief.
+  for target in '' 'owner' 'owner/repo/extra' 'owner/repo name' 'https://github.com/owner/repo'; do
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" invalid-target renamed \
+      --delivery-repo "$target" >/dev/null 2>&1; rc=$?
+    expect_code 1 "$rc" "invalid delivery target accepted: $target"
+    assert_absent "$home/data/invalid-target/brief.md" 'invalid target published a brief'
+  done
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" missing-target renamed --delivery-repo >/dev/null 2>&1; rc=$?
+  expect_code 1 "$rc" 'missing delivery target accepted'
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" duplicate-target renamed \
+    --delivery-repo owner/repo --delivery-repo other/repo >/dev/null 2>&1; rc=$?
+  expect_code 1 "$rc" 'ambiguous duplicate target accepted'
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" charter-target --secondmate --no-projects \
+    --delivery-repo owner/repo >/dev/null 2>&1; rc=$?
+  expect_code 1 "$rc" 'delivery target accepted for charter'
+  assert_absent "$home/data/charter-target/brief.md" 'invalid charter published a brief'
+  pass 'fm-brief.sh: explicit target restricts ship/scout delivery independently of nickname and preserves defaults'
+}
+
 test_script_parses
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
@@ -350,3 +400,5 @@ test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
 test_secondmate_no_projects_charter
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
+
+test_explicit_delivery_target
