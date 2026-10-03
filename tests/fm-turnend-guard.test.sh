@@ -19,6 +19,13 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-turnend-guard)
 fm_git_identity fmtest fmtest@example.invalid
 
+# Test-only Node invocations import tracked .ts/ESM plugins; Node 22 needs type
+# stripping enabled and its experimental warning would corrupt output assertions.
+# Scoped to these invocations; inherited NODE_OPTIONS are preserved.
+node() {
+  NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--experimental-strip-types" NODE_NO_WARNINGS=1 command node "$@"
+}
+
 REQUIRED_REASON='resume supervision with bin/fm-watch-arm.sh as its own Claude Code background task'
 
 # --- PREDICATE: bin/fm-supervision-lib.sh -----------------------------------
