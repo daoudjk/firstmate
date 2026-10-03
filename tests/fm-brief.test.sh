@@ -66,6 +66,34 @@ test_ship_modes_generate_clean_briefs() {
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
 }
 
+test_technical_description_reminder_reaches_only_workers() {
+  local home id brief variant status
+  home="$TMP_ROOT/technical-description-home"
+  write_registry "$home"
+  for variant in no-registry-proj direct-proj local-proj scout; do
+    id="technical-$variant"
+    if [ "$variant" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1; status=$?
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$variant" >/dev/null 2>&1; status=$?
+    fi
+    expect_code 0 "$status" "$variant: scaffold should succeed"
+    brief="$home/data/$id/brief.md"
+    assert_grep 'Describe the actual component function, interfaces, contract, authorization scope and limits faithfully.' "$brief" \
+      "$variant: missing faithful technical description and visible scope reminder"
+    assert_grep 'On a provider refusal, stop and report its exact text to firstmate once.' "$brief" \
+      "$variant: missing stop and exact refusal reporting reminder"
+    assert_grep '{TASK}' "$brief" "$variant: task placeholder changed"
+  done
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='authorized domain scope' \
+    "$ROOT/bin/fm-brief.sh" technical-mate --secondmate --no-projects >/dev/null 2>&1; status=$?
+  expect_code 0 "$status" "secondmate: scaffold should succeed"
+  brief="$home/data/technical-mate/brief.md"
+  assert_grep 'authorized domain scope' "$brief" "secondmate: charter text changed"
+  assert_no_grep '# Technical description and policy refusals' "$brief" "worker reminder leaked into charter"
+  pass "fm-brief.sh: technical description and refusal reminders reach ship modes and scouts only"
+}
+
 test_faster_paths_use_configured_authority_without_stacked_review() {
   local home id brief
   home="$TMP_ROOT/configured-authority-home"
@@ -311,6 +339,7 @@ test_scout_and_secondmate_load_decision_hold_policy() {
 test_script_parses
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_technical_description_reminder_reaches_only_workers
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording

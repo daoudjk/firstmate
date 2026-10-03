@@ -44,6 +44,8 @@
 # it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
+# Ship and scout briefs reinforce the technical-description authoring rule
+# owned by AGENTS.md section 11.
 # Refuses to overwrite an existing brief.
 set -eu
 
@@ -189,6 +191,14 @@ fi
 
 REPO=${POS[1]}
 
+# One deliberate reinforcement of AGENTS.md section 11 at the worker risk point.
+IFS= read -r -d '' TASK_DESCRIPTION_REMINDER <<'EOF' || true
+# Technical description and policy refusals
+Describe the actual component function, interfaces, contract, authorization scope and limits faithfully.
+On a provider refusal, stop and report its exact text to firstmate once.
+EOF
+TASK_DESCRIPTION_REMINDER=${TASK_DESCRIPTION_REMINDER%$'\n'}
+
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
 # shellcheck disable=SC2016  # single quotes are deliberate: these lines are literal brief text whose backtick-wrapped $(...) and "$HERDR_LAB_SESSION" snippets must reach the reading agent verbatim, not expand at scaffold time; only the '"$VAR"' break-outs interpolate.
@@ -227,6 +237,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 # Task
 {TASK}
+
+$TASK_DESCRIPTION_REMINDER
 
 $HERDR_SECTION
 
@@ -331,6 +343,8 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 # Task
 {TASK}
+
+$TASK_DESCRIPTION_REMINDER
 
 $HERDR_SECTION
 
