@@ -541,7 +541,8 @@ TASK_SECTION=${TASK_SECTION%$'\n'}
 # One deliberate reinforcement of AGENTS.md section 11 at the worker risk point.
 IFS= read -r -d '' TASK_DESCRIPTION_REMINDER <<'EOF' || true
 # Technical description and policy refusals
-Describe the actual function, interfaces, contract, authorization and scope faithfully (authoring rule: Firstmate AGENTS.md section 11); never conceal capabilities or substitute synonyms to bypass a refusal, and on a genuine provider policy refusal stop and report its exact text to firstmate without rephrasing loops.
+Describe the actual component function, interfaces, contract, authorization scope and limits faithfully.
+On a provider refusal, stop and report its exact text to firstmate once.
 EOF
 TASK_DESCRIPTION_REMINDER=${TASK_DESCRIPTION_REMINDER%$'\n'}
 
