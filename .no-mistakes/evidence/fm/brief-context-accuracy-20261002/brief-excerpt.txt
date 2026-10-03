@@ -1,0 +1,5 @@
+# Technical description and policy refusals
+Describe the actual component function, interfaces, contract, authorization scope and limits faithfully.
+On a provider refusal, stop and report its exact text to firstmate once.
+
+# Herdr lifecycle declaration - NOT ENABLED
