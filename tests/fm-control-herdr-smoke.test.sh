@@ -134,25 +134,14 @@ STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
 [ "$STATE" = dead ] \
   || version_fail "a real, present, agent-free pane reads '$STATE' rather than 'dead'; every relaunch would be refused"
 
-# `status --json` is the second signal, and the only one that answers for a
-# session whose operational calls cannot be reached at all. A release that drops
-# or renames `.server.running` would silently make every gone endpoint
-# unrecoverable again, so it is asserted by name on both a live and an absent
-# session.
-[ "$(fm_backend_herdr_server_running_state "$SESSION")" = running ] \
-  || version_fail "this run's own live lab session does not report .server.running=true through status --json"
-[ "$(fm_backend_herdr_server_running_state "fm-lab-never-started-$$")" = stopped ] \
-  || version_fail "a session with no server does not report .server.running=false, so authoritative absence can no longer be told from an unreadable read"
-
-# Issue #4091's exact stranding shape: an endpoint recorded in a session whose
-# server is not running used to read `unreadable` and block recovery.
-[ "$(fm_backend_agent_state herdr "fm-lab-never-started-$$:w1:p2")" = missing ] \
-  || version_fail "an endpoint in a session with no running server is not classified as recoverable"
+# A session with no server is not proof the endpoint is gone: it reads unreadable.
+[ "$(fm_backend_agent_state herdr "fm-lab-never-started-$$:w1:p2")" = unreadable ] \
+  || version_fail "an endpoint in a session with no running server must read unreadable, never missing"
 
 # And the safety direction: an uninterpretable read must never license recovery.
 [ "$(fm_backend_agent_state herdr "no-separator-here")" = unreadable ] \
   || version_fail "a malformed endpoint target does not stay unreadable"
-pass "real herdr $HERDR_VERSION: a gone session reads recoverable while a live pane and a malformed target do not"
+pass "real herdr $HERDR_VERSION: a gone session and a malformed target read unreadable"
 
 FAKEBIN="$SCRATCH/fakebin"
 mkdir -p "$FAKEBIN"
