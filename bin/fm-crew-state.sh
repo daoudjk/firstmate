@@ -148,7 +148,9 @@
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log. On tmux and herdr, which own a
 #      recovery-grade classifier, only its positive death evidence reads as gone
-#      (the endpoint is authoritatively absent, or its pane holds no agent); an
+#      (the endpoint is authoritatively absent, or its pane holds no agent); a
+#      pane that holds no agent (dead) reads stopped · endpoint, as in step 4, and
+#      only an authoritatively absent endpoint reads unknown · none. An
 #      endpoint that merely failed to answer reports unknown · none as
 #      unreachable, and an alive endpoint whose scrollback read failed is still
 #      classified by step 4. Backends with no classifier keep reading a failed
