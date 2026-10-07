@@ -851,7 +851,7 @@ EOF
 }
 
 test_nonprogressing_child_states_are_explicit() {
-  local home mate fakebin canonical
+  local home mate fakebin canonical json
   home=$(make_home child-state-classification)
   mate="$TMP_ROOT/child-state-classification-home"
   make_valid_secondmate_home states "$mate"
@@ -880,6 +880,15 @@ EOF
       and .active_children == []
       and (.holds | any(.id == "parked" and .source == "child-state"))
   ' >/dev/null || fail "parked child was classified as active work: $canonical"
+  # Producer/consumer agreement: a home the producer reports as captain_decision
+  # only because a child is parked at its own gate has no live backlog captain
+  # hold, so Bearings projects it as externally held with the parked reason,
+  # never as an unavailable (unknown) home.
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    .secondmates | any(.[]; .id == "states" and .state == "externally_held"
+      and (.doing | contains("parked")) and .state != "unknown")
+  ' >/dev/null || fail "a child parked at a gate projected as unknown instead of externally held: $json"
   cat > "$mate/data/backlog.md" <<'EOF'
 ## In flight
 
@@ -927,13 +936,93 @@ EOF
     .secondmate_current.records[] | select(.id == "states")
     | .current.state == "no_active_work"
       and (.current.reason | contains("terminal child state"))
-      and (.current.reason | contains("done=done"))
+      and (.current.reason | contains("done=done") | not)
       and (.current.reason | contains("failed=failed"))
       and .provenance.selected == "structured-home"
       and .provenance.trust == "partial-structured"
-      and .invalidity == {kind:"terminal_in_flight",ids:["done","failed"]}
-  ' >/dev/null || fail "terminal in-flight rows discarded the readable home: $canonical"
-  pass "nonprogressing child states are explicit and inconsistent terminal rows invalidate"
+      and .invalidity == {kind:"terminal_in_flight",ids:["failed"]}
+      and ([.retained_children[].id] == ["done"])
+      and .active_children == []
+  ' >/dev/null || fail "failed in-flight row discarded the readable home or the completed child was not retained: $canonical"
+  pass "nonprogressing child states are explicit: failed rows invalidate, completed rows are retained"
+}
+
+# A completed step on a still-owned work item is retained, not active, and says
+# delivery is unconfirmed. An unknown sibling (a harness with no verified busy
+# source) still invalidates the home, and neither the retained nor the
+# unavailable evidence is dropped with it.
+test_completed_step_is_retained_and_unavailable_sibling_survives() {
+  local home mate fakebin canonical json
+  home=$(make_home retained-completed)
+  mate="$TMP_ROOT/retained-completed-home"
+  make_valid_secondmate_home kept "$mate"
+  append_secondmate_registry "$home" kept "$mate"
+  mkdir -p "$mate/projects/finished" "$mate/projects/opaque"
+  cat > "$mate/data/backlog.md" <<'EOF'
+## In flight
+- [ ] finished - Validated change awaiting delivery (repo: sample) (kind: ship) (since 2026-07-11)
+
+## Queued
+
+## Done
+EOF
+  fm_write_meta "$mate/state/finished.meta" \
+    "window=firstmate:fm-finished" "worktree=$mate/projects/finished" "project=sample" \
+    "harness=claude" "kind=ship" "mode=no-mistakes"
+  record_claude_state "$mate/state" finished idle
+  printf 'done: validated, PR open\n' > "$mate/state/finished.status"
+  fakebin=$(make_fakebin "$home")
+  refresh_local_secondmate_ledgers "$home"
+  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+  printf '%s' "$canonical" | jq -e '
+    .secondmate_current.records[] | select(.id == "kept")
+    | .current.state == "no_active_work"
+      and .invalidity == {kind:null,ids:[]}
+      and .active_children == []
+      and ([.retained_children[] | {id,step,delivery,source}]
+           == [{id:"finished",step:"completed",delivery:"unconfirmed",source:"status-log"}])
+  ' >/dev/null || fail "a completed step was not retained as unconfirmed delivery: $canonical"
+  json=$(run "$home" "$fakebin" --json)
+  printf '%s' "$json" | jq -e '
+    .secondmates | any(.[]; .id == "kept" and .state == "no_active_work"
+      and (.doing | contains("retained after completed step; delivery unconfirmed")))
+  ' >/dev/null || fail "Bearings did not label the retained completed step: $json"
+
+  cat > "$mate/data/backlog.md" <<'EOF'
+## In flight
+- [ ] finished - Validated change awaiting delivery (repo: sample) (kind: ship) (since 2026-07-11)
+- [ ] opaque - Codex child without a verified busy source (repo: sample) (kind: ship) (since 2026-07-11)
+- [ ] broken - Failed child (repo: sample) (kind: ship) (since 2026-07-11)
+
+## Queued
+
+## Done
+EOF
+  mkdir -p "$mate/projects/broken"
+  fm_write_meta "$mate/state/opaque.meta" \
+    "window=firstmate:fm-opaque" "worktree=$mate/projects/opaque" "project=sample" \
+    "harness=codex" "kind=ship" "mode=no-mistakes"
+  fm_write_meta "$mate/state/broken.meta" \
+    "window=firstmate:fm-broken" "worktree=$mate/projects/broken" "project=sample" \
+    "harness=claude" "kind=ship" "mode=no-mistakes"
+  record_claude_state "$mate/state" broken idle
+  printf 'failed: stopped\n' > "$mate/state/broken.status"
+  refresh_local_secondmate_ledgers "$home"
+  canonical=$(PATH="$fakebin:$PATH" FM_HOME="$home" FM_SNAPSHOT_NOW=2026-07-11T18:00:00Z \
+    "$ROOT/bin/fm-fleet-snapshot.sh" --json)
+  printf '%s' "$canonical" | jq -e '
+    .secondmate_current.records[] | select(.id == "kept")
+    | .current.state == "unknown"
+      and .provenance.trust == "partial-structured"
+      and ([.retained_children[].id] == ["finished"])
+      and ([.unavailable_children[] | {id,detail}]
+           == [{id:"opaque",detail:"harness state unavailable (unknown codex-unverified)"}])
+      and .counts.retained_children == 1
+      and .counts.unavailable_children == 1
+      and .active_children == []
+  ' >/dev/null || fail "unavailable or retained evidence was dropped when a sibling was unknown: $canonical"
+  pass "completed steps are retained with unconfirmed delivery and unavailable siblings stay explicit"
 }
 
 test_registry_unavailability_and_bounds_are_explicit() {
@@ -3331,6 +3420,7 @@ test_secondmate_and_child_bounds_are_disclosed
 test_parent_decision_is_untrusted_contradiction_only
 test_parent_evidence_reconciles_by_verb_and_key
 test_nonprogressing_child_states_are_explicit
+test_completed_step_is_retained_and_unavailable_sibling_survives
 test_registry_unavailability_and_bounds_are_explicit
 test_current_landed_baseline_is_repeatable_and_prior_report_independent
 test_default_is_bounded_and_local_only
