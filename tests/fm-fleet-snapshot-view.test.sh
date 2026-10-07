@@ -1169,9 +1169,75 @@ EOF
   pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight, retains completed ships"
 }
 
+# A stopped child (agent process absent, endpoint shell retained) is a held,
+# owned, NOT-active obligation in the home summary, so it no longer makes the
+# home unreadable; a sibling whose state is genuinely unreadable still does.
+test_home_summary_stopped_child_is_held_not_active() {
+  local home fakebin out
+  home=$(make_home summary-stopped)
+  mkdir -p "$home/projects/stopped" "$home/projects/opaque"
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] dead-secondmate-held - Held Codex work (repo: alpha) (kind: ship) (since 2026-07-11)
+
+## Queued
+
+## Done
+EOF
+  fm_write_meta "$home/state/dead-secondmate-held.meta" \
+    "window=firstmate:fm-dead-secondmate-held" \
+    "worktree=$home/projects/stopped" \
+    "project=alpha" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  printf 'paused: execution held for primary routing\n' > "$home/state/dead-secondmate-held.status"
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
+  printf '%s' "$out" | jq -e '
+    .valid == true
+      and .invalidity == {kind:null,ids:[]}
+      and .state == "externally_held"
+      and .active_children == []
+      and .retained_children == []
+      and .unavailable_children == []
+      and ([.holds[] | select(.id == "dead-secondmate-held" and .source == "child-state")
+            | .reason | contains("agent process absent")] == [true])
+      and ([.endpoints[] | select(.id == "dead-secondmate-held") | .state] == ["stopped"])
+  ' >/dev/null || fail "a stopped child must be a held non-active obligation and keep the home valid: $out"
+
+  cat > "$home/data/backlog.md" <<'EOF'
+## In flight
+- [ ] dead-secondmate-held - Held Codex work (repo: alpha) (kind: ship) (since 2026-07-11)
+- [ ] opaque-live - Codex child still running (repo: alpha) (kind: ship) (since 2026-07-11)
+
+## Queued
+
+## Done
+EOF
+  fm_write_meta "$home/state/opaque-live.meta" \
+    "window=firstmate:fm-opaque-live" \
+    "worktree=$home/projects/opaque" \
+    "project=alpha" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
+  printf '%s' "$out" | jq -e '
+    .valid == false
+      and .invalidity == {kind:"child_current_unavailable",ids:["opaque-live"]}
+      and .state == "unknown"
+      and ([.unavailable_children[].id] == ["opaque-live"])
+      and ([.holds[].id] == ["dead-secondmate-held"])
+      and .active_children == []
+  ' >/dev/null || fail "an unreadable running sibling must stay unavailable beside the stopped child: $out"
+  pass "home-summary: a stopped child is held and non-active, an unreadable sibling stays unavailable"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
+test_home_summary_stopped_child_is_held_not_active
 test_undated_captain_hold_phrasing_and_aging
 test_hold_buckets_are_total_and_text_blind
 test_main_inventory_orphan_and_unstructured_disclosure

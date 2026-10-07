@@ -22,7 +22,7 @@
 # Output is one stable, parseable, token-tight line firstmate can read every
 # heartbeat:
 #
-#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|remote-endpoint|none> · <detail>
+#   state: <working|parked|done|blocked|paused|failed|stopped|unknown> · source: <run-step|pane|status-log|remote-endpoint|endpoint|none> · <detail>
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta. A meta
@@ -132,6 +132,18 @@
 #      backend's pane busy state, then the resolved status declaration
 #      when its verb maps to a recognized run-state. Decision-only events such as
 #      `resolved` never become current state or detail.
+#      stopped is the one state that is positive evidence of ABSENCE: the
+#      recorded tmux or herdr endpoint exists and the backend's recovery-grade
+#      classifier (fm_backend_agent_state) says dead - no agent process, only a
+#      shell - while the semantic busy source could not answer (an adapter with no
+#      verified source, such as Codex, or a missing or mismatched record), or the
+#      run-step read is unknown only because the selected run is TERMINAL and its
+#      code identity cannot be verified here. It says the agent is not running; it
+#      does not say the work is finished, delivered or accepted, that no other
+#      process runs on the host or in the no-mistakes daemon, or that the
+#      unverified run belongs to this worktree (its run ids stay in the detail).
+#      A live or competing run, an unreachable endpoint and a running agent keep
+#      the unknown or working readings above.
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log. On tmux and herdr, which own a
@@ -306,6 +318,17 @@ crew_busy_verdict() {  # <target>
     grok*) tail40=$(fm_backend_capture "$TASK_BACKEND" "$1" 40 "$EXPECTED_LABEL" 2>/dev/null) || tail40='' ;;
   esac
   fm_busy_classify "$TASK_BACKEND" "$1" "$HARNESS" "$ID" "$STATE" "$tail40"
+}
+
+# endpoint_agent_stopped: 0 only on POSITIVE evidence that the recorded endpoint
+# exists with no agent process in it (fm_backend_agent_state dead, which is
+# independent of any harness busy source). tmux and herdr own that classifier;
+# every other backend and every non-dead verdict (alive, missing, ambiguous,
+# unreadable) is not evidence of a stop.
+endpoint_agent_stopped() {
+  case "$TASK_BACKEND" in tmux|herdr) ;; *) return 1 ;; esac
+  [ -n "$BACKEND_TARGET" ] || return 1
+  [ "$(fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET")" = dead ]
 }
 
 # --- no-mistakes run lookup (authoritative when a run matches this branch) --
@@ -902,6 +925,9 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
               RUN_DEAD_DAEMON="no-mistakes daemon unreachable; last run record $(strip_quotes "$(nm_field status)") - unverified"
             fi
           else
+            if ! fm_nm_run_is_active "$RUN_OUT" && endpoint_agent_stopped; then
+              emit stopped endpoint "agent process absent, endpoint shell retained; terminal run code identity unverified; run ids: $candidate_ids"
+            fi
             emit unknown run-step "selected run code identity unverified; run ids: $candidate_ids"
           fi
         fi
@@ -1204,7 +1230,12 @@ if [ "$KIND" != secondmate ]; then
   case "${BUSY_VERDICT%% *}" in
     busy) emit working pane "harness busy (${BUSY_VERDICT#* })" ;;
     idle) ;;
-    *) emit unknown pane "harness state unavailable ($BUSY_VERDICT)" ;;
+    *)
+      if endpoint_agent_stopped; then
+        emit stopped endpoint "agent process absent, endpoint shell retained (${HARNESS:-unknown harness}; busy source: $BUSY_VERDICT)"
+      fi
+      emit unknown pane "harness state unavailable ($BUSY_VERDICT)"
+      ;;
   esac
 fi
 
