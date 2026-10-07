@@ -2036,9 +2036,8 @@ test_no_run_herdr_stale_registration_over_shell_reads_agent_gone() {
   FM_FAKE_HERDR_AGENT_STATUS=idle
   FM_FAKE_HERDR_PROCESS=shell
   local out; out=$(run_crew_state "$d" feat-herdr-stale)
-  assert_contains "$out" "state: unknown" "a stale registration over a shell-only pane is not a live state"
-  assert_contains "$out" "backend target gone" "a stale registration over a shell-only pane must read as positive agent-gone evidence"
-  assert_contains "$out" "agent gone, pane shell remains" "the agent-gone reason must name the remaining shell"
+  assert_contains "$out" "state: stopped" "a stale registration over a shell-only pane reads stopped"
+  assert_contains "$out" "agent process absent, endpoint shell retained" "the stopped reason must name the remaining shell"
   assert_not_contains "$out" "backend unreachable" "a readable shell-only pane is not unreachable"
   pass "herdr stale registration over a shell-only pane reads agent gone, not alive"
 }
@@ -2085,9 +2084,8 @@ test_no_run_herdr_husk_dead_still_reads_gone() {
   FM_FAKE_HERDR_READ_FAIL=1
   FM_FAKE_HERDR_HUSK=1
   local out; out=$(run_crew_state "$d" feat-herdr-husk)
-  assert_contains "$out" "state: unknown" "a husk pane has no live current state"
-  assert_contains "$out" "backend target gone" "a husk pane keeps its gone-class death evidence"
-  assert_contains "$out" "agent gone, pane shell remains" "the husk verdict names what actually died"
+  assert_contains "$out" "state: stopped" "a husk pane reads stopped"
+  assert_contains "$out" "agent process absent, endpoint shell retained" "the husk verdict names what actually died"
   assert_not_contains "$out" "backend unreachable" "a husk pane is not an unreachable backend"
   pass "a husk pane (agent gone) still reads gone for reclaim"
 }

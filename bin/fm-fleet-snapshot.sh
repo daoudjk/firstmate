@@ -260,7 +260,9 @@ endpoint exists with no agent, whatever the harness busy source says) is a held,
 owned, NOT-active obligation: it appears in holds with its detail and never in
 active_children, so a home whose only unreadable children are stopped is valid
 and reads externally_held. Stopped means the agent is not running, not that the
-work is finished, delivered or accepted.
+work is finished, delivered or accepted. A stopped hold is owned, non-active
+work that needs attention: it is not a deliberate standdown, readiness,
+completion or restart clearance.
 A child whose current state cannot be read (for example a harness with no
 verified semantic busy source) stays unknown and invalidates the home as
 child_current_unavailable; unavailable_children names each one with the source

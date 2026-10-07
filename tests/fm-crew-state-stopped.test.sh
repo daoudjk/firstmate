@@ -74,6 +74,27 @@ contains "$out" "state: stopped · source: endpoint" || fail "an unarmed Claude 
 contains "$out" "busy source: unknown missing" || fail "the missing busy source stays in the detail: $out"
 pass "a harness whose busy source is missing also reads stopped on positive absence evidence"
 
+cat > "$LAB/shim/tmux" <<SH
+#!/usr/bin/env bash
+[ "\${1:-}" = capture-pane ] && exit 1
+exec "$REAL_TMUX" -L "$SOCKET" "\$@"
+SH
+write_meta codex-unreadable lab:shelled codex scout
+out=$(read_state codex-unreadable)
+contains "$out" "state: stopped · source: endpoint" || fail "an unreadable pane holding only a shell must read stopped: $out"
+write_meta claude-unreadable lab:shelled claude scout
+out=$(read_state claude-unreadable)
+contains "$out" "state: stopped · source: endpoint" || fail "an unreadable pane holding only a shell reads stopped for any harness: $out"
+write_meta codex-unreadable-gone lab:nothere codex scout
+out=$(read_state codex-unreadable-gone)
+contains "$out" "state: unknown" || fail "an unreadable pane at a missing window stays unknown: $out"
+contains "$out" "state: stopped" && fail "a missing window is not stopped: $out"
+pass "an unreadable pane reads stopped only on positive agent-absent evidence"
+cat > "$LAB/shim/tmux" <<SH
+#!/usr/bin/env bash
+exec "$REAL_TMUX" -L "$SOCKET" "\$@"
+SH
+
 tmux kill-server
 out=$(read_state codex-stopped)
 contains "$out" "state: stopped" && fail "an unreachable server proves nothing and must not read stopped: $out"
