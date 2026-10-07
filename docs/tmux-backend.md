@@ -47,6 +47,7 @@ Verify setup by spawning a small task and confirming its `fm-<id>` window appear
 ### Agent liveness probe
 
 A target-existence check proves only that the pane exists.
+It is an exact pane-inventory match, never `tmux display-message -t`, which answers with the current pane for an absent target; it distinguishes absent, malformed, and unreadable results (`bin/backends/tmux.sh` owns the exit codes).
 The deeper tmux agent-liveness probe first verifies exact window membership, then reads process names to distinguish a running harness from a bare idle shell.
 It classifies recognized Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, Muse, Rovo, and AGY process identities as `alive`, common shells as `dead`, an authoritatively absent window as `missing`, unreadable state as `unreadable`, and every other process as `ambiguous`.
 The process-name vocabulary behind those verdicts is owned by `bin/fm-agent-process-lib.sh` and shared with the Herdr adapter, which proves a registered agent against the same names ([herdr-backend.md](herdr-backend.md) "Restart and liveness behavior").
