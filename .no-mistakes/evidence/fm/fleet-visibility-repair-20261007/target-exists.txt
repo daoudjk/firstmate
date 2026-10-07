@@ -1,0 +1,22 @@
+== fm-tmux-target-exists
+ok - empty target
+ok - no session separator
+ok - empty window
+ok - empty session
+ok - too many separators
+ok - malformed pane id
+ok - unreachable server is unreadable, not absent
+ok - unreachable server pane id
+== fm-secondmate-liveness
+ok - fm_backend_tmux_agent_state: separates live, dead, missing, ambiguous, and unreadable
+ok - fm_backend_tmux_agent_state: rejects malformed targets before probing tmux
+not ok - Herdr pane state unknown should map to unreadable, got 'missing'
+== fm-busy-state
+ok - codex classifies unknown until a semantic source passes its verification gate
+ok - standalone kimi classifies unknown until the live verification gate opens
+ok - cursor classifies only from its transcript fold, never rendered text or native state
+ok - endpoint death is the only process-level override and yields dead, never busy
+ok - herdr's native verdict is trusted for busy only, and records outrank it
+ok - record parsing never clobbers the caller's positional parameters, glob setting, or fields
+ok - the boolean view reports busy only on an exact busy verdict
+all fm-busy-state tests passed
