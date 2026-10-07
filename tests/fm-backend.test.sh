@@ -668,6 +668,7 @@ case "${1:-}" in
       printf '╭────╮\n│    │\n╰────╯\n'
     fi
     exit 0 ;;
+  list-panes) printf 'win|0|@0|win.0|0.0|@0.0\n'; exit 0 ;;
   list-windows) exit 0 ;;
 esac
 exit 0
@@ -687,7 +688,7 @@ run_send_case() {  # <bin-root> <fakebin> <log> <home> -- <send args...>
 
 strip_send_preflight() {  # <log>
   local preflight
-  preflight=$'tmux\x1fdisplay-message\x1f-p\x1f-t\x1fsess:win\x1f#{pane_id}'
+  preflight=$'tmux\x1flist-panes\x1f-s\x1f-t\x1f=sess\x1f-F\x1f#{window_name}|#{window_index}|#{window_id}|#{window_name}.#{pane_index}|#{window_index}.#{pane_index}|#{window_id}.#{pane_index}'
   awk -v preflight="$preflight" '$0 != preflight { print }' "$1"
 }
 
@@ -708,7 +709,7 @@ test_send_tmux_contract() {
   run_send_case "$ROOT" "$fb" "$log" "$home" -- "sess:win" --key Escape
   rc=$?
   expect_code 0 "$rc" "fm-send --key should succeed against a live fake pane"
-  assert_contains "$(cat "$log")" $'\x1f''display-message'$'\x1f''-p'$'\x1f''-t'$'\x1f''sess:win'$'\x1f''#{pane_id}' \
+  assert_contains "$(cat "$log")" $'\x1f''list-panes'$'\x1f''-s'$'\x1f''-t'$'\x1f''=sess' \
     "fm-send --key did not verify the explicit tmux target before sending"
   assert_contains "$(cat "$log")" $'\x1f''Escape' "fm-send --key did not send the named key"
   assert_not_contains "$(cat "$log")" $'\x1f''-l'$'\x1f' "fm-send --key must not type literal text"

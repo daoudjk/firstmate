@@ -3514,6 +3514,52 @@ test_capped_without_sqlite_preserves_available_ids() {
   pass 'R5 capped lookup without SQLite support preserves available ids'
 }
 
+# A complete same-branch inventory with ZERO rows is a proven absence, not an
+# unreadable table: the awk reader compared the unset row counter to the
+# header's "0" as strings and reported unreadable. Production case
+# (2026-10-07): worktrees reused on a branch the daemon has no run for, behind a
+# capped 10-of-550 overview, read "unreadable runs table; run ids: " forever.
+test_zero_row_inventory_is_absent_not_unreadable() {
+  local out
+  out=$(. "$ROOT/bin/fm-nm-run-lib.sh"
+    fm_nm_select_run fm/none $'repo: /x\ncount: 0 of 0 total\nruns[0]{id,branch,status,head,pr}:' /tmp)
+  [ "$out" = absent ] || fail "an empty complete table must select absent, got: $out"
+  out=$(. "$ROOT/bin/fm-nm-run-lib.sh"
+    fm_nm_select_run fm/none $'repo: /x\ncount: 1 of 1 total\nruns[1]{id,branch,status,head,pr}:\n  "A1",fm/other,completed,abcdef1,""' /tmp)
+  [ "$out" = absent ] || fail "a table without this branch must still select absent, got: $out"
+  out=$(. "$ROOT/bin/fm-nm-run-lib.sh"
+    fm_nm_select_run fm/none $'repo: /x\ncount: 0 of 0 total\nruns[1]{id,branch,status,head,pr}:' /tmp)
+  case "$out" in unknown\|unreadable*) ;; *) fail "a header/row count mismatch must stay unreadable, got: $out" ;; esac
+  out=$(. "$ROOT/bin/fm-nm-run-lib.sh"
+    fm_nm_select_run fm/none $'repo: /x\ncount: 0 of 0 total\nruns[0]{id,branch,status,head,pr}:\n  "A1",fm/none,completed,abcdef1,""' /tmp)
+  case "$out" in unknown\|unreadable*) ;; *) fail "rows beyond the declared zero must stay unreadable, got: $out" ;; esac
+  pass 'an empty complete run table is absent while count mismatches stay unreadable'
+}
+
+test_capped_overview_with_no_branch_runs_falls_to_pane_and_log() {
+  make_capped_runs_case zero-row-capped running pending hidden
+  local d=$TMP_ROOT/zero-row-capped out
+  python3 - "$d/nm/state.sqlite" <<'PY'
+import sqlite3
+import sys
+
+with sqlite3.connect(sys.argv[1]) as db:
+    db.execute("DELETE FROM runs WHERE branch = 'fm/competing'")
+PY
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-3)"
+  FM_FAKE_RUNS_LIST=""
+  fm_write_meta "$d/state/competing.meta" "window=fm:fm-competing" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'paused: waiting on primary routing\n' > "$d/state/competing.status"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" competing
+  out=$(run_crew_state "$d" competing)
+  assert_not_contains "$out" 'unreadable runs table' 'a branch with no recorded run is absent, not an unreadable table'
+  assert_not_contains "$out" 'source: run-step' 'no run is attributed to a branch the daemon never ran'
+  assert_contains "$out" 'state: paused' 'the status log answers when the complete inventory proves no run'
+  assert_contains "$out" 'source: status-log' 'the pane and log path answers for an absent run'
+  pass 'a capped overview with no run for the branch falls through to the pane and log'
+}
+
 test_live_to_terminal_inventory_disagreement_is_unknown() {
   make_competing_runs_case live-to-terminal running cancelled
   local d=$TMP_ROOT/live-to-terminal out
@@ -4796,6 +4842,8 @@ test_complete_inventory_without_python_keeps_gate
 test_complete_ambiguity_without_python_names_both_ids
 test_capped_without_python_preserves_available_ids
 test_capped_without_sqlite_preserves_available_ids
+test_zero_row_inventory_is_absent_not_unreadable
+test_capped_overview_with_no_branch_runs_falls_to_pane_and_log
 test_live_to_terminal_inventory_disagreement_is_unknown
 test_uninitialized_busy_worker_uses_pane
 test_uninitialized_idle_worker_uses_status

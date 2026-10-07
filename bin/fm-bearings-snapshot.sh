@@ -457,7 +457,7 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   | ([ (.secondmate_current.records // [])[]
        | ([.decisions_open[]? | select(.source == "backlog" and .verb == "captain-hold"
             and live_captain_call)]) as $captain_holds
-       | ([.holds[]? | select(.source == "backlog")]) as $backlog_holds
+       | ([.holds[]? | select(.source == "backlog" or .source == "child-state")]) as $backlog_holds
        | . + {
            bearings_captain_holds:$captain_holds,
            bearings_holds:(if .current.state == "captain_decision" then $backlog_holds else .holds end),
@@ -477,14 +477,18 @@ MODEL=$(printf '%s' "$SNAP" | jq \
        else empty end ]
      + [ $secondmate_views[]
        | {id,state:.bearings_state,
-          doing:((if .bearings_state == "active_child_work" then
+          doing:(((if .bearings_state == "active_child_work" then
                     ([.active_children[] | .id + ": " + (.doing // .state)] | join("; "))
                   elif .bearings_state == "captain_decision" then
                     ([.bearings_captain_holds[] | .summary] | join("; "))
                   elif .bearings_state == "externally_held" then
                     ([.bearings_holds[] | .id + ": " + (.reason // "held")] | join("; "))
                   elif .bearings_state == "no_active_work" then "No active child work"
-                  else (.current.reason // "Current home state unavailable") end) | trunc(120)),
+                  else (.current.reason // "Current home state unavailable") end)
+                 | trunc(120))
+                 + (if (.retained_children // [] | length) > 0 then
+                      " [+" + (.retained_children | length | tostring) + " retained after completed step; delivery unconfirmed]"
+                    else "" end)),
           provenance:(if .provenance.summary_source == "remote-ledger-cache" then "structured-home-cache"
                       else .provenance.selected end),freshness:.freshness.status,
           age_seconds:.freshness.age_seconds,contradiction:(.contradiction // false),

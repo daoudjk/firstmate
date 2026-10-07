@@ -85,9 +85,12 @@
 # Codex negotiation (fm_busy_codex_appserver_observable,
 # fm_busy_codex_hooks_verified): the approved contract prefers Codex's
 # app-server turn lifecycle with capability negotiation, and sanctions its
-# stable lifecycle hooks as the intermediate. Neither is usable on the
-# installed binary, so Codex classifies unknown codex-unverified rather than
-# falling back to idle, and fm-spawn installs no Codex busy wiring.
+# stable lifecycle hooks as the intermediate. The last verified result
+# (codex-cli 0.145.0, 2026-07-28) found neither usable, and no later binary has
+# been verified either way, so the current lifecycle source is UNVERIFIED, not
+# proven unusable. Codex therefore classifies unknown codex-unverified rather
+# than falling back to idle, and fm-spawn installs no Codex busy wiring, until a
+# live verification opens the gate below.
 # docs/verification/supervision.md owns the evidence for both probes.
 #
 # Sourcing: set -u and set -e safe; no subshell-unfriendly globals.
@@ -121,7 +124,8 @@ fm_busy_kimi_verified() {
 # fm_busy_codex_appserver_observable: capability/version negotiation for the
 # Codex app-server turn lifecycle. Returns 0 only when a pane worker's turns
 # are observable through the app-server protocol on the installed binary.
-# codex-cli 0.145.0 verdict (live, 2026-07-28): NOT observable. The v2
+# Last verified result, historical (codex-cli 0.145.0, live, 2026-07-28): NOT
+# observable; later binaries are unverified, not proven unusable. The v2
 # protocol does define the needed turn lifecycle (turn/started plus a
 # turn/completed status of completed, interrupted, failed, or inProgress),
 # but an interactive TUI worker neither starts nor attaches to the
@@ -134,9 +138,9 @@ fm_busy_codex_appserver_observable() {
 # fm_busy_codex_hooks_verified: the sanctioned intermediate - Codex's stable
 # hooks engine (UserPromptSubmit to open a turn, Stop and SessionEnd to close
 # it). Returns 0 only once those hooks are live-verified to fire for a
-# firstmate-launched worker. codex-cli 0.145.0 verdict (live, 2026-07-28):
-# NOT verified. Firstmate-written project hooks under <worktree>/.codex/
-# never fired in an interactive pane whose directory trust was granted, nor
+# firstmate-launched worker. Last verified result, historical (codex-cli
+# 0.145.0, live, 2026-07-28): NOT verified; later binaries are unverified.
+# Firstmate-written project hooks under <worktree>/.codex/ never fired in an interactive pane whose directory trust was granted, nor
 # under `codex exec`, in either case with --dangerously-bypass-hook-trust,
 # while global hooks fired in the same runs. Codex additionally exposes no
 # StopFailure hook, so an API-error turn end would need separate coverage

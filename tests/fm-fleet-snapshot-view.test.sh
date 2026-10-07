@@ -32,6 +32,10 @@ case "${1:-}" in
   list-windows)
     sed -n 's/^window=[^:]*://p' "${FM_HOME:?}"/state/*.meta
     ;;
+  list-panes)
+    sed -n 's/^window=[^:]*://p' "${FM_HOME:?}"/state/*.meta \
+      | while IFS= read -r w; do printf '%s|0|@1|%s.0|0.0|@1.0\n' "$w" "$w"; done
+    ;;
   display-message)
     case "$*" in
       *pane_current_command*)
@@ -1144,12 +1148,25 @@ EOF
   printf 'done: complete\n' > "$home/state/terminal-ship.status"
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
   printf '%s' "$out" | jq -e '
+    .valid == true
+      and .reason == null
+      and .invalidity == {kind:null,ids:[]}
+      and .active_children == []
+      and ([.retained_children[] | {id,state}] == [{id:"terminal-ship",state:"done"}])
+      and .counts.retained_children == 1
+      and .state == "no_active_work"
+  ' >/dev/null || fail "a completed ship whose row is still In flight must be retained, not active and not invalid: $out"
+
+  printf 'failed: stopped\n' > "$home/state/terminal-ship.status"
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
+  printf '%s' "$out" | jq -e '
     .valid == false
       and .invalidity == {kind:"terminal_in_flight",ids:["terminal-ship"]}
-      and (.reason | contains("terminal-ship=done"))
+      and (.reason | contains("terminal-ship=failed"))
       and (.reason | contains("mate=") | not)
-  ' >/dev/null || fail "ordinary terminal in-flight ship must still produce terminal_in_flight without listing the secondmate: $out"
-  pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight"
+      and .retained_children == []
+  ' >/dev/null || fail "ordinary failed in-flight ship must still produce terminal_in_flight without listing the secondmate: $out"
+  pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight, retains completed ships"
 }
 
 test_empty_fleet_json
