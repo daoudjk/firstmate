@@ -157,6 +157,49 @@ fm_backend_tmux_window_inventory() {  # <session-target>
   return 1
 }
 
+# fm_backend_tmux_target_exists: does <target> name a pane that is really there?
+# `display-message -p -t` is NOT an existence probe: for a target that is
+# absent it falls back to the caller's current pane and exits 0 whenever any
+# other pane lives. Existence is therefore decided only by an exact match
+# against a successful inventory read:
+#   %N                 pane id, matched against `list-panes -a`
+#   session:window[.N] window name, index or id (and optional pane index),
+#                      matched against `list-panes -s -t =session`
+# Exit codes: 0 present, 1 absent (the pane or its session is not there),
+# 2 malformed target (tmux is never asked), 3 unreadable (server unreachable
+# or any other failed read - proves nothing either way).
+fm_backend_tmux_target_exists() {  # <target>
+  local target=${1:-} session window out
+  case "$target" in
+    %[0-9]*)
+      case "${target#%}" in *[!0-9]*) return 2 ;; esac
+      out=$(LC_ALL=C tmux list-panes -a -F '#{pane_id}' 2>&1) || out=$(fm_backend_tmux_inventory_error "$out") || return $?
+      printf '%s\n' "$out" | grep -qxF -- "$target"
+      return $?
+      ;;
+    *:*:*|'':*|*:'') return 2 ;;
+    *:*) ;;
+    *) return 2 ;;
+  esac
+  session=${target%%:*}
+  window=${target#*:}
+  session=${session#=}
+  [ -n "$session" ] || return 2
+  out=$(LC_ALL=C tmux list-panes -s -t "=$session" -F '#{window_name}|#{window_index}|#{window_id}|#{window_name}.#{pane_index}|#{window_index}.#{pane_index}|#{window_id}.#{pane_index}' 2>&1) \
+    || { out=$(fm_backend_tmux_inventory_error "$out") || return $?; }
+  printf '%s\n' "$out" | tr '|' '\n' | grep -qxF -- "$window"
+}
+
+# Classify a failed tmux inventory read: a session that is not there is an
+# absent target (1); an unreachable server or any other failure proves nothing
+# (3).
+fm_backend_tmux_inventory_error() {  # <tmux-stderr>
+  case "$1" in
+    *"can't find session:"*|*"can't find window:"*) return 1 ;;
+  esac
+  return 3
+}
+
 # fm_backend_tmux_kill: remove one explicitly named task window.
 # Empty, omitted, and malformed targets return nonzero before invoking tmux so
 # tmux can never interpret an empty target as the caller's current window.
