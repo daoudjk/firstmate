@@ -2036,9 +2036,8 @@ test_no_run_herdr_stale_registration_over_shell_reads_agent_gone() {
   FM_FAKE_HERDR_AGENT_STATUS=idle
   FM_FAKE_HERDR_PROCESS=shell
   local out; out=$(run_crew_state "$d" feat-herdr-stale)
-  assert_contains "$out" "state: unknown" "a stale registration over a shell-only pane is not a live state"
-  assert_contains "$out" "backend target gone" "a stale registration over a shell-only pane must read as positive agent-gone evidence"
-  assert_contains "$out" "agent gone, pane shell remains" "the agent-gone reason must name the remaining shell"
+  assert_contains "$out" "state: stopped" "a stale registration over a shell-only pane reads stopped"
+  assert_contains "$out" "agent process absent, endpoint shell retained" "the stopped reason must name the remaining shell"
   assert_not_contains "$out" "backend unreachable" "a readable shell-only pane is not unreachable"
   pass "herdr stale registration over a shell-only pane reads agent gone, not alive"
 }
@@ -2085,9 +2084,8 @@ test_no_run_herdr_husk_dead_still_reads_gone() {
   FM_FAKE_HERDR_READ_FAIL=1
   FM_FAKE_HERDR_HUSK=1
   local out; out=$(run_crew_state "$d" feat-herdr-husk)
-  assert_contains "$out" "state: unknown" "a husk pane has no live current state"
-  assert_contains "$out" "backend target gone" "a husk pane keeps its gone-class death evidence"
-  assert_contains "$out" "agent gone, pane shell remains" "the husk verdict names what actually died"
+  assert_contains "$out" "state: stopped" "a husk pane reads stopped"
+  assert_contains "$out" "agent process absent, endpoint shell retained" "the husk verdict names what actually died"
   assert_not_contains "$out" "backend unreachable" "a husk pane is not an unreachable backend"
   pass "a husk pane (agent gone) still reads gone for reclaim"
 }
@@ -3519,6 +3517,66 @@ test_capped_without_sqlite_preserves_available_ids() {
 # header's "0" as strings and reported unreadable. Production case
 # (2026-10-07): worktrees reused on a branch the daemon has no run for, behind a
 # capped 10-of-550 overview, read "unreadable runs table; run ids: " forever.
+# A terminal run whose pipeline head this worktree never fetched cannot be
+# attributed to it, so its run-step reads unknown. When the endpoint ALSO holds
+# no agent process (positive absence evidence, independent of any busy source),
+# the child reads stopped with the unverified run ids kept visible; a live run, a
+# running agent and an unreadable agent probe stay unknown.
+make_unverified_terminal_run_case() {  # <name> -> case dir in $TMP_ROOT
+  make_competing_runs_case "$1" failed cancelled
+  local d=$TMP_ROOT/$1
+  FM_FAKE_AXI_HOME=$(printf '%s\n' "$FM_FAKE_AXI_HOME" | sed "s/,$FM_FAKE_RUN_HEAD,/,0123abcd,/")
+  FM_FAKE_AXI_STATUS="$(FM_FAKE_RUN_HEAD=0123abcd run_failed fm/competing | sed 's/01RUN/01NEW/')"
+  FM_FAKE_AXI_STATUS_RUN=$FM_FAKE_AXI_STATUS
+  fm_write_meta "$d/state/competing.meta" "window=default:w1:p9" "worktree=$d/wt" "kind=ship" \
+    "backend=herdr" "harness=codex"
+  FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_HERDR_READ_FAIL=1
+}
+
+test_unverified_terminal_run_with_absent_agent_reads_stopped() {
+  command -v jq >/dev/null 2>&1 || { pass "stopped run-step test skipped without jq"; return; }
+  make_unverified_terminal_run_case stopped-terminal-unverified
+  local d=$TMP_ROOT/stopped-terminal-unverified out
+  FM_FAKE_HERDR_HUSK=1
+  out=$(run_crew_state "$d" competing)
+  assert_contains "$out" 'state: stopped' 'a terminal run with an unverified identity and no agent reads stopped'
+  assert_contains "$out" 'source: endpoint' 'stopped names the endpoint as its evidence'
+  assert_contains "$out" 'terminal run code identity unverified' 'the identity mismatch stays visible'
+  assert_contains "$out" '01NEW' 'the unverified run ids are kept'
+  assert_not_contains "$out" 'state: done' 'a stopped agent never reads done'
+  assert_not_contains "$out" 'state: failed' 'an unattributed failed run is not this worktree failure'
+  pass 'terminal unverified run plus absent agent reads stopped with run ids retained'
+}
+
+test_unverified_run_with_live_agent_or_unreadable_probe_stays_unknown() {
+  command -v jq >/dev/null 2>&1 || { pass "stopped negative test skipped without jq"; return; }
+  make_unverified_terminal_run_case stopped-terminal-alive
+  local d=$TMP_ROOT/stopped-terminal-alive out
+  FM_FAKE_HERDR_AGENT_STATUS=working
+  FM_FAKE_HERDR_PROCESS=agent
+  out=$(run_crew_state "$d" competing)
+  assert_contains "$out" 'state: unknown' 'a terminal unverified run with a running agent stays unknown'
+  assert_not_contains "$out" 'stopped' 'a running agent is never stopped'
+  make_unverified_terminal_run_case stopped-terminal-unreadable
+  d=$TMP_ROOT/stopped-terminal-unreadable
+  out=$(run_crew_state "$d" competing)
+  assert_contains "$out" 'state: unknown' 'an unreadable agent probe stays unknown'
+  assert_not_contains "$out" 'stopped' 'an unreadable probe is not absence evidence'
+  make_competing_runs_case stopped-live-unverified running cancelled
+  d=$TMP_ROOT/stopped-live-unverified
+  FM_FAKE_AXI_STATUS="$(FM_FAKE_RUN_HEAD=0123abcd run_parked fm/competing | sed 's/01RUN/01NEW/')"
+  FM_FAKE_AXI_STATUS_RUN=$FM_FAKE_AXI_STATUS
+  fm_write_meta "$d/state/competing.meta" "window=default:w1:p9" "worktree=$d/wt" "kind=ship" \
+    "backend=herdr" "harness=codex"
+  FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_HERDR_READ_FAIL=1
+  FM_FAKE_HERDR_HUSK=1
+  out=$(run_crew_state "$d" competing)
+  assert_not_contains "$out" 'state: stopped' 'a live or parked unverified run is never replaced by a stopped reading'
+  pass 'running agents, unreadable probes and live unverified runs never read stopped'
+}
+
 test_zero_row_inventory_is_absent_not_unreadable() {
   local out
   out=$(. "$ROOT/bin/fm-nm-run-lib.sh"
@@ -4842,6 +4900,8 @@ test_complete_inventory_without_python_keeps_gate
 test_complete_ambiguity_without_python_names_both_ids
 test_capped_without_python_preserves_available_ids
 test_capped_without_sqlite_preserves_available_ids
+test_unverified_terminal_run_with_absent_agent_reads_stopped
+test_unverified_run_with_live_agent_or_unreadable_probe_stays_unknown
 test_zero_row_inventory_is_absent_not_unreadable
 test_capped_overview_with_no_branch_runs_falls_to_pane_and_log
 test_live_to_terminal_inventory_disagreement_is_unknown

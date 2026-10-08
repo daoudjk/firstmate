@@ -255,6 +255,14 @@ metadata still pair, so the home stays valid, and the child is listed in
 retained_children (never in active_children) with step=completed,
 delivery=unconfirmed, and the state source and detail that name where the work
 stands. A failed child with an In flight row remains terminal_in_flight.
+A child whose agent process is positively absent (current state stopped: the
+endpoint exists with no agent, whatever the harness busy source says) is a held,
+owned, NOT-active obligation: it appears in holds with its detail and never in
+active_children, so a home whose only unreadable children are stopped is valid
+and reads externally_held. Stopped means the agent is not running, not that the
+work is finished, delivered or accepted. A stopped hold is owned, non-active
+work that needs attention: it is not a deliberate standdown, readiness,
+completion or restart clearance.
 A child whose current state cannot be read (for example a harness with no
 verified semantic busy source) stays unknown and invalidates the home as
 child_current_unavailable; unavailable_children names each one with the source
@@ -1086,7 +1094,7 @@ secondmate_home_summary_json() {  # <backlog-json-file> <tasks-json-file>
             reason:((.hold_reason // .blocked_reason // "blocked") | trunc(120)),source:"backlog"} ]
        + [ $owned_in_flight[] as $work
            | $tasks[]
-           | select(.id == $work.id and (.current_state.state == "parked" or .current_state.state == "paused" or .current_state.state == "blocked"))
+           | select(.id == $work.id and (.current_state.state == "parked" or .current_state.state == "paused" or .current_state.state == "blocked" or .current_state.state == "stopped"))
            | select(($work.hold_reason != null and $work.hold_kind != null) | not)
            | {id,title:((.backlog.title // .id) | trunc(90)),blocked_by:null,
               blocked_by_ids:[],unresolved_blocker_ids:[],
