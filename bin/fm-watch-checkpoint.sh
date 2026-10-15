@@ -5,6 +5,10 @@
 # recorded PID only when ps proves the timeout child is that watcher's parent.
 # An unrelated singleton is never signalled. Both timeout implementations stay
 # in the caller's process group so native hook cancellation reaches the watcher.
+# fm-watch.sh owns cancellation of polling/coalescing sleeps and the isolated
+# capture groups used for custom checks and backend event waits; the Herdr
+# adapter owns reaping its event reader. Worker sessions and detached registered
+# sources are outside those wait owners and are not cancelled with a checkpoint.
 # A hard host cancellation may retain a dead lock for normal recovery.
 set -u
 

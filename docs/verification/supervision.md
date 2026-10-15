@@ -516,6 +516,7 @@ ok - all pending-reply tests passed
 
 Verified with codex-cli 0.162.1, the tracked native hook registration, real foreground watcher processes, an isolated home, and a private tmux session.
 The guard submits bounded model prompts and remains opt-in.
+This recorded native run predates the checkpoint cancellation repairs and does not qualify their final source; the backend-reader cancellation regression uses an isolated executable fixture, and native Herdr qualification is unavailable.
 
 ```sh
 FM_CODEX_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-codex-continuity-live-e2e.test.sh

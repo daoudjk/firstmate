@@ -40,7 +40,7 @@ This is why `$no-mistakes` reaches a Codex worker instead of being consumed by t
 
 ## Primary integration
 
-The primary integration was verified on 2026-07-08 with codex-cli 0.142.1.
+Current native Stop-continuation evidence is owned by `../../../docs/verification/supervision.md` under "Codex native Stop continuation".
 The firstmate primary's `.codex/hooks.json` registers a Stop hook that pipes Codex's payload to `../../../bin/fm-turnend-guard.sh`.
 Codex Stop hooks preserve exit status 2 and stderr to continue the model; the trusted `--codex` mode uses the checkpoint and bounded failure contract in `../../../docs/turnend-guard.md`.
 

@@ -67,7 +67,9 @@
 # an atomic mode-0600 JSON latch with key (session id, owner pid, pid identity)
 # and message fields; a fresh user turn clears it only after verifying ownership.
 # A non-owning Stop never acquires or recovers the session lock and never writes
-# the failure latch. Explicit harness interruption is outside Stop continuation.
+# the failure latch. Before launching its checkpoint it sources the existing
+# config/x-mode.env when present, so Relay cadence reaches the Stop child.
+# Explicit harness interruption is outside Stop continuation.
 #
 # Loop-guard, --claude mode (Stop-owned auto-arm cooperation): Claude Code
 # marks EVERY stop after ANY stop-hook-driven continuation stop_hook_active=true,
