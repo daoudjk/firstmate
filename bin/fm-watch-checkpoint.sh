@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 # Run one bounded foreground watcher checkpoint for harnesses that should not
 # rely on background-task completion to wake the model.
+# Trappable cancellation reaps this checkpoint's own watcher, using its
+# recorded PID only when ps proves the timeout child is that watcher's parent.
+# An unrelated singleton is never signalled. Both timeout implementations stay
+# in the caller's process group so native hook cancellation reaches the watcher.
+# A hard host cancellation may retain a dead lock for normal recovery.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
+STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 SECONDS_ARG=${FM_CODEX_WATCH_CHECKPOINT:-180}
 
 usage() {
@@ -49,23 +57,46 @@ ERR=$(mktemp "${TMPDIR:-/tmp}/fm-watch-checkpoint.err.XXXXXX") || {
   rm -f "$OUT"
   exit 1
 }
-trap 'rm -f "$OUT" "$ERR"' EXIT
+CHECKPOINT_PID=
+cleanup_checkpoint() {
+  local watcher_pid watcher_parent
+  if [ -n "$CHECKPOINT_PID" ]; then
+    watcher_pid=$(cat "$STATE/.watch.lock/pid" 2>/dev/null || true)
+    watcher_parent=
+    case "$watcher_pid" in
+      ''|*[!0-9]*) ;;
+      *) watcher_parent=$(ps -o ppid= -p "$watcher_pid" 2>/dev/null | tr -d ' ') ;;
+    esac
+    if [ "$watcher_parent" = "$CHECKPOINT_PID" ]; then
+      # Signal the owned watcher first so the timeout parent reaps it normally.
+      # Signalling GNU timeout first can return before the watcher EXIT cleanup.
+      kill -TERM "$watcher_pid" 2>/dev/null || true
+    else
+      kill -TERM "$CHECKPOINT_PID" 2>/dev/null || true
+    fi
+    wait "$CHECKPOINT_PID" 2>/dev/null || true
+  fi
+  rm -f "$OUT" "$ERR"
+}
+trap cleanup_checkpoint EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 run_with_perl_timeout() {
-  perl -e '
+  exec perl -e '
     my $seconds = shift;
     my $pid = fork;
     die "fork failed\n" unless defined $pid;
     if (!$pid) {
-      setpgrp(0, 0);
       exec @ARGV;
       die "exec failed: $!\n";
     }
-    local $SIG{ALRM} = sub {
-      kill "TERM", -$pid;
+    my $cancel = sub {
+      kill "TERM", $pid;
       my $grace = $ENV{FM_SIGNAL_GRACE} || 5;
       local $SIG{ALRM} = sub {
-        kill "KILL", -$pid;
+        kill "KILL", $pid;
         waitpid $pid, 0;
         exit 124;
       };
@@ -73,6 +104,10 @@ run_with_perl_timeout() {
       waitpid $pid, 0;
       exit 124;
     };
+    local $SIG{ALRM} = $cancel;
+    local $SIG{HUP} = $cancel;
+    local $SIG{INT} = $cancel;
+    local $SIG{TERM} = $cancel;
     alarm $seconds;
     waitpid $pid, 0;
     alarm 0;
@@ -82,15 +117,16 @@ run_with_perl_timeout() {
 
 set +e
 if command -v timeout >/dev/null 2>&1; then
-  timeout "$SECONDS_ARG" "$SCRIPT_DIR/fm-watch.sh" >"$OUT" 2>"$ERR"
-  RC=$?
+  timeout --foreground "$SECONDS_ARG" "$SCRIPT_DIR/fm-watch.sh" >"$OUT" 2>"$ERR" &
 elif command -v gtimeout >/dev/null 2>&1; then
-  gtimeout "$SECONDS_ARG" "$SCRIPT_DIR/fm-watch.sh" >"$OUT" 2>"$ERR"
-  RC=$?
+  gtimeout --foreground "$SECONDS_ARG" "$SCRIPT_DIR/fm-watch.sh" >"$OUT" 2>"$ERR" &
 else
-  run_with_perl_timeout >"$OUT" 2>"$ERR"
-  RC=$?
+  run_with_perl_timeout >"$OUT" 2>"$ERR" &
 fi
+CHECKPOINT_PID=$!
+wait "$CHECKPOINT_PID"
+RC=$?
+CHECKPOINT_PID=
 set -e
 
 if grep -E '^(signal:|stale:|check:|heartbeat($|:))' "$OUT" >/dev/null 2>&1; then

@@ -739,13 +739,37 @@ test_supervision_protocol_follows_corrected_verdict() {
     "$bin" -c "r=\$(\"$RENDER\"); printf '%s' \"\$r\"")
   assert_contains "$got" "primary harness: codex" \
     "a Codex primary carrying a retained CLAUDECODE did not render the Codex protocol"
-  assert_contains "$got" "Mode: Codex foreground checkpoint." \
+  assert_contains "$got" "Mode: Codex Stop-owned foreground checkpoint." \
     "the rendered block is not Codex's foreground-checkpoint protocol"
   assert_not_contains "$got" "Mode: Claude Stop-hook-owned supervision." \
     "the rendered block still carries Claude's Stop-owned protocol"
   pass "session start renders the Codex protocol for a Codex primary holding a retained CLAUDECODE"
 }
 
+test_startup_wrapper_depth_retains_native_identity() {
+  local dir bin got wrapper
+  dir="$TMP_ROOT/startup-depth"
+  bin=$(named_bin "$dir" codex)
+  wrapper="$dir/wrapper.sh"
+  cat > "$wrapper" <<'SH'
+#!/usr/bin/env bash
+depth=$1
+shift
+if [ "$depth" -eq 0 ]; then
+  "$@"
+else
+  bash "$0" "$((depth - 1))" "$@"
+fi
+:
+SH
+  got=$(env -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDECODE=1 \
+    "$bin" "$wrapper" 9 "$HARNESS")
+  [ "$got" = codex ] || fail "native startup wrappers lost Codex identity beyond eight parents: $got"
+  pass "startup-depth ancestry reaches the native harness beyond eight wrappers and outranks a retained marker"
+}
+
+test_startup_wrapper_depth_retains_native_identity
 test_markerless_ancestry_outranks_foreign_marker
 test_genuine_marker_and_ancestry_agree
 test_cursor_ordering_still_decides_when_ancestry_is_silent

@@ -1162,6 +1162,67 @@ test_msys_pid_identity_uses_proc() {
   pass "MSYS process identity uses compatible /proc fields"
 }
 
+# Freeze the real lock helper immediately after PID publication, before any
+# watcher readiness field exists. This must remain an early-cancel regression.
+test_cancel_at_pid_publication_releases_owned_lock() {
+  python3 - "$ROOT" "$TMP_ROOT" <<'PYTEST' || fail "watcher startup cancellation race"
+import os
+from pathlib import Path
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import time
+root = Path(sys.argv[1])
+case = Path(sys.argv[2]) / 'startup-publication-cancel'
+state = case / 'state'
+fakebin = case / 'bin'
+state.mkdir(parents=True)
+fakebin.mkdir()
+real_cat = shutil.which('cat')
+(fakebin / 'cat').write_text("""#!/usr/bin/env bash
+case "${1:-}" in
+  "$FM_TEST_RACE_STATE"/.watch.lock.owner.*/pid)
+    if [ -f "$FM_TEST_RACE_STATE/.watch.lock/pid" ]; then
+      : > "$FM_TEST_RACE_STATE/published"
+      while [ ! -f "$FM_TEST_RACE_STATE/release" ]; do sleep 0.01; done
+    fi
+    ;;
+esac
+exec """ + shlex.quote(real_cat) + ' "$@"\n')
+(fakebin / 'cat').chmod(0o755)
+env = os.environ.copy()
+env.update(FM_HOME=str(case), FM_STATE_OVERRIDE=str(state), FM_TEST_RACE_STATE=str(state), FM_POLL='1', FM_CHECK_INTERVAL='999999', PATH=str(fakebin) + os.pathsep + env['PATH'])
+with (case / 'out').open('w') as output:
+    process = subprocess.Popen([str(root / 'bin/fm-watch.sh')], env=env, stdout=output, stderr=subprocess.STDOUT)
+    try:
+        for _ in range(500):
+            if (state / 'published').exists():
+                break
+            if process.poll() is not None:
+                raise AssertionError('watcher exited before the publication barrier')
+            time.sleep(0.01)
+        assert (state / 'published').exists(), 'lock publication was not observed'
+        pid = int((state / '.watch.lock/pid').read_text())
+        assert pid == process.pid, 'fixture did not observe its own watcher'
+        assert not (state / '.watch.lock/pid-identity').exists(), 'case missed the early-publication window'
+        assert not (state / '.last-watcher-beat').exists(), 'case silently became a ready-watcher cancellation'
+        process.send_signal(signal.SIGTERM)
+        (state / 'release').touch()
+        assert process.wait() != 0, 'cancelled watcher reported success'
+        assert not (state / '.watch.lock/pid').exists(), 'dead startup retained its singleton'
+        assert (state / '.watcher-down').is_file(), 'startup released the singleton without durable recovery evidence'
+    finally:
+        (state / 'release').touch()
+        if process.poll() is None:
+            process.send_signal(signal.SIGTERM)
+            process.wait()
+PYTEST
+  pass "watcher cancellation at PID publication persists downtime and releases only its own singleton"
+}
+
+test_cancel_at_pid_publication_releases_owned_lock
 test_wait_deadline_reaps_a_stopped_child
 test_singleton_start
 test_pid_identity_is_locale_invariant

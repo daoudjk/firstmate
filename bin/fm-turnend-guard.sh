@@ -47,8 +47,8 @@
 # are unchanged everywhere else, including for a dead daemon pid or a beacon
 # older than AFK_GRACE, which still block.
 #
-# Loop-guard, codex/Grok (default) mode: never block twice in the same turn.
-# Codex uses stop_hook_active and Grok uses stopHookActive; typed camel-case
+# Loop-guard, default mode: never block twice in the same turn.
+# Grok uses stopHookActive; typed camel-case
 # takes precedence when both spellings are present. A true value means the
 # current stop attempt already follows a block, so this guard always allows it.
 # Passive harness adapters provide their own one-follow-up guard before calling
@@ -56,6 +56,18 @@
 # That bounds those harnesses to at most one forced continuation per turn -
 # never a wedged, un-endable session - while still nagging again on a later turn
 # if the problem persists.
+#
+# --codex mode is selected only by the trusted project Stop registration.
+# It parks each boundary on fm-watch-checkpoint.sh while this session proves
+# ownership through fm-session-lock-lib.sh. The hook timeout is 600 seconds;
+# FM_CODEX_WATCH_CHECKPOINT defaults to 180 and must be 1..540 to leave cleanup
+# headroom. A wake or quiet interval returns 2 to continue the model. No need
+# returns 0. A failed checkpoint first returns 2 with the failure, then the same
+# continued Stop chain returns 0 without retrying. state/.codex-stop-failure is
+# an atomic mode-0600 JSON latch with key (session id, owner pid, pid identity)
+# and message fields; a fresh user turn clears it only after verifying ownership.
+# A non-owning Stop never acquires or recovers the session lock and never writes
+# the failure latch. Explicit harness interruption is outside Stop continuation.
 #
 # Loop-guard, --claude mode (Stop-owned auto-arm cooperation): Claude Code
 # marks EVERY stop after ANY stop-hook-driven continuation stop_hook_active=true,
@@ -100,6 +112,7 @@ GRACE=${FM_GUARD_GRACE:-300}
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 CLAUDE_MODE=0
 CURSOR_MODE=0
+CODEX_MODE=0
 SYNC_WAIT_MS=${FM_CLAUDE_AUTOARM_SYNC_WAIT_MS:-800}
 EPOCH_FRESH=${FM_CLAUDE_AUTOARM_EPOCH_FRESH:-15}
 BLOCK_BUDGET=${FM_CLAUDE_TURNEND_BLOCK_BUDGET:-3}
@@ -111,7 +124,8 @@ for arg in "$@"; do
   case "$arg" in
     --claude) CLAUDE_MODE=1 ;;
     --cursor) CURSOR_MODE=1 ;;
-    *) echo "usage: $(basename "$0") [--claude|--cursor]" >&2; exit 2 ;;
+    --codex) CODEX_MODE=1 ;;
+    *) echo "usage: $(basename "$0") [--claude|--cursor|--codex]" >&2; exit 2 ;;
   esac
 done
 
@@ -150,7 +164,7 @@ STOP_HOOK_ACTIVE=$(printf '%s' "$PAYLOAD" | jq -r '
   else false
   end
 ' 2>/dev/null) || exit 0
-if [ "$CLAUDE_MODE" -eq 0 ] && [ "$STOP_HOOK_ACTIVE" = "true" ]; then
+if [ "$CLAUDE_MODE" -eq 0 ] && [ "$CODEX_MODE" -eq 0 ] && [ "$STOP_HOOK_ACTIVE" = "true" ]; then
   exit 0
 fi
 
@@ -171,7 +185,7 @@ fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 # --- the actual predicate ----------------------------------------------------
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
-if [ "$CLAUDE_MODE" -eq 1 ]; then
+if [ "$CLAUDE_MODE" -eq 1 ] || [ "$CODEX_MODE" -eq 1 ]; then
   # shellcheck source=bin/fm-session-lock-lib.sh
   . "$SCRIPT_DIR/fm-session-lock-lib.sh"
 fi
@@ -202,7 +216,7 @@ allow_supervised_stop() {
   exit 2
 }
 
-if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
+if [ "$CODEX_MODE" -eq 0 ] && fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
   allow_supervised_stop
 fi
 
@@ -222,6 +236,74 @@ AFK_GRACE=${FM_GUARD_GRACE:-$(fm_poll_derived_grace)}
 if [ "$(fm_path_age "$STATE/.last-watcher-beat")" -lt "$AFK_GRACE" ] \
   && fm_afk_daemon_owns_supervision "$STATE"; then
   allow_supervised_stop
+fi
+
+# Codex has no verified completion callback after its turn actually ends.
+# Park this trusted Stop invocation on the existing bounded foreground watcher,
+# then use the real blocking Stop continuation to deliver its result. Every
+# continuation therefore earns another monitored interval; stop_hook_active is
+# not permission to abandon the fleet after one quiet interval. A failed wait
+# is an attended, visible exit, never an unconditional re-block loop.
+if [ "$CODEX_MODE" -eq 1 ]; then
+  codex_failure_key=
+  codex_failure_file="$STATE/.codex-stop-failure"
+  codex_failure() {
+    local message tmp
+    message="FIRSTMATE CODEX SUPERVISION STOPPED: $1. Automatic monitoring is unavailable. Report this failure explicitly; do not retry or launch another supervisor in this continuation. A new user turn can retry after repair."
+    if [ -n "$codex_failure_key" ]; then
+      tmp=$(mktemp "$STATE/.codex-stop-failure.XXXXXX") || tmp=
+      if [ -n "$tmp" ] && chmod 0600 "$tmp" \
+        && jq -cn --arg key "$codex_failure_key" --arg message "$message" \
+          '{key:$key,message:$message}' > "$tmp" \
+        && mv -f "$tmp" "$codex_failure_file"; then
+        printf '%s\n' "$message" >&2
+        exit 2
+      fi
+      [ -z "$tmp" ] || rm -f "$tmp"
+    elif [ "$STOP_HOOK_ACTIVE" = false ]; then
+      # A read-only session cannot publish a latch in another owner's home.
+      printf '%s\n' "$message" >&2
+      exit 2
+    fi
+    jq -cn --arg message "$message" '{systemMessage:$message}'
+    exit 0
+  }
+  fm_session_lock_owned_by_self "$STATE" \
+    || codex_failure 'this Stop cannot verify ownership of the live session lock; no watcher was started and no lock was recovered'
+  codex_owner=$(cat "$STATE/.lock")
+  codex_failure_key=$(jq -cn --arg session "$SESSION_ID" --arg owner "$codex_owner" \
+    --arg identity "$(fm_pid_identity "$codex_owner" 2>/dev/null || true)" '[$session,$owner,$identity]')
+  # Failure is delivered once even after previous quiet Stop continuations.
+  # Only a fresh logical user turn retries; the read-only path above never
+  # creates or clears this owner-bound latch.
+  if [ "$STOP_HOOK_ACTIVE" = true ] && [ -f "$codex_failure_file" ] \
+    && [ ! -L "$codex_failure_file" ] \
+    && jq -e --arg key "$codex_failure_key" '.key == $key' "$codex_failure_file" >/dev/null 2>&1; then
+    jq -c '{systemMessage:.message}' "$codex_failure_file"
+    exit 0
+  fi
+  rm -f "$codex_failure_file"
+  checkpoint_seconds=${FM_CODEX_WATCH_CHECKPOINT:-180}
+  # The tracked Stop handler has a 600s timeout. Keep a margin for cleanup and
+  # delivery; this bounds the watcher wait only, never the work being watched.
+  case "$checkpoint_seconds" in
+    ''|*[!0-9]*|0) codex_failure 'FM_CODEX_WATCH_CHECKPOINT must be an integer from 1 through 540' ;;
+  esac
+  [ "$checkpoint_seconds" -le 540 ] \
+    || codex_failure 'FM_CODEX_WATCH_CHECKPOINT exceeds the Stop handler timeout margin (540s maximum)'
+  checkpoint_rc=0
+  checkpoint_out=$("$SCRIPT_DIR/fm-watch-checkpoint.sh" --seconds "$checkpoint_seconds" 2>&1) || checkpoint_rc=$?
+  case "$checkpoint_rc" in
+    0)
+      printf '%s\n' "$checkpoint_out" | grep -Eq '^(signal:|stale:|check:|heartbeat($|:))' \
+        || codex_failure "foreground watcher returned without a wake: $checkpoint_out"
+      ;;
+    124) ;;
+    *) codex_failure "foreground checkpoint failed (exit $checkpoint_rc): $checkpoint_out" ;;
+  esac
+  printf '%s\n%s\n' "$checkpoint_out" \
+    'Codex Stop checkpoint completed. Drain with bin/fm-wake-drain.sh, handle the presented work, then run its exact WAKE_ACK_REQUIRED command. While supervision is needed the next Stop runs another foreground checkpoint automatically. Do not launch another supervisor or background watcher.' >&2
+  exit 2
 fi
 
 block_stop() {

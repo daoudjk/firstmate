@@ -486,11 +486,58 @@ grok 0.2.103 (89c3d36fb6f1) [stable]
 | Harness | Exact opt-in command | Observed guarantee |
 | --- | --- | --- |
 | Claude | `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` | Session start reclaimed a stale owner before two Stop-owned cycles, and a competing live owner prevented arm, rewake, epoch write, or lock replacement. |
-| Codex | `FM_CODEX_LIVE_E2E=1 tests/fm-codex-continuity-live-e2e.test.sh` | The one-second foreground checkpoint returned without switching to the arm wrapper. |
+| Codex | `FM_CODEX_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-codex-continuity-live-e2e.test.sh` | On codex-cli 0.162.1, repeated native Stop continuations handled and acknowledged stalled-task and completion wakes, refused a competing owner, and bounded watcher failure and explicit interruption; see the dated evidence below. |
 | OpenCode | `FM_OPENCODE_LIVE_E2E=1 tests/fm-opencode-primary-live-e2e.test.sh` | A verified successor existed before prompt handling, with no model re-arm or turn-end fallback. |
 | Pi | `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` | One initial tool call led to extension-owned successors and clean child retirement on exit. |
 | omp | `FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` | One initial `fm_watch_arm_omp` invocation (the openai-codex model reaches extension tools through omp's `xd://` virtual-file bridge, a `write` to `xd://fm_watch_arm_omp`, counted as the same invocation) started a live watcher; an actionable close spawned a ledger-linked successor and woke main exactly once; the lab is reaped by path, and omp 18.1.11 did not exit within 30s of its rpc stdin closing, recorded as a note. omp 18.1.11, 2026-09-05. |
 | Grok | `FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh` | Native task completion surfaced the actionable close and the cycle ledger recorded `reason=actionable-signal`. |
+
+### Retained pending-reply history, 2026-10-15
+
+The selector in `bin/fm-pending-reply-lib.sh` was verified through the existing watcher and pending-reply lifecycle, without deleting retained records.
+The checkpoint regression retains 1,600 settled records plus one active request, resolves that request from its correlated parent status, and delivers the status wake before the bounded checkpoint expires.
+The pending-reply suite also preserves a foreign-held settled-record lock, retries an unclosed escalation, retains active records, and checks last-key values, missing or unreadable records, and newline record paths.
+
+```sh
+bin/fm-test-run.sh tests/fm-watch-checkpoint.test.sh
+bin/fm-test-run.sh tests/fm-pending-reply.test.sh
+```
+
+Observed output includes:
+
+```text
+ok - 1600 settled replies stay durable while an active report resolves and its task wake is delivered
+ok - the tick leaves settled records alone and still does the selected records' work
+ok - reply selection preserves last-key values, missing/unreadable records, and newline paths
+ok - all pending-reply tests passed
+```
+
+### Codex native Stop continuation, 2026-10-15
+
+Verified with codex-cli 0.162.1, the tracked native hook registration, real foreground watcher processes, an isolated home, and a private tmux session.
+The guard submits bounded model prompts and remains opt-in.
+
+```sh
+FM_CODEX_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-codex-continuity-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - codex-cli 0.162.1: at least twelve quiet native Stop checkpoints preceded handled stale and completion wakes, drained and acknowledged the durable queue, and preserved the live owner
+ok - codex-cli 0.162.1: a watcher failure after prior Stop continuations produced one explicit failure turn and a bounded exit
+ok - codex-cli 0.162.1: explicit interrupt ended the Stop wait without reentry or task loss
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=277962
+```
+
+The fixture retains 1,600 settled reply records and requires at least twelve quiet native Stop checkpoints before introducing a live task endpoint.
+The task endpoint remains genuinely idle through the stalled-task interval; the test does not manufacture a watcher beacon.
+It then publishes a completion status and turn-ended signal, requires both wakes to be processed, and checks the exact drain acknowledgement and empty queue.
+A competing real Codex session is refused while the original owner remains unchanged.
+The startup detector is also checked inside the real native SessionStart wrapper chain.
+Explicit interruption leaves no live watcher; hard host cancellation may retain a dead lock for ordinary recovery.
+This verifies synchronous Stop continuation while trusted hooks run, with a model handling interval between checkpoints; it does not verify an asynchronous wake after Codex actually exits.
+The current operator boundary is owned by [the Codex supervision protocol](../supervision-protocols/codex.md).
 
 Pi 0.81.1 repeated the continuity and clean-exit lifecycle on 2026-07-23 after the Calm presentation changes.
 

@@ -249,8 +249,11 @@ harness_process_verdict() {  # <pid>
 # nothing when the walk finds none. The nearest match wins, so a worker nested
 # inside another harness resolves to its own harness.
 harness_ancestry() {  # [<pid>]
-  local pid=${1:-$$} verdict
-  for _ in 1 2 3 4 5 6 7 8; do
+  local pid=${1:-$$} verdict hop
+  # A native SessionStart reaches this through the hook shell, startup wrapper,
+  # timeout supervisor, inner digest, and command substitutions. Eight hops
+  # stopped just below the real Codex process on that production caller path.
+  for ((hop=0; hop<16; hop++)); do
     verdict=$(harness_process_verdict "$pid")
     [ -z "$verdict" ] || { echo "$verdict"; return; }
     pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
@@ -270,7 +273,7 @@ harness_ancestry() {  # [<pid>]
 # Print the pids on the UPWARD path between the deepest descendant of <root> and
 # <root> itself, deepest first. Optional <eligible-leaf-pid> values restrict which
 # descendants may be chosen as that deepest one; with none given every descendant
-# is eligible. Bounded to the same eight levels harness_ancestry climbs, so a deep
+# is eligible. Bounded to eight descent levels, so a deep
 # or pathological tree cannot make this walk unbounded.
 process_descent_path() {  # <root> [<eligible-leaf-pid>...]
   local root=${1:-$$} eligible any hit pairs frontier next pid child parent verdict

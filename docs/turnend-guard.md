@@ -77,7 +77,7 @@ Every other direct `FM_GUARD_GRACE` reader (`bin/fm-guard.sh`, the strict-watche
 ## Harness integrations
 
 - Claude registers two `Stop` hooks in `.claude/settings.json`, both anchored through `CLAUDE_PROJECT_DIR`: `bin/fm-turnend-guard.sh --claude`, and `bin/fm-claude-stop-autoarm.sh` with `asyncRewake: true` and `timeout: 28800`.
-- Codex registers a `Stop` hook in `.codex/hooks.json`, anchors the executable to the hook process working directory, verifies a Firstmate-shaped hook-bearing root, and passes the original payload to the shared guard.
+- Codex registers a synchronous `Stop` checkpoint through `bin/fm-turnend-guard.sh --codex` in `.codex/hooks.json`, anchored to the trusted hook process root.
 - OpenCode listens for `session.idle` in `.opencode/plugins/fm-primary-turnend-guard.js`, lets the watcher coordinator act first, and calls `client.session.promptAsync` once when the guard returns 2.
 - Pi listens for `agent_settled` in `.pi/extensions/fm-primary-turnend-guard.ts`, runs once per logical agent run, and calls `pi.sendUserMessage(..., { deliverAs: "followUp" })` once when the guard returns 2.
 - omp answers its blocking `session_stop` hook in `.omp/extensions/fm-primary-turnend-guard.ts`, passing the payload's own `stop_hook_active` to the shared guard and returning `{ continue: true, additionalContext }` when the guard returns 2, so the continuation is compelled rather than requested; the continuation's stop carries `stop_hook_active: true`, which bounds it to one per turn, and omp's own cap of eight consecutive continuations is the second backstop. `session_stop` never fires for an interrupted turn or a task session, so those boundaries are deliberately unguarded.
@@ -96,7 +96,15 @@ Every other direct `FM_GUARD_GRACE` reader (`bin/fm-guard.sh`, the strict-watche
 
 Claude and Codex can block a Stop directly with exit status 2 and stderr.
 Both payloads carry `stop_hook_active`.
-In the default Codex mode, a true value lets the second stop finish after one forced continuation.
+The trusted Codex mode checks primary scope and supervision need, then requires the live session-lock ownership verdict before running the existing foreground checkpoint.
+An actionable result or quiet interval forces another real model continuation even when `stop_hook_active` is already true.
+A watcher PID alone is insufficient because Codex has no verified asynchronous completion callback after an actual turn exit.
+A checkpoint failure forces one explicit failure-reporting continuation and latches that failure for the same session, owner PID, and process identity; the next continued Stop permits an attended exit without retrying.
+A fresh logical user turn can retry after repair.
+The script header owns the failure-latch format and the checkpoint interval's hook-timeout margin.
+An unowned or stale session lock is never recovered at Stop.
+An explicit interrupt ends the synchronous wait rather than starting a replacement supervisor.
+This path requires project hooks to be trusted and invoked; a surface that omits those hooks remains unsupported, and no monitoring is promised after the Codex process exits.
 
 Claude runs the guard with `--claude`, which ignores `stop_hook_active` and cooperates with the Stop-owned auto-arm.
 Before the Claude cooperative budget can re-block a Stop, the guard checks for a live foreign session-lock owner and takes the same safe diagnostic exit described under "Guard predicates".

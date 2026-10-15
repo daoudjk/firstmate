@@ -74,6 +74,40 @@ The portable regression asserts both directions of that case: a host-shaped pid 
 
 Run on the host under Claude Code 2.1.252 with the same two markers set, the same probe reports `claude`, `comm claude`, and Claude's Stop-owned protocol, so the correction does not trade one misidentification for its inverse.
 
+### Native SessionStart wrapper depth, 2026-10-15
+
+With codex-cli 0.162.1, the native SessionStart hook placed the nearest proven Codex ancestor nine hops above the detector; the former eight-hop bound returned `unknown` while shallower tool calls returned `codex`.
+The ancestry bound is now sixteen; marker precedence and process identity rules remain owned by `bin/fm-harness.sh`.
+The portable regression uses nine real shell wrappers and a conflicting inherited marker, and the native lifecycle guard checks the actual startup verdict.
+
+```sh
+bin/fm-test-run.sh tests/fm-harness-precedence.test.sh
+FM_CODEX_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-codex-continuity-live-e2e.test.sh
+```
+
+Observed portable output includes:
+
+```text
+ok - startup-depth ancestry reaches the native harness beyond eight wrappers and outranks a retained marker
+```
+
+The native guard passed; [the supervision verification record](supervision.md#codex-native-stop-continuation-2026-10-15) owns its exact output and lifecycle guarantees.
+The token-free real-process guard was also run on the installed harnesses:
+
+```sh
+FM_HARNESS_LIVENESS_DRIFT=1 bin/fm-test-run.sh tests/fm-harness-liveness-drift-live-e2e.test.sh
+```
+
+| Installed harness | Observed result |
+| --- | --- |
+| Claude Code 2.1.301 | Alive; `comm claude`. |
+| codex-cli 0.162.1 | Alive; `comm codex` and `args codex`. |
+| OpenCode 1.17.17 | Alive; `comm opencode`. |
+| Grok 1.0.52 | Alive; `comm grok`. |
+
+The guard reported four checked harnesses and explicitly reported Pi, pi-signed, Kimi, Cursor, and Muse absent.
+These identity results do not claim native Stop delivery for another harness or runtime backend.
+
 ### Real harness process names behind the walk
 
 The detection half of the opt-in drift guard asks the ancestry walk what it makes of each INSTALLED harness's real running process:
