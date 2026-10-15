@@ -113,6 +113,7 @@ test_interruption_reaps_only_the_owned_watcher() {
     home=$(make_home "interrupt-$mode")
     (
       if [ "$mode" = perl ]; then
+        # shellcheck disable=SC2329 # Exported for the child shell's command lookup.
         command() {
           case "$*" in '-v timeout'|'-v gtimeout') return 1 ;; esac
           builtin command "$@"

@@ -62,6 +62,7 @@ ERR=$(mktemp "${TMPDIR:-/tmp}/fm-watch-checkpoint.err.XXXXXX") || {
   exit 1
 }
 CHECKPOINT_PID=
+# shellcheck disable=SC2329 # Registered by the EXIT trap below.
 cleanup_checkpoint() {
   local watcher_pid watcher_parent
   if [ -n "$CHECKPOINT_PID" ]; then
