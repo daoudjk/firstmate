@@ -291,6 +291,8 @@ if [ "$CODEX_MODE" -eq 1 ]; then
   esac
   [ "$checkpoint_seconds" -le 540 ] \
     || codex_failure 'FM_CODEX_WATCH_CHECKPOINT exceeds the Stop handler timeout margin (540s maximum)'
+  # shellcheck source=/dev/null
+  [ -f "$CONFIG/x-mode.env" ] && . "$CONFIG/x-mode.env"
   checkpoint_rc=0
   checkpoint_out=$("$SCRIPT_DIR/fm-watch-checkpoint.sh" --seconds "$checkpoint_seconds" 2>&1) || checkpoint_rc=$?
   case "$checkpoint_rc" in

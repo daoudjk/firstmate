@@ -1983,6 +1983,31 @@ heartbeat_scan_finds_actionable() {
   return "$found"
 }
 
+WATCHER_SLEEP_PID=
+WATCHER_SLEEP_CANCELLED=0
+watcher_sleep_stop() {
+  if [ -n "$WATCHER_SLEEP_PID" ]; then
+    if [ "$(ps -o ppid= -p "$WATCHER_SLEEP_PID" 2>/dev/null | tr -d ' ')" = "${BASHPID:-$$}" ]; then
+      kill -TERM "$WATCHER_SLEEP_PID" 2>/dev/null || true
+    fi
+    wait "$WATCHER_SLEEP_PID" 2>/dev/null || true
+    WATCHER_SLEEP_PID=
+  fi
+}
+
+watcher_sleep() {
+  local rc=0
+  WATCHER_SLEEP_CANCELLED=0
+  trap 'WATCHER_SLEEP_CANCELLED=1' HUP INT TERM
+  sleep "$1" &
+  WATCHER_SLEEP_PID=$!
+  trap 'exit 1' HUP INT TERM
+  [ "$WATCHER_SLEEP_CANCELLED" -eq 0 ] || exit 1
+  wait "$WATCHER_SLEEP_PID" || rc=$?
+  WATCHER_SLEEP_PID=
+  return "$rc"
+}
+
 # event_wait_or_sleep: the terminal wait of each supervision cycle. For a home
 # with push-capable windows (herdr), it replaces the blind `sleep POLL` with a
 # bounded wait on the backend's native transition stream, so a crew going
@@ -2017,7 +2042,7 @@ event_wait_or_sleep() {
   done < <(recorded_windows)
 
   if [ "${#windows[@]}" -eq 0 ]; then
-    sleep "$POLL"
+    watcher_sleep "$POLL"
     return
   fi
 
@@ -2033,7 +2058,7 @@ event_wait_or_sleep() {
     _event_cap_fails=0
   fi
   if [ "$_event_cap_ok" != 1 ]; then
-    sleep "$POLL"
+    watcher_sleep "$POLL"
     return
   fi
 
@@ -2050,7 +2075,7 @@ event_wait_or_sleep() {
       # pure polling for the rest of this watcher process.
       _event_cap_fails=$((_event_cap_fails + 1))
       [ "$_event_cap_fails" -ge "$EVENT_CAP_FAIL_MAX" ] && _event_cap_ok=0
-      sleep "$POLL"
+      watcher_sleep "$POLL"
       ;;
     *)
       # 1: a clean full-budget wait with no actionable edge - the reader already
@@ -2114,6 +2139,7 @@ watcher_cleanup() {
       transition=release-lock-existing
     fi
   fi
+  watcher_sleep_stop
   fm_active_check_stop || cleanup_status=1
   fm_check_output_cleanup
   fm_custom_check_snapshot_cleanup
@@ -2498,7 +2524,7 @@ EOF
   # signature for an already-pending file (last write wins below).
   pending=$(scan_signals)
   if [ -n "$pending" ]; then
-    sleep "$SIGNAL_GRACE"
+    watcher_sleep "$SIGNAL_GRACE"
     pending=$(printf '%s\n%s' "$pending" "$(scan_signals)")
     # The final coalesced signal set is the watcher-carried status-change
     # trigger for this home's published summary. Start it before either

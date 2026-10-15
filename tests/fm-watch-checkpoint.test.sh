@@ -184,6 +184,67 @@ PYTEST
   pass "explicit startup recovery-state failure keeps its dead lock and prior receipt"
 }
 
+test_long_poll_cancellation_is_bounded() {
+  python3 - "$ROOT" "$TMP_ROOT" <<'PYTEST' || fail "long-poll cancellation exceeded its bound"
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+root, fixtures = map(Path, sys.argv[1:])
+for mode in ('timeout', 'perl'):
+    for interrupted in (False, True):
+        home = fixtures / f'long-poll-{mode}-{interrupted}'
+        (home / 'state').mkdir(parents=True)
+        env = os.environ.copy()
+        env.update(FM_HOME=str(home), FM_POLL='300', FM_CHECK_INTERVAL='999999', FM_HEARTBEAT='999999')
+        if mode == 'perl':
+            env['BASH_FUNC_command%%'] = '() { case "$*" in "-v timeout"|"-v gtimeout") return 1;; esac; builtin command "$@"; }'
+        child = subprocess.Popen([str(root / 'bin/fm-watch-checkpoint.sh'), '--seconds', '30' if interrupted else '2'],
+                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        lock = home / 'state/.watch.lock/pid'
+        watcher = sleeper = None
+        try:
+            limit = time.monotonic() + 5
+            while time.monotonic() < limit:
+                if lock.exists():
+                    watcher = int(lock.read_text())
+                    rows = subprocess.check_output(['ps', '-axo', 'pid=,ppid=,comm='], text=True)
+                    for row in rows.splitlines():
+                        pid, parent, comm = row.strip().split(None, 2)
+                        if int(parent) == watcher and Path(comm).name == 'sleep':
+                            sleeper = int(pid)
+                            break
+                if sleeper:
+                    break
+                time.sleep(.02)
+            assert sleeper, 'watcher never entered its polling sleep'
+            started = time.monotonic()
+            if interrupted:
+                child.send_signal(signal.SIGTERM)
+            out, err = child.communicate(timeout=5)
+            assert child.returncode == (143 if interrupted else 124), (child.returncode, out, err)
+            assert time.monotonic() - started < 5
+            assert not lock.exists(), 'watcher retained its singleton'
+            for pid in (watcher, sleeper):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    continue
+                raise AssertionError(f'owned process {pid} survived cancellation')
+            print(f'{mode}: poll=300 interruption={interrupted} bounded and reaped', flush=True)
+        finally:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.communicate()
+PYTEST
+  pass "both checkpoint timers cancel and reap long polling sleeps"
+}
+
+test_long_poll_cancellation_is_bounded
 test_resolved_reply_history_does_not_starve_wakes
 test_startup_recovery_failure_retains_evidence
 test_interruption_reaps_only_the_owned_watcher
