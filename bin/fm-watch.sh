@@ -1819,6 +1819,7 @@ FM_ACTIVE_CHECK_PGID=
 FM_CHECK_OUTPUT=
 FM_CHECK_RESULT=
 FM_CHECK_SIGNAL_PENDING=
+FM_CAPTURE_STATUS=0
 
 fm_check_output_cleanup() {
   [ -z "$FM_CHECK_OUTPUT" ] || rm -f -- "$FM_CHECK_OUTPUT"
@@ -1850,7 +1851,7 @@ fm_active_check_stop() {
   FM_ACTIVE_CHECK_PGID=
 }
 
-run_check_capture() {
+run_owned_capture() {
   local pgid
   fm_check_output_cleanup
   FM_CHECK_RESULT=
@@ -1859,7 +1860,7 @@ run_check_capture() {
   FM_CHECK_SIGNAL_PENDING=
   trap 'FM_CHECK_SIGNAL_PENDING=1' HUP INT TERM
   set -m
-  ( FM_CHECK_OWNED_GROUP=1 run_check_process "$@" ) > "$FM_CHECK_OUTPUT" 2>/dev/null &
+  ( trap - EXIT; FM_CHECK_OWNED_GROUP=1 "$@" ) > "$FM_CHECK_OUTPUT" 2>/dev/null &
   FM_ACTIVE_CHECK_PID=$!
   FM_ACTIVE_CHECK_PGID=$FM_ACTIVE_CHECK_PID
   set +m
@@ -1871,11 +1872,16 @@ run_check_capture() {
     return 1
   fi
   [ -z "$FM_CHECK_SIGNAL_PENDING" ] || exit 1
-  wait "$FM_ACTIVE_CHECK_PID" 2>/dev/null || true
+  FM_CAPTURE_STATUS=0
+  wait "$FM_ACTIVE_CHECK_PID" 2>/dev/null || FM_CAPTURE_STATUS=$?
   FM_ACTIVE_CHECK_PID=
   fm_active_check_stop || return 1
   FM_CHECK_RESULT=$(cat "$FM_CHECK_OUTPUT" 2>/dev/null || true)
   fm_check_output_cleanup
+}
+
+run_check_capture() {
+  run_owned_capture run_check_process "$@"
 }
 
 # 0 when any signaled status file carries a captain-relevant event in the bytes
@@ -2062,8 +2068,13 @@ event_wait_or_sleep() {
     return
   fi
 
-  rec=$(FM_BACKEND_EVENTS_CAPABILITY_CONFIRMED=1 fm_backend_wait_transition "$first_backend" "$first_session" "$POLL" "$STATE" "${windows[@]}")
-  rc=$?
+  if FM_BACKEND_EVENTS_CAPABILITY_CONFIRMED=1 run_owned_capture fm_backend_wait_transition \
+    "$first_backend" "$first_session" "$POLL" "$STATE" "${windows[@]}"; then
+    rec=$FM_CHECK_RESULT
+    rc=$FM_CAPTURE_STATUS
+  else
+    return 2
+  fi
   case "$rc" in
     0)
       _event_cap_fails=0

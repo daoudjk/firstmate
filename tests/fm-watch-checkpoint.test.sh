@@ -244,6 +244,8 @@ PYTEST
   pass "both checkpoint timers cancel and reap long polling sleeps"
 }
 
+python3 "$ROOT/tests/fm-watch-checkpoint-eventwait.py" "$ROOT" "$TMP_ROOT" \
+  || fail "backend wait cancellation or reader cleanup failed"
 test_long_poll_cancellation_is_bounded
 test_resolved_reply_history_does_not_starve_wakes
 test_startup_recovery_failure_retains_evidence

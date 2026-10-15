@@ -3739,6 +3739,14 @@ fm_backend_herdr_clear_transition() {  # <state_dir> <window>
   rm -f "$marker" 2>/dev/null || true
 }
 
+fm_backend_herdr_reader_stop() {
+  local pid=$1
+  if [ "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')" = "${BASHPID:-$$}" ]; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  wait "$pid" 2>/dev/null || true
+}
+
 # fm_backend_herdr_wait_transition: the bounded event wait. Blocks up to
 # <timeout_secs> for one of <pane_window...> ("<session>:<pane_id>") to reach a
 # fresh `blocked` edge, then prints the normalized record and returns 0.
@@ -3787,15 +3795,14 @@ fm_backend_herdr_wait_transition() {  # <session> <timeout_secs> <state_dir> <pa
     rm -rf "$fifo_dir" 2>/dev/null || true
     return 2
   fi
+  local reader_signal_pending=0 reader_saved_traps
+  reader_saved_traps=$(trap -p HUP INT TERM)
+  trap 'reader_signal_pending=1' HUP INT TERM
   "${reader[@]}" "$sock" "$timeout" "${pane_ids[@]}" > "$fifo" 2>/dev/null &
   reader_pid=$!
-  if ! exec 9< "$fifo"; then
-    kill "$reader_pid" 2>/dev/null || true
-    wait "$reader_pid" 2>/dev/null || true
-    rm -rf "$fifo_dir" 2>/dev/null || true
-    return 2
-  fi
-  if ! IFS= read -r -u 9 line || [ "$line" != "@subscribed" ]; then
+  if [ "$reader_signal_pending" -ne 0 ] || ! exec 9< "$fifo"; then
+    rc=2
+  elif ! IFS= read -r -u 9 line || [ "$line" != "@subscribed" ]; then
     rc=2
   fi
 
@@ -3803,7 +3810,7 @@ fm_backend_herdr_wait_transition() {  # <session> <timeout_secs> <state_dir> <pa
   # during the gap since the last subscription is returned now, once, while
   # newer edges accumulate in the active stream. `working` panes clear their
   # marker here too.
-  if [ "$rc" -ne 2 ]; then
+  if [ "$rc" -ne 2 ] && [ "$reader_signal_pending" -eq 0 ]; then
     for w in "${windows[@]}"; do
       pane_id=${w#*:}
       if [ -z "$pane_id" ] || [ "$pane_id" = "$w" ]; then
@@ -3827,7 +3834,7 @@ fm_backend_herdr_wait_transition() {  # <session> <timeout_secs> <state_dir> <pa
   # with `cut`, NOT `IFS=$'\t' read`: a tab is IFS-whitespace, so `read` would
   # collapse an empty middle field (e.g. an absent workspace_id) and shift the
   # status into the wrong column. `cut` preserves empty fields.
-  while [ "$rc" -eq 1 ] && IFS= read -r line <&9; do
+  while [ "$rc" -eq 1 ] && [ "$reader_signal_pending" -eq 0 ] && IFS= read -r line <&9; do
     [ -n "$line" ] || continue
     pane_id=$(printf '%s' "$line" | cut -f1)
     ws=$(printf '%s' "$line" | cut -f2)
@@ -3841,19 +3848,22 @@ fm_backend_herdr_wait_transition() {  # <session> <timeout_secs> <state_dir> <pa
       break
     fi
   done
-  if [ "$rc" -eq 0 ]; then
-    kill "$reader_pid" 2>/dev/null || true
-  fi
-  if [ "$rc" -eq 2 ]; then
-    kill "$reader_pid" 2>/dev/null || true
+  [ "$reader_signal_pending" -eq 0 ] || rc=2
+  if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then
+    fm_backend_herdr_reader_stop "$reader_pid"
+    reader_pid=
   fi
   # No actionable edge: distinguish a clean full-budget wait (reader exit 0 ->
   # return 1, caller already waited) from a reader error (connect/subscribe
   # failure, exit non-zero -> return 2, caller sleeps and counts toward the
   # runtime-disable threshold).
-  wait "$reader_pid" 2>/dev/null || reader_rc=$?
+  if [ -n "$reader_pid" ]; then
+    wait "$reader_pid" 2>/dev/null || reader_rc=$?
+  fi
   exec 9<&-
   rm -rf "$fifo_dir" 2>/dev/null || true
+  trap - HUP INT TERM
+  eval "$reader_saved_traps"
   [ "$rc" -eq 0 ] && return 0
   [ "$rc" -eq 2 ] && return 2
   [ "$reader_rc" -eq 0 ] && return 1
