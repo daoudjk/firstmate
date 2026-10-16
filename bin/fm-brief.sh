@@ -14,9 +14,15 @@
 # charters still use a single `{TASK}` charter fill. Firstmate may adjust other
 # sections when the task genuinely deviates (e.g. working an existing external
 # PR instead of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
-#        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab] [--delivery-repo OWNER/REPO]
+#        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab] [--delivery-repo OWNER/REPO]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
+#   --delivery-repo OWNER/REPO explicitly restricts worker outward delivery to
+#   that GitHub repository, including both push destination and PR base.
+#   Firstmate supplies the allowed target from its local project instructions;
+#   REPO is only a caller nickname and never selects this restriction.
+#   Omit this flag for unrestricted contribution workflows. It does not grant
+#   remote delivery to scouts or local-only ships, and is invalid for charters.
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
 #   It offers the Lavish review loop only when `fm-bootstrap.sh lavish-compatible`
@@ -130,6 +136,7 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
+DELIVERY_REPO=
 POS=()
 want_value=
 for a in "$@"; do
@@ -139,6 +146,13 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      delivery-repo)
+        [[ "$a" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$ ]] || {
+          echo "error: --delivery-repo requires one GitHub OWNER/REPO target" >&2
+          exit 1
+        }
+        DELIVERY_REPO=$a
+        ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -151,6 +165,14 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
+    --delivery-repo)
+      [ -z "$DELIVERY_REPO" ] || {
+        echo "error: --delivery-repo requires one GitHub OWNER/REPO target" >&2
+        exit 1
+      }
+      want_value=delivery-repo
+      ;;
+    --delivery-repo=*) echo "error: use --delivery-repo OWNER/REPO as two arguments" >&2; exit 1 ;;
     # yolo never reaches the worker: it is firstmate's merge authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -187,6 +209,11 @@ fi
 
 if [ "$NO_PROJECTS" -eq 1 ] && [ "$KIND" != secondmate ]; then
   echo "error: --no-projects applies only to --secondmate charters" >&2
+  exit 1
+fi
+
+if [ "$KIND" = secondmate ] && [ -n "$DELIVERY_REPO" ]; then
+  echo "error: --delivery-repo applies only to crewmate ship or scout briefs" >&2
   exit 1
 fi
 
@@ -321,6 +348,27 @@ fi
 
 REPO=${POS[1]}
 
+DELIVERY_SECTION=
+if [ -n "$DELIVERY_REPO" ]; then
+  IFS= read -r -d '' DELIVERY_SECTION <<EOF || true
+# Allowed delivery repository
+Local project instructions restrict outward delivery to https://github.com/$DELIVERY_REPO.
+Before any push or PR creation, verify actual remote URLs, the push destination, and the intended PR base repository against this allowed target, including the no-mistakes delivery configuration when applicable.
+Never push or open a PR against any other repository, including an upstream repository; disabling upstream pushes alone does not prevent upstream PR creation.
+If the delivery target cannot be verified or conflicts with this restriction, stop and report to firstmate before any outward action.
+This restriction does not authorize remote delivery for scout or local-only work; their no-push/no-PR rules still apply.
+EOF
+  DELIVERY_SECTION=${DELIVERY_SECTION%$'\n'}
+fi
+
+# One deliberate reinforcement of AGENTS.md section 11 at the worker risk point.
+IFS= read -r -d '' TASK_DESCRIPTION_REMINDER <<'EOF' || true
+# Technical description and policy refusals
+Describe the actual component function, interfaces, contract, authorization scope and limits faithfully.
+On a provider refusal, stop and report its exact text to firstmate once.
+EOF
+TASK_DESCRIPTION_REMINDER=${TASK_DESCRIPTION_REMINDER%$'\n'}
+
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
 # shellcheck disable=SC2016  # single quotes are deliberate: these lines are literal brief text whose backtick-wrapped $(...) and "$HERDR_LAB_SESSION" snippets must reach the reading agent verbatim, not expand at scaffold time; only the '"$VAR"' break-outs interpolate.
@@ -373,6 +421,10 @@ cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 $TASK_SECTION
+
+$TASK_DESCRIPTION_REMINDER
+
+$DELIVERY_SECTION
 
 $HERDR_SECTION
 
@@ -458,6 +510,10 @@ cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 $TASK_SECTION
+
+$TASK_DESCRIPTION_REMINDER
+
+$DELIVERY_SECTION
 
 $HERDR_SECTION
 

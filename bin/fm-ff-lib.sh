@@ -25,8 +25,9 @@
 # (data/, state/, config/, projects/, .no-mistakes/), so it cannot disturb a
 # secondmate's backlog, projects, or in-flight work.
 # The seeded .fm-secondmate-home identity marker is gitignored too; the local
-# sync tolerates only that marker during the one-time upgrade of pre-ignore
-# linked-worktree homes.
+# sync tolerates that marker during the one-time upgrade of pre-ignore homes.
+# A pre-ignore .fm-secondmate-parent also requires a validated local binding to
+# this active parent and proof that the target ignores, rather than tracks, it.
 # A clean secondmate divergence is reconciled only when a three-way tree proof
 # shows that its complete local result is already present in the target, as
 # happens after an upstream squash merge. Every other divergence stays put and
@@ -40,6 +41,8 @@
 SUB_HOME_MARKER="${SUB_HOME_MARKER:-.fm-secondmate-home}"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-secondmate-registry-lib.sh"
+# shellcheck source=bin/fm-secondmate-parent-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-secondmate-parent-lib.sh"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -251,10 +254,42 @@ remote_sync_failure_reason() { # <exit-status> <output>
   first_line "$2"
 }
 
+# A pre-ignore parent binding may survive an upgrade only for its validated
+# local owner and when Git proves the target ignores, rather than tracks, it.
+# Evaluate the target's root ignore file in an empty scratch repo so local or
+# global excludes cannot manufacture that proof. Never write the binding.
+secondmate_parent_ignore_upgrade() { # <dir> <target> <secondmate-id>
+  local dir=$1 target=$2 id=$3 parent active tracked mode scratch result=1
+  [ -n "$target" ] && [ -n "$id" ] || return 1
+  validate_secondmate_home "$id" "$dir" || return 1
+  fm_secondmate_parent_record_parse "$dir/.fm-secondmate-parent" || return 1
+  [ "$FM_SECONDMATE_PARENT_ROUTE" = local ] || return 1
+  parent=$(resolved_existing_dir "$FM_SECONDMATE_PARENT_HOME") || return 1
+  active=$(resolved_existing_dir "$FM_HOME") || return 1
+  [ "$parent" = "$active" ] || return 1
+  tracked=$(git -C "$dir" ls-tree --name-only "$target" -- .fm-secondmate-parent 2>/dev/null) || return 1
+  [ -z "$tracked" ] || return 1
+  mode=$(git -C "$dir" ls-tree "$target" -- .gitignore 2>/dev/null) || return 1
+  case "$mode" in 100644\ *|100755\ *) ;; *) return 1 ;; esac
+  scratch=$(mktemp -d "${TMPDIR:-/tmp}/fm-ff-parent-ignore.XXXXXX" 2>/dev/null) || return 1
+  if git -C "$dir" show "$target:.gitignore" > "$scratch/.gitignore" 2>/dev/null \
+    && git -c init.defaultBranch=main init --quiet --template= "$scratch" 2>/dev/null \
+    && git -c core.excludesFile=/dev/null -C "$scratch" check-ignore --no-index --quiet -- .fm-secondmate-parent; then
+    result=0
+  fi
+  rm -rf -- "$scratch"
+  return "$result"
+}
+
 dirty_status() {
-  local dir=$1 ignore_seed_marker=${2:-no}
+  local dir=$1 ignore_seed_marker=${2:-no} target=${3:-} id=${4:-} parent_marker=''
   if [ "$ignore_seed_marker" = yes ]; then
-    git -C "$dir" status --porcelain 2>/dev/null | awk -v marker="?? $SUB_HOME_MARKER" '$0 != marker { print; exit }'
+    if secondmate_parent_ignore_upgrade "$dir" "$target" "$id"; then
+      parent_marker='?? .fm-secondmate-parent'
+    fi
+    git -C "$dir" status --porcelain 2>/dev/null | awk \
+      -v marker="?? $SUB_HOME_MARKER" -v parent="$parent_marker" \
+      '$0 != marker && (parent == "" || $0 != parent) { print; exit }'
   else
     git -C "$dir" status --porcelain 2>/dev/null | head -1
   fi
@@ -416,7 +451,7 @@ ff_target() {
     return 0
   fi
 
-  if [ -n "$(dirty_status "$dir" "$ignore_seed_marker")" ]; then
+  if [ -n "$(dirty_status "$dir" "$ignore_seed_marker" "$base" "$secondmate_id")" ]; then
     echo "$label: skipped: dirty working tree"
     return 0
   fi

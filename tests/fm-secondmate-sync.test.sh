@@ -1342,6 +1342,69 @@ test_remote_launch_does_not_retarget_host_copy() {
   pass "R9 a remote launch leaves the home on the parent's commit while an ordinary spawn follows its own checkout"
 }
 
+# Pre-ignore compatibility is limited to the validated local parent binding.
+test_parent_binding_preignore_upgrade() {
+  local w c0 base kind file before bytes identity after_identity out
+  for kind in valid malformed nul symlink mismatch remote tracked unignored negated unrelated; do
+    w=$(new_world "parent-upgrade-$kind")
+    c0=$(head_of "$w/main")
+    seed_marked_home "$w" sm "$c0"
+    file="$w/sm/.fm-secondmate-parent"
+    printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$w/home" > "$file"
+    chmod 640 "$file"
+    case "$kind" in
+      malformed) printf 'schema=wrong\nroute=local\nparent_home=%s\n' "$w/home" > "$file" ;;
+      nul) printf '\0' >> "$file" ;;
+      symlink) mv "$file" "$w/binding-source"; ln -s "$w/binding-source" "$file" ;;
+      mismatch) printf 'schema=fm-secondmate-parent.v1\nroute=local\nparent_home=%s\n' "$w/main" > "$file" ;;
+      remote) printf 'schema=fm-secondmate-parent.v1\nroute=remote\nparent_host=example\n' > "$file" ;;
+      unrelated) printf 'keep this work\n' > "$w/sm/unrelated-work" ;;
+    esac
+    before=$(head_of "$w/sm")
+    if [ "$kind" = valid ]; then
+      git -C "$w/main" worktree add -q -b fm/child "$w/child" "$c0"
+      printf 'unlanded child work\n' >> "$w/child/AGENTS.md"
+      printf 'worktree=%s\nfixture=private-child-record\n' "$w/child" > "$w/sm/state/child.meta"
+      cp "$w/sm/state/child.meta" "$w/child-meta.before"
+    fi
+    bytes=$(cksum < "$file")
+    identity=$(stat -c '%a:%d:%i' "$file" 2>/dev/null || /usr/bin/stat -f '%Lp:%d:%i' "$file")
+    printf '\n.fm-secondmate-home\n' >> "$w/main/.gitignore"
+    if [ "$kind" != unignored ]; then
+      printf '.fm-secondmate-parent\n' >> "$w/main/.gitignore"
+    fi
+    [ "$kind" != negated ] || printf '!.fm-secondmate-parent\n' >> "$w/main/.gitignore"
+    git -C "$w/main" add .gitignore
+    if [ "$kind" = tracked ]; then
+      printf 'do not overwrite private binding\n' > "$w/main/.fm-secondmate-parent"
+      git -C "$w/main" add -f .fm-secondmate-parent
+    fi
+    git -C "$w/main" commit -qm 'target parent ignore rule'
+    base=$(head_of "$w/main")
+    out="$w/ff.out"
+    FM_HOME="$w/home" FM_ROOT="$w/main" \
+      ff_target "$w/sm" 'secondmate sm' "$base" yes yes sm "$w/home/state" > "$out" 2>&1
+    if [ "$kind" = valid ]; then
+      [ "$FF_STATUS" = updated ] || fail "valid parent binding could not converge: $(cat "$out")"
+      [ "$(head_of "$w/sm")" = "$base" ] || fail 'valid parent home did not reach target'
+      [ -z "$(git -C "$w/sm" status --porcelain)" ] || fail 'valid binding still dirties upgraded home'
+      cmp -s "$w/sm/state/child.meta" "$w/child-meta.before" || fail 'child metadata changed during home upgrade'
+      [ "$(head_of "$w/child")" = "$c0" ] || fail 'child worktree HEAD moved during home upgrade'
+      grep -q 'unlanded child work' "$w/child/AGENTS.md" || fail 'unlanded child work lost during home upgrade'
+    else
+      [ "$FF_STATUS" = skipped ] || fail "$kind parent binding must refuse: $(cat "$out")"
+      [ "$(head_of "$w/sm")" = "$before" ] || fail "$kind refusal moved home HEAD"
+      assert_contains "$(cat "$out")" 'dirty working tree' "$kind refusal lost dirty guard"
+    fi
+    [ "$(cksum < "$file")" = "$bytes" ] || fail "$kind parent bytes changed"
+    after_identity=$(stat -c '%a:%d:%i' "$file" 2>/dev/null || /usr/bin/stat -f '%Lp:%d:%i' "$file")
+    [ "$after_identity" = "$identity" ] || fail "$kind parent mode/device/inode changed"
+    [ "$kind" != unrelated ] || grep -q 'keep this work' "$w/sm/unrelated-work" || fail 'unrelated work lost'
+  done
+  pass 'pre-ignore parent binding advances only its validated local home and preserves private identity; unsafe/dirty targets stay put'
+}
+
+test_parent_binding_preignore_upgrade
 test_ff_updated
 test_ff_current
 test_ff_dirty

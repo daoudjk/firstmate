@@ -922,6 +922,63 @@ test_spawn_symlinked_project_prefix_avoids_false_refusal() {
   pass "fm-spawn.sh: a project reached through a symlinked prefix (e.g. macOS /tmp -> /private/tmp) does not trip the isolation guard's false refusal"
 }
 
+# Exercise the public launch boundary with real Git worktrees and a backend
+# that reports acquisition's intermediate cwd before its final destination.
+# Only the fixture clock is accelerated; production keeps its existing bound.
+test_spawn_waits_for_isolated_root() {
+  local mode dir proj wt interim final id fb data state config log out rc polls
+  for mode in nonrepo nested missing primary symlink-primary invalid-primary invalid-nested invalid-nonrepo; do
+    dir="$TMP_ROOT/discovery-$mode"
+    proj="$dir/proj"; wt="$dir/wt"; id="discovery$mode"
+    fm_git_worktree "$proj" "$wt" "fm/$id"
+    mkdir -p "$wt/nested" "$dir/nonrepo"
+    ln -s "$proj" "$dir/primary-link"
+    case "$mode" in
+      nonrepo|invalid-nonrepo) interim="$dir/nonrepo" ;;
+      nested|invalid-nested) interim="$wt/nested" ;;
+      missing) interim="$dir/missing" ;;
+      primary|invalid-primary) interim="$proj" ;;
+      symlink-primary) interim="$dir/primary-link" ;;
+    esac
+    final="$wt"
+    case "$mode" in invalid-*) final="$interim" ;; esac
+    fb=$(make_spawn_symlink_fakebin "$dir" "$interim" "$final")
+    cat > "$fb/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+    chmod +x "$fb/sleep"
+    data="$dir/data"; state="$dir/state"; config="$dir/config"; log="$dir/launch.log"
+    mkdir -p "$data/$id" "$state" "$config"
+    write_spawn_brief "$data/$id/brief.md" "$id"
+    out=$(run_spawn_case "$ROOT" "$fb" "$log" "$state" "$data" "$config" "$proj" -- "$id" "$proj" claude --mode no-mistakes --yolo off 2>&1)
+    rc=$?
+    polls=$(wc -c < "$dir/poll-count" | tr -d '[:space:]')
+    case "$mode" in
+      invalid-*)
+        expect_code 1 "$rc" "permanent $mode must refuse launch"$'\n'"$out"
+        [ "$polls" = 60 ] || fail "$mode did not exhaust the existing 60-poll bound ($polls)"
+        [ ! -e "$state/$id.meta" ] || fail "$mode published task metadata despite refusing isolation"
+        [ ! -e "$wt/.claude/settings.local.json" ] || fail "$mode installed a hook despite refusing isolation"
+        assert_not_contains "$(cat "$log")" '/launch.s' "$mode submitted the staged agent launch despite refusing isolation"
+        ;;
+      *)
+        expect_code 0 "$rc" "transient $mode must reach the isolated root"$'\n'"$out"
+        [ "$polls" = 3 ] || fail "$mode did not confirm the isolated cwd after the intermediate read ($polls)"
+        assert_contains "$out" "worktree=$wt" "$mode launched outside the final worktree"
+        assert_contains "$(cat "$state/$id.meta")" "worktree=$wt" "$mode persisted the wrong destination"
+        [ -s "$wt/.claude/settings.local.json" ] || fail "$mode did not install the final worktree hook"
+        assert_contains "$(cat "$log")" '/launch.s' "$mode never submitted the staged agent launch"
+        ;;
+    esac
+    [ ! -e "$proj/.claude/settings.local.json" ] || fail "$mode wrote a hook into the primary checkout"
+    [ ! -e "$wt/nested/.claude/settings.local.json" ] || fail "$mode wrote a hook into a nested directory"
+    [ ! -e "$dir/nonrepo/.claude/settings.local.json" ] || fail "$mode wrote a hook into a nonrepository directory"
+    rm -rf "/tmp/fm-$id"
+  done
+  pass "fm-spawn.sh: transient cwd waits for an isolated root; permanent invalid paths refuse within the original bound"
+}
+
 # --- old vs new: fm-teardown.sh ----------------------------------------------
 
 make_teardown_fakebin() {  # <dir> -> echoes fakebin dir; logs tmux+treehouse calls
@@ -1133,6 +1190,91 @@ test_spawn_autodetect_nesting_resolves_tmux_silently() {
   pass "fm-spawn.sh: auto-detect resolves nested tmux-in-herdr to tmux and stays silent end to end"
 }
 
+# Execute the real generated launch command against a recording CLI only.
+# No real agent, forge operation, or backend lifecycle command runs.
+test_generated_delivery_target_reaches_launch_prompt() {
+  local kind dir proj wt id fb data state config log out rc prompt
+  local -a brief_args spawn_args
+  for kind in ship scout local-only unrestricted; do
+    dir="$TMP_ROOT/delivery-launch-$kind"
+    proj="$dir/renamed-repository"; wt="$dir/wt"; id="delivery-$kind"
+    fm_git_worktree "$proj" "$wt" "fm/$id"
+    fb=$(make_spawn_symlink_fakebin "$dir" "$proj" "$wt")
+    # Preserve the backend's cwd simulation; intercept only the launch send.
+    mv "$fb/tmux" "$fb/tmux-record"
+    cat > "$fb/tmux" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = send-keys ]; then
+  for arg in "$@"; do
+    case "$arg" in
+      ". '"*"/launch."*".sh'")
+        bash -c "$arg" || exit
+        ;;
+    esac
+  done
+fi
+exec "$(dirname "$0")/tmux-record" "$@"
+SH
+    cat > "$fb/claude" <<'SH'
+#!/usr/bin/env bash
+printf '%s' "${@: -1}" | "${FM_ROOT_OVERRIDE:?}/bin/fm-operational-input.sh" body > "${FM_TEST_PROMPT:?}"
+SH
+    chmod +x "$fb/tmux" "$fb/claude"
+    data="$dir/data"; state="$dir/state"; config="$dir/config"; log="$dir/launch.log"
+    mkdir -p "$data" "$state" "$config"
+    if [ "$kind" = local-only ]; then
+      printf '%s\n' '- renamed-repository [local-only] - fixture' > "$data/projects.md"
+    fi
+    brief_args=(); spawn_args=()
+    [ "$kind" = unrestricted ] || brief_args+=(--delivery-repo daoudjk/firstmate)
+    if [ "$kind" = scout ]; then
+      brief_args+=(--scout); spawn_args+=(--scout)
+    elif [ "$kind" = local-only ]; then
+      brief_args+=(--mode local-only); spawn_args+=(--mode local-only --yolo off)
+    else
+      brief_args+=(--mode no-mistakes); spawn_args+=(--mode no-mistakes --yolo off)
+    fi
+    FM_DATA_OVERRIDE="$data" FM_STATE_OVERRIDE="$state" FM_HOME="$dir" \
+      "$ROOT/bin/fm-brief.sh" "$id" renamed-repository "${brief_args[@]}" >/dev/null 2>&1
+    expect_code 0 $? "$kind: scaffold failed"
+    sed -e 's/{TASK}/Exercise authorized recording-CLI delivery./' \
+      -e 's/{FIRSTMATE_SPEC}/Use only the isolated recording fixture./' \
+      "$data/$id/brief.md" > "$dir/filled-brief"
+    mv "$dir/filled-brief" "$data/$id/brief.md"
+    prompt="$dir/prompt.txt"
+    out=$(FM_TEST_PROMPT="$prompt" run_spawn_case "$ROOT" "$fb" "$log" "$state" "$data" "$config" "$proj" \
+      -- "$id" "$proj" claude "${spawn_args[@]}" 2>&1); rc=$?
+    expect_code 0 "$rc" "$kind: fixture launch failed"$'\n'"$out"
+    assert_present "$prompt" "$kind: recording CLI did not receive a prompt"
+    [ "$(cat "$prompt")" = "$(cat "$data/$id/launch-brief.md")" ] \
+      || fail "$kind: transport changed the generated launch contract"
+    assert_contains "$(cat "$prompt")" "$(cat "$data/$id/brief.md")" \
+      "$kind: launch lost the original generated brief"
+    if [ "$kind" = unrestricted ]; then
+      assert_no_grep '# Allowed delivery repository' "$prompt" 'unrestricted launch gained target restriction'
+    else
+      assert_grep 'https://github.com/daoudjk/firstmate' "$prompt" "$kind: allowed target lost at launch"
+      assert_grep 'including an upstream repository' "$prompt" "$kind: upstream PR prohibition lost at launch"
+    fi
+    case "$kind" in
+      scout|local-only) assert_grep 'Never push to any remote and never open a PR.' "$prompt" \
+        "$kind: launch granted remote authority" ;;
+    esac
+    # Recovery consumes the retained brief, without reauthoring or re-supplying policy.
+    : > "$dir/poll-count"
+    rm "$prompt"
+    out=$(FM_TEST_PROMPT="$prompt" run_spawn_case "$ROOT" "$fb" "$log" "$state" "$data" "$config" "$proj" \
+      -- "$id" "$proj" claude "${spawn_args[@]}" 2>&1); rc=$?
+    expect_code 0 "$rc" "$kind: retained-brief recovery launch failed"$'\n'"$out"
+    assert_present "$prompt" "$kind: recovery CLI did not receive prompt"
+    [ "$(cat "$prompt")" = "$(cat "$data/$id/launch-brief.md")" ] \
+      || fail "$kind: recovery transport changed the launch contract"
+    assert_contains "$(cat "$prompt")" "$(cat "$data/$id/brief.md")" \
+      "$kind: recovery lost the retained generated brief"
+  done
+  pass 'fm-spawn.sh: generated ship/scout/local-only/restricted and unrestricted launch prompts preserve delivery rules'
+}
+
 test_backend_name_precedence
 test_backend_detect_precedence
 test_backend_detect_cmux_fallback_bundle_id
@@ -1153,6 +1295,7 @@ test_backend_of_selector_matches_explicit_target_meta
 test_send_tmux_contract
 test_peek_conformance_old_vs_new
 test_spawn_symlinked_project_prefix_avoids_false_refusal
+test_spawn_waits_for_isolated_root
 test_teardown_conformance_old_vs_new
 test_spawn_refuses_unknown_backend_flag
 test_spawn_refuses_codex_app_backend_flag
@@ -1160,3 +1303,5 @@ test_spawn_refuses_unknown_fm_backend_env
 test_spawn_default_backend_writes_no_meta_field
 test_spawn_explicit_backend_flag_beats_autodetect_herdr_env
 test_spawn_autodetect_nesting_resolves_tmux_silently
+
+test_generated_delivery_target_reaches_launch_prompt

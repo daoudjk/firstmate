@@ -973,6 +973,97 @@ test_worker_role_scope() {
   pass "fm-brief: scaffolds leave the worker role scope to the launch boundary and keep the secondmate contract"
 }
 
+test_technical_description_reminder_reaches_only_workers() {
+  local home id brief variant status mode
+  home="$TMP_ROOT/technical-description-home"
+  write_registry "$home"
+  for variant in no-registry-proj direct-proj local-proj scout; do
+    id="technical-$variant"
+    if [ "$variant" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1; status=$?
+    else
+      case "$variant" in direct-proj) mode=direct-PR ;; local-proj) mode=local-only ;; *) mode=no-mistakes ;; esac
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$variant" --mode "$mode" >/dev/null 2>&1; status=$?
+    fi
+    expect_code 0 "$status" "$variant: scaffold should succeed"
+    brief="$home/data/$id/brief.md"
+    assert_grep 'Describe the actual component function, interfaces, contract, authorization scope and limits faithfully.' "$brief" \
+      "$variant: missing faithful technical description and visible scope reminder"
+    assert_grep 'On a provider refusal, stop and report its exact text to firstmate once.' "$brief" \
+      "$variant: missing stop and exact refusal reporting reminder"
+    assert_grep '{TASK}' "$brief" "$variant: task placeholder changed"
+  done
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='authorized domain scope' \
+    "$ROOT/bin/fm-brief.sh" technical-mate --secondmate --no-projects >/dev/null 2>&1; status=$?
+  expect_code 0 "$status" "secondmate: scaffold should succeed"
+  brief="$home/data/technical-mate/brief.md"
+  assert_grep 'authorized domain scope' "$brief" "secondmate: charter text changed"
+  assert_no_grep '# Technical description and policy refusals' "$brief" "worker reminder leaked into charter"
+  pass "fm-brief.sh: technical description and refusal reminders reach ship modes and scouts only"
+}
+
+test_explicit_delivery_target() {
+  local home kind id brief rc target
+  local -a args
+  home="$TMP_ROOT/delivery-target-home"
+  write_registry "$home"
+  target=daoudjk/firstmate
+  for kind in no-registry-proj direct-proj local-proj scout; do
+    id="restricted-$kind"
+    args=()
+    case "$kind" in
+      scout) args+=(--scout) ;;
+      direct-proj) args+=(--mode direct-PR) ;;
+      local-proj) args+=(--mode local-only) ;;
+      *) args+=(--mode no-mistakes) ;;
+    esac
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$kind" \
+      --delivery-repo "$target" "${args[@]}" >/dev/null 2>&1; rc=$?
+    expect_code 0 "$rc" "$kind: explicit allowed delivery should succeed"
+    brief="$home/data/$id/brief.md"
+    assert_grep "Local project instructions restrict outward delivery to https://github.com/$target." "$brief" \
+      "$kind: renamed repo lost explicit target"
+    assert_grep 'the intended PR base repository' "$brief" "$kind: PR base verification missing"
+    assert_grep 'including the no-mistakes delivery configuration' "$brief" "$kind: pipeline target check missing"
+    assert_grep 'Never push or open a PR against any other repository, including an upstream repository' "$brief" \
+      "$kind: upstream PR restriction missing"
+    assert_grep 'their no-push/no-PR rules still apply' "$brief" "$kind: target granted extra authority"
+    case "$kind" in
+      local-proj|scout) assert_grep 'Never push to any remote and never open a PR.' "$brief" \
+        "$kind: no remote delivery rule lost" ;;
+    esac
+  done
+  for kind in unrelated firstmate; do
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "unrestricted-$kind" "$kind" --mode no-mistakes >/dev/null 2>&1
+    brief="$home/data/unrestricted-$kind/brief.md"
+    assert_no_grep '# Allowed delivery repository' "$brief" "$kind: nickname inferred restriction"
+    assert_no_grep "$target" "$brief" "$kind: private target leaked to default"
+  done
+  # Configuration errors fail before publishing a usable brief.
+  for target in '' 'owner' 'owner/repo/extra' 'owner/repo name' 'https://github.com/owner/repo'; do
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" invalid-target renamed --mode no-mistakes \
+      --delivery-repo "$target" >/dev/null 2>&1; rc=$?
+    expect_code 1 "$rc" "invalid delivery target accepted: $target"
+    assert_absent "$home/data/invalid-target/brief.md" 'invalid target published a brief'
+  done
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" missing-target renamed --mode no-mistakes --delivery-repo >/dev/null 2>&1; rc=$?
+  expect_code 1 "$rc" 'missing delivery target accepted'
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" equals-target renamed --mode no-mistakes \
+    --delivery-repo=owner/repo >/dev/null 2>&1; rc=$?
+  expect_code 1 "$rc" 'unsupported equals-form target was silently discarded'
+  assert_absent "$home/data/equals-target/brief.md" 'unsupported target form published a brief'
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" duplicate-target renamed --mode no-mistakes \
+    --delivery-repo owner/repo --delivery-repo other/repo >/dev/null 2>&1; rc=$?
+  expect_code 1 "$rc" 'ambiguous duplicate target accepted'
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" charter-target --secondmate --no-projects \
+    --delivery-repo owner/repo >/dev/null 2>&1; rc=$?
+  expect_code 1 "$rc" 'delivery target accepted for charter'
+  assert_absent "$home/data/charter-target/brief.md" 'invalid charter published a brief'
+  pass 'fm-brief.sh: explicit target restricts ship/scout delivery independently of nickname and preserves defaults'
+}
+
+test_technical_description_reminder_reaches_only_workers
+test_explicit_delivery_target
 test_worker_role_scope
 test_script_parses
 test_no_heredoc_in_command_substitution

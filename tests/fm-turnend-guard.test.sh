@@ -19,6 +19,11 @@ set -u
 TMP_ROOT=$(fm_test_tmproot fm-turnend-guard)
 fm_git_identity fmtest fmtest@example.invalid
 
+# Scope Node 22 type stripping to these test invocations, preserving caller flags.
+node() {
+  NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--experimental-strip-types" NODE_NO_WARNINGS=1 command node "$@"
+}
+
 REQUIRED_REASON='watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn'
 AWAY_REQUIRED_REASON='Away mode owns watcher supervision'
 

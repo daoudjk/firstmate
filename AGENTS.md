@@ -550,10 +550,17 @@ Preserve durable structured identifiers, dependencies, and completion artifact l
 ## 11. Crewmate briefs
 
 `bin/fm-brief.sh` and its help own scaffold syntax, generated variants, status protocol, delivery-mode definitions of done, and exact safety mechanics.
+When local project instructions restrict the allowed delivery repository, supply that target through the scaffold's `--delivery-repo` input for ship and scout briefs, including replacement briefs used in recovery.
 Use its scaffold as the contract, then fill `## Captain's intent` (`{TASK}`) with the captain's own ask and any boundary the captain stated, plus the context needed to read it, including the substance of any report, decision, or PR the ask refers to; never widen the ask there into a general goal or an enumerated coverage list, because the reviewer treats that subsection as acceptance criteria.
 Fill `## Firstmate spec` (`{FIRSTMATE_SPEC}`) with only the build instructions that ask requires, naming what stays out of scope when the ask is narrow; a generalization, consistency sweep, or extra hardening the captain did not ask for is follow-up work to note, not scope to add.
 `bin/fm-dod-lib.sh` owns intent authoring without added speaker labels or direct address, its provenance markers, what a no-mistakes worker may pass as `--intent`, and the string's self-sufficiency rule.
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
+
+Describe authorized work in faithful, neutral technical terms: the component's actual function, interfaces and contract, with visible authorization, scope and containment boundaries.
+Avoid attacker-persona or sensational phrasing when it misdescribes ordinary platform engineering, but preserve actual security capabilities, sensitive behavior, code identifiers and historical evidence.
+Apply this rule to newly authored specifications and context relays, never by rewriting captain words or changing their provenance.
+Never conceal a capability or substitute synonyms to bypass a model's refusal.
+On a genuine provider policy refusal, workers stop and report the exact refusal to firstmate without rephrasing loops; firstmate uses an appropriate permitted harness or the existing exemption/escalation path within the authorized scope and applicable provider rules.
 
 Every ship brief must retain the worktree-isolation assertion and stop if launched in the primary checkout.
 If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
