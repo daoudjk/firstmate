@@ -109,6 +109,13 @@
 #                                   the watcher is mid-cycle (default 15)
 #          FM_BUSY_REGEX            optional rendered busy-signature override
 #                                   for delivery guards and Grok's fallback
+#          Busy injection decisions additionally log reason=native_busy or
+#          rendered_busy, target/backend/harness, the SAME native verdict used
+#          by the guard, and regex-override presence (never regex contents).
+#          Only the first eight changed decision tuples per daemon are logged;
+#          repeated identical tuples are suppressed. The existing log timestamp
+#          and housekeeping cadence apply; no extra backend read is performed.
+#          These diagnostics do not prove hook completion or native turn progress.
 #          FM_COMPOSER_IDLE_RE      optional shared classifier override; see
 #                                   docs/configuration.md for its safety gates
 #          FM_MAX_DEFER_SECS        max seconds a buffered escalation may sit
@@ -230,6 +237,8 @@ CRASH_BACKOFF_DEFAULT=60
 CRASH_NORMAL_SLEEP_DEFAULT=5
 LOG_MAX_BYTES_DEFAULT=1048576
 LOG_KEEP_LINES_DEFAULT=2000
+INJECT_BUSY_TRACE_COUNT=0
+INJECT_BUSY_TRACE_LAST=
 
 # --- presence-gating --------------------------------------------------------
 # bin/fm-operational-input.sh owns the U+2063 FIRSTMATE_OP bytes and typed
@@ -642,16 +651,39 @@ fm_daemon_primary_harness() {
   printf '%s' "$FM_DAEMON_PRIMARY_HARNESS"
 }
 
+# Record only the decision's existing reads, with a lifetime logging budget.
+# No raw rendered text, message body, regex value, or environment is retained.
+fm_daemon_trace_busy() {  # <target> <backend> <harness> <native> <reason>
+  local tuple override=absent
+  [ -n "${LOG:-}" ] || return 0
+  [ "$INJECT_BUSY_TRACE_COUNT" -lt 8 ] || return 0
+  [ -z "${FM_BUSY_REGEX:-}" ] || override=present
+  printf -v tuple 'target=%q backend=%q harness=%q native=%q reason=%q regex_override=%s' \
+    "$1" "$2" "$3" "$4" "$5" "$override"
+  [ "$tuple" != "$INJECT_BUSY_TRACE_LAST" ] || return 0
+  INJECT_BUSY_TRACE_LAST=$tuple
+  INJECT_BUSY_TRACE_COUNT=$((INJECT_BUSY_TRACE_COUNT + 1))
+  log "inject busy decision: $tuple sample=$INJECT_BUSY_TRACE_COUNT/8" || true
+  return 0
+}
+
 pane_is_busy() {  # <target> [backend]
-  local target=$1 backend=${2:-tmux} native tail40 harness
+  local target=$1 backend=${2:-tmux} native tail40 harness match_rc=0
   harness=$(fm_daemon_primary_harness)
   native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null)
   case "$native" in
-    busy) return 0 ;;
+    busy)
+      fm_daemon_trace_busy "$target" "$backend" "$harness" "$native" native_busy
+      return 0
+      ;;
   esac
   tail40=$(fm_backend_capture "$backend" "$target" 40 2>/dev/null) || return 1
   printf '%s' "$tail40" | grep -v '^[[:space:]]*$' | tail -12 \
-    | fm_busy_lines_match "$harness"
+    | fm_busy_lines_match "$harness" || match_rc=$?
+  if [ "$match_rc" -eq 0 ]; then
+    fm_daemon_trace_busy "$target" "$backend" "$harness" "$native" rendered_busy
+  fi
+  return "$match_rc"
 }
 
 # pane_input_pending dispatches through fm_backend_composer_state and treats

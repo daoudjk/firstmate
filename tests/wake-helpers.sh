@@ -168,6 +168,13 @@ make_supercase() {
 #!/usr/bin/env bash
 set -u
 case "${1:-}" in
+  list-panes)
+    [ "${FM_FAKE_TMUX_PANE_ALIVE:-1}" = 1 ] || { printf "can't find session: fixture\n" >&2; exit 1; }
+    case "$*" in
+      *'#{pane_id}'*) printf '%%1\n' ;;
+      *) printf '%s|0|@1|%s.0|0.0|@1.0\n' "${FM_FAKE_TMUX_WINDOW_NAME:-win}" "${FM_FAKE_TMUX_WINDOW_NAME:-win}" ;;
+    esac
+    exit 0 ;;
   display-message)
     [ "${FM_FAKE_TMUX_PANE_ALIVE:-1}" = "1" ] || exit 1
     _print=0
@@ -260,6 +267,13 @@ write_composer() {
   printf '╭%s╮\n│ > %s │\n╰%s╯\n' "$border" "$text" "$border" > "$COMPOSER"
 }
 case "${1:-}" in
+  list-panes)
+    [ "${FM_FAKE_TMUX_PANE_ALIVE:-1}" = 1 ] || { printf "can't find session: fixture\n" >&2; exit 1; }
+    case "$*" in
+      *'#{pane_id}'*) printf '%%1\n' ;;
+      *) printf '%s|0|@1|%s.0|0.0|@1.0\n' "${FM_FAKE_TMUX_WINDOW_NAME:-win}" "${FM_FAKE_TMUX_WINDOW_NAME:-win}" ;;
+    esac
+    exit 0 ;;
   display-message)
     print=0
     for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done

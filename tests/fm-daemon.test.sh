@@ -2622,7 +2622,9 @@ test_pane_is_busy_herdr_native_busy_state() {
   local dir
   dir=$(make_supercase primary-herdr-busy)
   (
+    # shellcheck disable=SC2329 # Callback exercised through pane_is_busy, including negative assertions.
     fm_backend_busy_state() { [ "$1" = herdr ] && [ "$2" = "default:w1:p2" ] || fail "unexpected busy_state args: $1 $2"; printf 'busy'; }
+    # shellcheck disable=SC2329 # Callback exercised through pane_is_busy, including negative assertions.
     fm_backend_capture() { fail "capture should not be consulted when busy_state is conclusive"; }
     FM_STATE_OVERRIDE="$dir/state" FM_DAEMON_PRIMARY_HARNESS=claude pane_is_busy "default:w1:p2" herdr \
       || fail "pane_is_busy should report busy from herdr's native busy_state"
@@ -2630,9 +2632,83 @@ test_pane_is_busy_herdr_native_busy_state() {
   pass "pane_is_busy: herdr native busy_state='busy' short-circuits without a capture fallback"
 }
 
+test_busy_trace_uses_existing_native_read_and_redacts_regex() {
+  local dir
+  dir=$(make_supercase busy-trace-native)
+  (
+    LOG="$dir/diagnostic.log"
+    INJECT_BUSY_TRACE_COUNT=0 INJECT_BUSY_TRACE_LAST=
+    FM_BUSY_REGEX='private-regex-value-must-not-be-logged'
+    FM_DAEMON_PRIMARY_HARNESS=codex
+    fm_backend_busy_state() { printf 'read\n' >> "$dir/native-reads"; printf busy; }
+    fm_backend_capture() { fail "native busy tracing must not introduce a rendered read"; }
+    pane_is_busy 'default:w1:p2' herdr || fail "native busy decision changed"
+    pane_is_busy 'default:w1:p2' herdr || fail "repeated native busy decision changed"
+    [ "$(wc -l < "$dir/native-reads" | tr -d ' ')" = 2 ] || fail "trace added a native read"
+    [ "$(wc -l < "$LOG" | tr -d ' ')" = 1 ] || fail "identical busy tuples were not suppressed"
+    assert_contains "$(cat "$LOG")" 'target=default:w1:p2 backend=herdr harness=codex native=busy reason=native_busy regex_override=present sample=1/8' "native decision provenance missing"
+    assert_not_contains "$(cat "$LOG")" "$FM_BUSY_REGEX" "trace leaked regex contents"
+  ) || fail "native busy trace subshell failed"
+  pass "busy diagnostics use the existing native read, suppress duplicates, and redact regex values"
+}
+
+test_busy_trace_preserves_rendered_and_error_decisions() {
+  local dir
+  dir=$(make_supercase busy-trace-rendered)
+  (
+    LOG="$dir/diagnostic.log"
+    INJECT_BUSY_TRACE_COUNT=0 INJECT_BUSY_TRACE_LAST=
+    FM_DAEMON_PRIMARY_HARNESS=codex
+    unset FM_BUSY_REGEX
+    fm_backend_busy_state() { printf 'read\n' >> "$dir/native-reads"; printf idle; }
+    fm_backend_capture() { printf 'read\n' >> "$dir/capture-reads"; printf 'fixture rendered input\n'; }
+    fm_busy_lines_match() { cat >/dev/null; return 0; }
+    pane_is_busy 'default:w1:p2' herdr || fail "rendered busy decision changed"
+    assert_contains "$(cat "$LOG")" 'native=idle reason=rendered_busy regex_override=absent' "rendered decision provenance missing"
+    [ "$(wc -l < "$dir/native-reads" | tr -d ' ')" = 1 ] || fail "rendered trace added a native read"
+    [ "$(wc -l < "$dir/capture-reads" | tr -d ' ')" = 1 ] || fail "rendered trace added a capture"
+    fm_busy_lines_match() { cat >/dev/null; return 2; }
+    local status=0
+    pane_is_busy 'default:w1:p2' herdr || status=$?
+    [ "$status" -eq 2 ] || fail "rendered matcher error status changed: $status"
+    [ "$(wc -l < "$LOG" | tr -d ' ')" = 1 ] || fail "non-busy error emitted a busy diagnostic"
+    # shellcheck disable=SC2329 # Callback exercised through pane_is_busy, including negative assertions.
+    fm_backend_capture() { return 1; }
+    status=0
+    pane_is_busy 'default:w1:p2' herdr || status=$?
+    [ "$status" -eq 1 ] || fail "capture failure status changed: $status"
+  ) || fail "rendered busy trace subshell failed"
+  pass "busy diagnostics preserve rendered matches, read counts, matcher errors and capture failures"
+}
+
+test_busy_trace_budget_and_logging_failure_preserve_guard() {
+  local dir
+  dir=$(make_supercase busy-trace-budget)
+  (
+    LOG="$dir/diagnostic.log"
+    INJECT_BUSY_TRACE_COUNT=0 INJECT_BUSY_TRACE_LAST=
+    fm_backend_busy_state() { printf busy; }
+    fm_backend_capture() { fail "trace budget must not change native short-circuiting"; }
+    local n
+    for n in {1..12}; do
+      pane_is_busy "default:w1:p$n" herdr || fail "trace budget changed busy decision $n"
+    done
+    [ "$(wc -l < "$LOG" | tr -d ' ')" = 8 ] || fail "busy diagnostic budget was not bounded"
+    assert_contains "$(cat "$LOG")" 'sample=8/8' "last diagnostic did not identify its budget position"
+    INJECT_BUSY_TRACE_COUNT=0 INJECT_BUSY_TRACE_LAST=
+    LOG="$dir/absent/diagnostic.log"
+    pane_is_busy 'default:w1:p2' herdr 2>/dev/null || fail "log write failure changed busy decision"
+    LOG=
+    pane_is_busy 'default:w1:p2' herdr || fail "missing log changed busy decision"
+  ) || fail "busy trace budget subshell failed"
+  pass "busy diagnostics stop at eight changed tuples and logging failures never change the guard"
+}
+
 test_primary_busy_guard_is_harness_scoped() {
   (
+    # shellcheck disable=SC2329 # Callback exercised through pane_is_busy, including negative assertions.
     fm_backend_busy_state() { printf 'unknown'; }
+    # shellcheck disable=SC2329 # Callback exercised through pane_is_busy, including negative assertions.
     fm_backend_capture() { printf 'esc interrupt\n'; }
     if FM_DAEMON_PRIMARY_HARNESS=claude pane_is_busy "default:w1:p2" herdr; then
       fail "OpenCode's rendered signature must not classify a Claude primary busy"
@@ -2898,6 +2974,9 @@ test_fm_send_exits_nonzero_on_unproven_submit
 test_discover_supervisor_backend_precedence
 test_discover_supervisor_target_herdr
 test_pane_is_busy_herdr_native_busy_state
+test_busy_trace_uses_existing_native_read_and_redacts_regex
+test_busy_trace_preserves_rendered_and_error_decisions
+test_busy_trace_budget_and_logging_failure_preserve_guard
 test_primary_busy_guard_is_harness_scoped
 test_pane_is_busy_defaults_to_tmux_when_backend_omitted
 test_pane_input_pending_herdr_dispatch
