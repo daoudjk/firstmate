@@ -394,8 +394,9 @@ live_secondmate_meta_records() {
 #                  already exist in the target's object store, which it always does
 #                  for a worktree of this same repo; a standalone clone that lacks
 #                  it is skipped rather than fetched.
-# Guards are identical in both modes: never force/merge/stash; skip a dirty or
-# wrong-branch target and leave its work untouched. An optional secondmate id
+# Guards are identical in both modes: never force/merge/stash; skip wrong-branch
+# targets and apply this file's header for the dirty-tree guard's marker-upgrade
+# exceptions, leaving work untouched. An optional secondmate id
 # enables the content-equivalent divergence proof and durable marker described
 # in this file's header.
 FF_STATUS=""
