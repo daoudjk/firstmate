@@ -12,7 +12,14 @@
 # ... - needs attention" warning rather than a quiet drift. Nothing is ever forced,
 # stashed, or discarded.
 # Still skips (benignly) local-only/no-origin projects, missing remotes/branches,
-# and fetch failures.
+# and fetch failures. A project whose registry entry bin/fm-project-mode.sh
+# refuses is skipped too, naming that command so its refusal is readable, rather
+# than synced under a guessed posture.
+# A candidate under projects/ must be the root of its own work tree: git discovery
+# walks up, so a plain nested directory would otherwise resolve to the enclosing
+# repository (the firstmate checkout) and be synced under that directory's label.
+# Anything else is reported as "skipped: not a clone root" naming the repository
+# that would have been touched.
 # Pruning never deletes the checked-out branch or a branch that still has a
 # worktree, so it cannot discard unlanded work; set FM_FLEET_PRUNE=0 to disable it.
 # When the fetch fails on an orphaned .git/packed-refs.lock (left by a ref rewrite
@@ -35,6 +42,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
+# Inert unless FM_TIMING_LOG names a file; only the deferred network stage sets it.
+# shellcheck source=bin/fm-timing-lib.sh
+. "$SCRIPT_DIR/fm-timing-lib.sh"
 FM_LOCK_LOG_PREFIX=fleet-sync
 "$FM_ROOT/bin/fm-guard.sh" || true
 
@@ -307,11 +317,31 @@ sync_project() {
     echo "$label: skipped: not a directory"
     return 0
   fi
-  if ! git -C "$PROJ" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # Git repository discovery walks UP from $PROJ, so a plain directory merely
+  # nested inside a repository - a worktree container left under projects/, say -
+  # resolves to the ENCLOSING repository, which in a firstmate home is the
+  # firstmate checkout itself. Every later `git -C "$PROJ"` would then read, prune
+  # and fast-forward that repository under this project's label, turning a routine
+  # refresh into an unrequested self-update reported as a project sync. Require
+  # $PROJ to be the root of its own work tree before any other git command runs.
+  proj_top=$(git -C "$PROJ" rev-parse --show-toplevel 2>/dev/null) || proj_top=""
+  if [ -z "$proj_top" ]; then
     echo "$label: skipped: not a git repo"
     return 0
   fi
-  mode_line=$("$FM_ROOT/bin/fm-project-mode.sh" "$label" 2>/dev/null || echo "no-mistakes off")
+  # Compare filesystem identity, not spelling: the question is whether git's root
+  # and $PROJ are the same directory, and a string compare of the two paths also
+  # fails when they merely differ in case (case-insensitive volume) or in how a
+  # symlink is spelled.
+  proj_abs=$(cd "$PROJ" && pwd -P) || proj_abs=""
+  if [ -z "$proj_abs" ] || ! [ "$proj_top" -ef "$proj_abs" ]; then
+    echo "$label: skipped: not a clone root (git would act on $proj_top)"
+    return 0
+  fi
+  if ! mode_line=$("$FM_ROOT/bin/fm-project-mode.sh" "$label" 2>/dev/null); then
+    echo "$label: skipped: registry entry does not resolve to a delivery posture (run bin/fm-project-mode.sh $label for the refusal)"
+    return 0
+  fi
   mode=${mode_line%% *}
   if [ "$mode" = "local-only" ]; then
     echo "$label: skipped: local-only project"
@@ -436,5 +466,10 @@ fi
 for proj in "$PROJECTS"/*; do
   [ -e "$proj" ] || continue
   [ -d "$proj" ] || continue
+  # Per-clone elapsed, so a fleet refresh that runs long names WHICH clone cost
+  # the time instead of only its total. Recording is a no-op unless the deferred
+  # network stage asked for it.
+  __fm_timing_stamp=$(fm_timing_now_ms)
   sync_project "$proj"
+  fm_timing_record clone sync "$__fm_timing_stamp" "$(basename "$proj")"
 done

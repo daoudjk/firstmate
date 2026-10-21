@@ -1,13 +1,28 @@
 #!/usr/bin/env bash
 # Tests for bin/fm-review-diff.sh: when a task has an open PR recorded in meta,
-# the review diff must compare the authoritative base against the PR head, not a
-# stale local branch left behind after no-mistakes fix rounds push to the PR.
+# the review diff must compare the authoritative base against a freshly fetched
+# PR head, not a stale local branch or a stale recorded pr_head= left behind
+# after no-mistakes fix rounds push to the PR.
 #
 # Matrix:
-#   (a) pr= + reachable pr_head= -> diff uses PR head, not the lagging local branch
+#   (a) pr= + reachable pr_head=, no remote pull ref -> offline fallback to recorded SHA
 #   (b) pr= without pr_head= -> fetch refs/pull/<n>/head and diff that
 #   (c) pr= absent -> unchanged worktree-branch diff
 #   (d) pr= present but PR head unreachable -> fallback to local branch + warning
+#   (e) pr= + STALE recorded pr_head= + newer remote pull head -> must use fetched head
+#       (this is the class that bit reviewers holding merges over "missing" fixes)
+#   (f) meta records branch=<custom-prefix> -> the recorded ship branch is
+#       reviewed even when the worktree HEAD has moved off it
+#   (g) meta records a corrupt branch= -> refused, never silently reviewed as
+#       the moved worktree HEAD
+#   (h) meta records base_branch= -> the diff is against origin/<base_branch>,
+#       so the base branch's own commits never appear as task changes
+#   (i) pr= forgejo /pulls/<n> URL with a reachable refs/pull/<n>/head -> the
+#       same live fetched-head review as GitHub
+#   (j) pr= forgejo URL whose repo is literally named pulls -> the LAST
+#       /pulls/ segment names the number, never an earlier one
+#   (k) pr= forgejo URL with no remote pull ref -> offline fallback to a
+#       recorded pr_head=
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -76,6 +91,7 @@ test_pr_meta_uses_pr_head_not_stale_local() {
   local case_dir out
   case_dir=$(make_case pr-head-sha)
   stale_and_pr_commits "$case_dir"
+  # No remote pull ref: fetch fails, recorded pr_head is the offline fallback.
   write_task_meta "$case_dir" \
     "pr=https://github.com/example/repo/pull/9" \
     "pr_head=$PR_SHA"
@@ -85,8 +101,32 @@ test_pr_meta_uses_pr_head_not_stale_local() {
   assert_contains "$out" '+pr-fixed' "pr-head-sha: diff should show the PR head content"
   assert_not_contains "$out" 'stale-local' "pr-head-sha: diff must not use the stale local branch"
   assert_not_contains "$(cat "$case_dir/stderr")" 'warning: PR head unavailable' \
-    "pr-head-sha: should not warn when pr_head is reachable"
-  pass "fm-review-diff uses recorded pr_head instead of the lagging local branch"
+    "pr-head-sha: should not warn when recorded pr_head is reachable offline"
+  pass "fm-review-diff falls back to recorded pr_head when pull head cannot be fetched"
+}
+
+test_stale_recorded_pr_head_loses_to_fetched_pull_head() {
+  local case_dir out stale_sha
+  case_dir=$(make_case stale-recorded)
+  stale_and_pr_commits "$case_dir"
+  stale_sha=$(git -C "$case_dir/wt" rev-parse fm/task-x1)
+  # Remote PR head is newer (pipeline fix); meta still points at the older local tip.
+  git -C "$case_dir/wt" push -q origin "pr-head-tmp:refs/pull/9/head"
+  write_task_meta "$case_dir" \
+    "pr=https://github.com/example/repo/pull/9" \
+    "pr_head=$stale_sha"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" '+pr-fixed' \
+    "stale-recorded: diff must show the fetched PR head, not the recorded stale SHA"
+  assert_not_contains "$out" 'stale-local' \
+    "stale-recorded: diff must not use the stale local/recorded content"
+  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: PR head unavailable' \
+    "stale-recorded: fetch of refs/pull/<n>/head should succeed"
+  # Pre-fix behavior preferred reachable recorded pr_head= and would show stale-local.
+  [ "$stale_sha" != "$PR_SHA" ] || fail "stale-recorded: fixture did not diverge recorded vs PR head"
+  pass "fm-review-diff prefers freshly fetched PR head over a stale recorded pr_head="
 }
 
 test_pr_meta_fetches_pull_head_without_recorded_sha() {
@@ -141,7 +181,127 @@ test_unreachable_pr_head_falls_back_with_warning() {
   pass "fm-review-diff falls back to local branch with a warning when PR head is unreachable"
 }
 
+test_recorded_branch_beats_moved_worktree_head() {
+  local case_dir out
+  case_dir=$(make_case recorded-branch)
+  # The task ships on its recorded custom-prefix branch; the worktree's HEAD
+  # has since moved to an unrelated branch and the legacy fm/<id> branch is
+  # gone, so only meta can anchor the diff to the shipped work.
+  git -C "$case_dir/wt" checkout -q -b fix/task-x1
+  printf 'recorded-ship\n' > "$case_dir/wt/feature.txt"
+  git -C "$case_dir/wt" add feature.txt
+  git -C "$case_dir/wt" commit -qm "recorded ship work"
+  git -C "$case_dir/wt" checkout -q -b roam main
+  git -C "$case_dir/wt" branch -q -D fm/task-x1
+  write_task_meta "$case_dir" "branch=fix/task-x1"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" '+recorded-ship' \
+    "recorded-branch: diff must use the meta-recorded ship branch, not the moved worktree HEAD"
+  pass "fm-review-diff reviews the meta-recorded ship branch even when the worktree HEAD moved off it"
+}
+
+test_corrupt_recorded_branch_is_refused() {
+  local case_dir out status
+  case_dir=$(make_case corrupt-branch)
+  stale_and_pr_commits "$case_dir"
+  # A space can never be part of a branch name, so this record can only be a
+  # hand-edited or corrupt one: refusing is the only outcome that cannot diff
+  # the wrong content by falling back to the moved worktree HEAD.
+  write_task_meta "$case_dir" "branch=fix task-x1"
+
+  set +e
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+  status=$?
+  set -e
+
+  [ "$status" -ne 0 ] || fail "corrupt-branch: a corrupt recorded ship branch was accepted and reviewed the worktree HEAD"
+  assert_contains "$(cat "$case_dir/stderr")" "invalid recorded ship branch 'fix task-x1'" \
+    "corrupt-branch: the refusal did not name the branch it refused"
+  assert_not_contains "$out" '+stale-local' \
+    "corrupt-branch: the corrupt branch silently fell back to the worktree HEAD diff"
+  pass "fm-review-diff refuses a corrupt recorded ship branch instead of reviewing the wrong content"
+}
+
+test_recorded_base_branch_is_the_review_base() {
+  local case_dir out
+  case_dir=$(make_case base-branch)
+  git -C "$case_dir/project" checkout -q -b feature/hub main
+  printf 'hub only\n' > "$case_dir/project/hub.txt"
+  git -C "$case_dir/project" add hub.txt
+  git -C "$case_dir/project" commit -qm "hub branch commit"
+  git -C "$case_dir/project" push -q origin feature/hub
+  git -C "$case_dir/wt" reset -q --hard origin/feature/hub 2>/dev/null \
+    || { git -C "$case_dir/wt" fetch -q origin feature/hub && git -C "$case_dir/wt" reset -q --hard FETCH_HEAD; }
+  printf 'task change\n' > "$case_dir/wt/feature.txt"
+  git -C "$case_dir/wt" commit -qam "task change on hub"
+  write_task_meta "$case_dir" "base_branch=feature/hub"
+
+  out=$(run_review_diff "$case_dir" task-x1)
+  assert_contains "$out" '+task change' "base-branch: the task's own change is missing from the review diff"
+  assert_not_contains "$out" 'hub.txt' "base-branch: the base branch's own commit was reviewed as a task change"
+  pass "fm-review-diff compares a task against its recorded base branch"
+}
+
+test_forgejo_pr_url_fetches_pull_head() {
+  local case_dir out
+  case_dir=$(make_case forgejo-pull-head)
+  stale_and_pr_commits "$case_dir"
+  git -C "$case_dir/wt" push -q origin "pr-head-tmp:refs/pull/12/head"
+  write_task_meta "$case_dir" \
+    "pr=https://codeberg.org/example/repo/pulls/12"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" '+pr-fixed' "forgejo-pull-head: diff should show the fetched Forgejo PR head content"
+  assert_not_contains "$out" 'stale-local' "forgejo-pull-head: diff must not use the stale local branch"
+  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: PR head unavailable' \
+    "forgejo-pull-head: should not warn when the Forgejo pull head is fetchable"
+  pass "fm-review-diff fetches refs/pull/<n>/head for a Forgejo /pulls/<n> pr= URL"
+}
+
+test_forgejo_repo_named_pulls_resolves_by_last_segment() {
+  local case_dir out
+  case_dir=$(make_case forgejo-repo-named-pulls)
+  stale_and_pr_commits "$case_dir"
+  git -C "$case_dir/wt" push -q origin "pr-head-tmp:refs/pull/7/head"
+  write_task_meta "$case_dir" \
+    "pr=https://codeberg.org/example/pulls/pulls/7"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" '+pr-fixed' "forgejo-repo-named-pulls: the greedy /pulls/ split must resolve number 7"
+  assert_not_contains "$out" 'stale-local' "forgejo-repo-named-pulls: diff must not use the stale local branch"
+  pass "fm-review-diff resolves a Forgejo repo literally named pulls by the last /pulls/ segment"
+}
+
+test_forgejo_pr_url_falls_back_to_recorded_head() {
+  local case_dir out
+  case_dir=$(make_case forgejo-recorded-head)
+  stale_and_pr_commits "$case_dir"
+  # No remote pull ref: a recorded pr_head is the offline fallback.
+  write_task_meta "$case_dir" \
+    "pr=https://codeberg.org/example/repo/pulls/9" \
+    "pr_head=$PR_SHA"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" '+pr-fixed' "forgejo-recorded-head: recorded pr_head must be the offline fallback"
+  assert_not_contains "$out" 'stale-local' "forgejo-recorded-head: diff must not use the stale local branch"
+  assert_not_contains "$(cat "$case_dir/stderr")" 'warning: PR head unavailable' \
+    "forgejo-recorded-head: should not warn when recorded pr_head is reachable offline"
+  pass "fm-review-diff falls back to a recorded Forgejo pr_head when the pull ref cannot be fetched"
+}
+
 test_pr_meta_uses_pr_head_not_stale_local
 test_pr_meta_fetches_pull_head_without_recorded_sha
+test_stale_recorded_pr_head_loses_to_fetched_pull_head
 test_no_pr_meta_uses_local_branch
 test_unreachable_pr_head_falls_back_with_warning
+test_recorded_branch_beats_moved_worktree_head
+test_corrupt_recorded_branch_is_refused
+test_recorded_base_branch_is_the_review_base
+test_forgejo_pr_url_fetches_pull_head
+test_forgejo_repo_named_pulls_resolves_by_last_segment
+test_forgejo_pr_url_falls_back_to_recorded_head

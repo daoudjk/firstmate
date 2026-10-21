@@ -5,11 +5,22 @@
 #        fm-x-reply.sh <request_id> [--image <path>] --text-file <path>
 #        fm-x-reply.sh <request_id> [--image <path>] -
 #        fm-x-reply.sh <request_id> --followup [--image <path>] ...
+#        fm-x-reply.sh <request_id> ... --receipt-file <path>
+#
+# --receipt-file <path> writes {request_id, endpoint, chunks, dry_run} to <path>
+# after the reply lands, so a caller that must record HOW MANY messages were
+# posted (bin/fm-public-followup.sh, building a typed delivery receipt) does not
+# have to re-derive the split. Omitted by default and never written on failure,
+# so stdout, exit codes, and every existing caller stay unchanged.
 #
 # The --text-file / stdin forms exist so a caller never has to inline reply text
 # (which may be influenced by a public mention) into a shell command, where shell
 # expansion or quote-breakage could bite. fmx-respond uses them; the positional
-# <text> form is kept for back-compat and tests.
+# <text> form is kept for back-compat and tests. Argument parsing is strict so a
+# mistyped flag can never become the posted text: an unknown dash-leading
+# argument, a dash-leading request_id, an option value that starts with '-', or a
+# surplus positional is a usage error before anything is recorded or posted, and
+# reply text that starts with '-' is only accepted via --text-file or stdin.
 #
 # Optional --image <path> attaches one local image file to the answer or followup
 # POST body as {media_type,data_base64}. Supported extension mapping includes
@@ -102,21 +113,39 @@ reply_make_tmp_file() {
   printf -v "$var_name" '%s' "$file"
 }
 
+# write_reply_receipt <chunks> <dry-run-0|1>: record what this reply actually
+# sent, for a caller that has to build a typed delivery receipt. Only ever called
+# on success. A write failure is reported but never changes the exit status: the
+# reply already landed, and claiming otherwise would invite a duplicate post.
+write_reply_receipt() {
+  [ -n "$RECEIPT_FILE" ] || return 0
+  if ! (umask 077; jq -n --arg r "$REQ" --arg e "$ENDPOINT" --argjson c "$1" --argjson d "$2" \
+      '{request_id:$r, endpoint:$e, chunks:$c, dry_run:($d == 1)}' > "$RECEIPT_FILE"); then
+    echo "fm-x-reply: warning: posted but could not write the receipt to $RECEIPT_FILE" >&2
+  fi
+}
+
 usage() {
-  echo "usage: fm-x-reply.sh <request_id> [--followup] [--image <path>] <text> | [--followup] [--image <path>] --text-file <path> | [--followup] [--image <path>] -" >&2
+  echo "usage: fm-x-reply.sh <request_id> [--followup] [--image <path>] [--receipt-file <path>] <text> | ... --text-file <path> | ... -" >&2
 }
 
 help() {
   cat <<'EOF'
-usage: fm-x-reply.sh <request_id> [--followup] [--image <path>] <text>
-       fm-x-reply.sh <request_id> [--followup] [--image <path>] --text-file <path>
-       fm-x-reply.sh <request_id> [--followup] [--image <path>] -
+usage: fm-x-reply.sh <request_id> [--followup] [--image <path>] [--receipt-file <path>] <text>
+       fm-x-reply.sh <request_id> [--followup] [--image <path>] [--receipt-file <path>] --text-file <path>
+       fm-x-reply.sh <request_id> [--followup] [--image <path>] [--receipt-file <path>] -
 
 Post a public-safe X-mode answer to the relay, or a completion follow-up with --followup.
+Unknown options and extra text arguments are refused before posting.
+Text beginning with '-' must be supplied through --text-file or stdin.
+Use fm-x-followup.sh <task-id> --final for a final linked-task outcome;
+--final is not an fm-x-reply.sh option.
 
 Options:
   --followup       POST to /connector/followup instead of /connector/answer.
   --image <path>   Attach one local image file; threaded replies attach it to the opener tweet or message.
+  --receipt-file <path>
+                   After a successful reply, write {request_id, endpoint, chunks, dry_run} to <path>.
   --text-file <path>
                    Read reply text from a file instead of the command line.
   -                Read reply text from stdin.
@@ -129,10 +158,10 @@ case "${1:-}" in
 esac
 
 REQ=${1:-}
-if [ -z "$REQ" ]; then
-  usage
-  exit 2
-fi
+case "$REQ" in
+  '') usage; exit 2 ;;
+  -*) echo "fm-x-reply: unknown option '$REQ'" >&2; usage; exit 2 ;;
+esac
 shift
 
 # --followup selects the relay's /connector/followup endpoint instead of
@@ -141,19 +170,34 @@ shift
 # the answer path always has.
 FOLLOWUP=0
 IMAGE_PATH=
+RECEIPT_FILE=
 ARGS=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --followup) FOLLOWUP=1 ;;
     --image)
       shift
-      if [ "$#" -lt 1 ] || [ -z "$1" ]; then
-        echo "fm-x-reply: missing --image path" >&2
-        usage
-        exit 2
-      fi
+      case "${1:-}" in
+        ''|-*) echo "fm-x-reply: missing --image path" >&2; usage; exit 2 ;;
+      esac
       IMAGE_PATH=$1
       ;;
+    --receipt-file)
+      shift
+      case "${1:-}" in
+        ''|-*) echo "fm-x-reply: missing --receipt-file path" >&2; usage; exit 2 ;;
+      esac
+      RECEIPT_FILE=$1
+      ;;
+    --text-file)
+      shift
+      case "${1:-}" in
+        ''|-*) echo "fm-x-reply: missing --text-file path" >&2; usage; exit 2 ;;
+      esac
+      ARGS+=(--text-file "$1")
+      ;;
+    -) ARGS+=("$1") ;;
+    -*) echo "fm-x-reply: unknown option '$1' (reply text starting with '-' needs --text-file or stdin)" >&2; usage; exit 2 ;;
     *) ARGS+=("$1") ;;
   esac
   shift
@@ -166,16 +210,26 @@ set -- "${ARGS[@]}"
 
 case "$1" in
   --text-file)
-    if [ "$#" -lt 2 ]; then
+    if [ "$#" -ne 2 ]; then
       echo "usage: fm-x-reply.sh <request_id> [--followup] [--image <path>] --text-file <path>" >&2
       exit 2
     fi
     TEXT=$(cat -- "$2") || { echo "fm-x-reply: cannot read text file: $2" >&2; exit 1; }
     ;;
   -)
+    if [ "$#" -ne 1 ]; then
+      echo "fm-x-reply: unexpected extra arguments after '-'" >&2
+      usage
+      exit 2
+    fi
     TEXT=$(cat)
     ;;
   *)
+    if [ "$#" -ne 1 ]; then
+      echo "fm-x-reply: unexpected extra arguments" >&2
+      usage
+      exit 2
+    fi
     TEXT=$1
     ;;
 esac
@@ -306,6 +360,7 @@ if [ -n "$FMX_DRY" ]; then
       "$N" "$FMX_RELAY" "$ENDPOINT" "$REQ" >&2
     printf '%s' "$CHUNKS" | jq -r '.[]' | while IFS= read -r __chunk; do printf '  %s\n' "$__chunk" >&2; done
   fi
+  write_reply_receipt "$N" 1
   printf '%s\n' "$REQ"
   exit 0
 fi
@@ -331,6 +386,7 @@ case "$code" in
       fmx_context_registry_set "$STATE" "$REQ" "$REQ_PLATFORM" "$REQ_EXPLICIT_MAX" 1 2>/dev/null \
         || echo "fm-x-reply: warning: could not retain reply context for $REQ" >&2
     fi
+    write_reply_receipt "$N" 0
     printf '%s\n' "$REQ"
     ;;
   409)

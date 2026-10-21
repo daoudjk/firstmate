@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.js";
 
 const COORDINATOR_KEY = "__firstmateOpenCodeWatchArm";
 
@@ -21,6 +22,9 @@ function runProcess(command, args, input = "") {
     });
     child.on("error", () => resolve({ code: 0, stdout: "", stderr: "" }));
     child.on("close", (code) => resolve({ code: code ?? 0, stdout, stderr }));
+    // A child that exits before reading stdin makes this write fail with
+    // EPIPE; an unhandled stdin error would crash the host process.
+    child.stdin.on("error", () => {});
     child.stdin.end(input);
   });
 }
@@ -74,18 +78,17 @@ export const FmPrimaryTurnendGuard = async ({ client, directory, worktree }) => 
       if (result.code !== 2) return;
 
       try {
+        const text = await encodeFirstmateOperationalInput(
+          root,
+          "turn-end-guard",
+          "TURN WOULD END BLIND - supervision is off. " +
+            "The watcher cycle is missing, failed, or unhealthy. Follow the harness recovery instruction below before ending the turn.\n\n" +
+            result.stderr,
+        );
         await client.session.promptAsync({
           path: { id: sessionID },
           body: {
-            parts: [
-              {
-                type: "text",
-                text:
-                  "TURN WOULD END BLIND - supervision is off. " +
-                  "Resume supervision according to the session-start operating block before ending the turn.\n\n" +
-                  result.stderr,
-              },
-            ],
+            parts: [{ type: "text", text }],
           },
         });
         skipNextIdle = true;

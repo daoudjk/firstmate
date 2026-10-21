@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# tests/fm-secondmate-liveness.test.sh - the session-start secondmate LIVENESS
-# guarantee: bin/fm-backend.sh's fm_backend_agent_alive probe (dispatching to
-# fm_backend_tmux_agent_alive / fm_backend_herdr_agent_alive) and
-# bin/fm-bootstrap.sh's secondmate_liveness_sweep() that acts on it.
+# tests/fm-secondmate-liveness.test.sh - the session-start secondmate liveness
+# guarantee owned by bin/fm-backend.sh's detailed fm_backend_agent_state and
+# bin/fm-bootstrap.sh's secondmate_liveness_sweep that acts on it.
 #
 # The gap under test (AGENTS.md "Session start"; evidence 2026-07-07): a
 # secondmate agent that has exited leaves its backend endpoint alive as a bare
@@ -13,19 +12,16 @@
 # invisible to every existing check and sat dead indefinitely.
 #
 # The guarantees under test:
-#   - fm_backend_tmux_agent_alive classifies a verified-harness foreground
-#     process as alive, a bare shell as dead, and anything ambiguous
-#     (including a bare interpreter name) as unknown - never dead.
-#   - fm_backend_herdr_agent_alive is a thin wrapper over the already-verified
-#     fm_backend_herdr_pane_agent_state husk classifier: dead/no-agent -> dead,
-#     live -> alive, unknown -> unknown.
-#   - fm_backend_agent_alive routes to the right per-backend classifier and
-#     reports unknown for a backend with no verified classifier (never errors).
-#   - bin/fm-bootstrap.sh's secondmate_liveness_sweep respawns a confidently
-#     DEAD secondmate (killing the stale endpoint first, since the tmux
-#     adapter refuses to create a same-named window over a live one), keeps
-#     handled DEAD and ALIVE results silent, and never acts on an inconclusive
-#     (UNKNOWN) reading.
+#   - fm_backend_agent_state is the detailed owner that distinguishes alive,
+#     dead, missing, ambiguous, unreadable, and unverified.
+#   - The tmux classifier returns missing only after a readable session
+#     inventory omits the exact window, regardless of display-message fallback.
+#   - The Herdr classifier preserves the proven husk mapping while separating a
+#     missing pane from an existing agent-less pane.
+#   - fm_backend_agent_alive preserves the older three-state compatibility view.
+#   - bin/fm-bootstrap.sh's secondmate_liveness_sweep recovers only dead or
+#     missing endpoints, keeps successful recovery and already-live results
+#     silent by default, and reports ambiguous and unreadable targets distinctly.
 #   - The sweep converges: once a secondmate reads alive, a later run never
 #     re-touches it (idempotent by construction, not by remembering what it
 #     already did).
@@ -44,7 +40,7 @@ fm_git_identity fmtest fmtest@example.com
 
 TMP_ROOT=$(fm_test_tmproot fm-secondmate-liveness)
 
-# --- unit level: fm_backend_tmux_agent_alive --------------------------------
+# --- unit level: fm_backend_tmux_agent_state --------------------------------
 
 # make_probe_tmux <dir> <pane_current_command>: a fake tmux whose
 # #{pane_current_command} display-message query answers with the fixed value;
@@ -59,6 +55,7 @@ case "\${1:-}" in
   display-message)
     for a in "\$@"; do case "\$a" in *pane_current_command*) printf '%s\n' '$comm'; exit 0 ;; esac; done
     exit 0 ;;
+  list-windows) printf '%s\n' win; exit 0 ;;
 esac
 exit 0
 SH
@@ -66,99 +63,140 @@ SH
   printf '%s\n' "$fakebin"
 }
 
-test_tmux_agent_alive_classifies() {
-  local fb
-
-  fb=$(make_probe_tmux "$TMP_ROOT/tmux-claude" claude)
-  [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source tmux; fm_backend_tmux_agent_alive sess:win' "$ROOT")" = alive ] \
-    || fail "a live claude foreground process should classify as alive"
-
-  fb=$(make_probe_tmux "$TMP_ROOT/tmux-codex" codex)
-  [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source tmux; fm_backend_tmux_agent_alive sess:win' "$ROOT")" = alive ] \
-    || fail "a live codex foreground process should classify as alive"
-
-  fb=$(make_probe_tmux "$TMP_ROOT/tmux-opencode" opencode)
-  [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source tmux; fm_backend_tmux_agent_alive sess:win' "$ROOT")" = alive ] \
-    || fail "a live opencode foreground process should classify as alive"
-
-  fb=$(make_probe_tmux "$TMP_ROOT/tmux-grok" grok)
-  [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source tmux; fm_backend_tmux_agent_alive sess:win' "$ROOT")" = alive ] \
-    || fail "a live grok foreground process should classify as alive"
-
-  fb=$(make_probe_tmux "$TMP_ROOT/tmux-zsh" zsh)
-  [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source tmux; fm_backend_tmux_agent_alive sess:win' "$ROOT")" = dead ] \
-    || fail "a bare zsh foreground process should classify as dead"
-
-  fb=$(make_probe_tmux "$TMP_ROOT/tmux-bash" bash)
-  [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source tmux; fm_backend_tmux_agent_alive sess:win' "$ROOT")" = dead ] \
-    || fail "a bare bash foreground process should classify as dead"
-
-  # Defensive: this adapter strips a leading login-shell dash even though real
-  # tmux 3.6a was observed to already normalize #{pane_current_command} itself
-  # (docs/tmux-backend.md "Agent liveness probe").
-  fb=$(make_probe_tmux "$TMP_ROOT/tmux-dashzsh" -zsh)
-  [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source tmux; fm_backend_tmux_agent_alive sess:win' "$ROOT")" = dead ] \
-    || fail "a defensively-stripped login-shell name should still classify as dead"
-
-  # A bare interpreter name is ambiguous (pi's own launcher execs into a
-  # generic "node" process - docs/tmux-backend.md "Known gap") - must be
-  # unknown, never dead, so the sweep can never respawn on a false-dead read.
-  fb=$(make_probe_tmux "$TMP_ROOT/tmux-node" node)
-  [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source tmux; fm_backend_tmux_agent_alive sess:win' "$ROOT")" = unknown ] \
-    || fail "an ambiguous bare-interpreter (node) foreground process should classify as unknown, never dead"
-
-  fb=$(make_probe_tmux "$TMP_ROOT/tmux-vim" vim)
-  [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source tmux; fm_backend_tmux_agent_alive sess:win' "$ROOT")" = unknown ] \
-    || fail "an unrecognized foreground process should classify as unknown"
-
-  pass "fm_backend_tmux_agent_alive: alive/dead/unknown classification"
+# make_failed_probe_tmux <dir> <inventory>: missing and present fail the pane
+# read, while unreadable returns a misleading fallback node process but fails
+# the inventory that must be authoritative.
+make_failed_probe_tmux() {
+  local dir=$1 inventory=$2 fakebin
+  fakebin=$(fm_fakebin "$dir")
+  cat > "$fakebin/tmux" <<SH
+#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  display-message)
+    [ '$inventory' = unreadable ] && { printf '%s\n' node; exit 0; }
+    exit 1
+    ;;
+  list-windows)
+    case '$inventory' in
+      missing) printf '%s\n' main ; exit 0 ;;
+      missing-session) printf '%s\n' "can't find session: sess" >&2; exit 1 ;;
+      missing-server) printf '%s\n' "no server running on /tmp/tmux-test/default" >&2; exit 1 ;;
+      missing-socket) printf '%s\n' "error connecting to /tmp/tmux-test/default (No such file or directory)" >&2; exit 1 ;;
+      present) printf '%s\n' fm-sm1 ; exit 0 ;;
+      *) printf '%s\n' "permission denied" >&2; exit 1 ;;
+    esac
+    ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/tmux"
+  printf '%s\n' "$fakebin"
 }
 
-# --- unit level: fm_backend_herdr_agent_alive -------------------------------
-# Reuses the already-verified fm_backend_herdr_pane_agent_state husk
-# classifier (docs/herdr-backend.md "Respawn idempotency" /
-# "Agent liveness probe reuses the husk classifier"); this wrapper's own
-# mapping logic is tested in isolation by overriding that classifier, exactly
-# as tests/fm-backend-herdr.test.sh already overrides `sleep` in a bash -c
-# string for the same kind of isolated-unit assertion.
+test_tmux_agent_state_classifies() {
+  local fb out
 
-test_herdr_agent_alive_maps_pane_agent_state() {
-  local out
+  for harness in claude codex opencode grok kimi pi pi-signed pi-launcher Pi; do
+    fb=$(make_probe_tmux "$TMP_ROOT/tmux-$harness" "$harness")
+    out=$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_state tmux sess:win' "$ROOT")
+    [ "$out" = alive ] || fail "a live $harness foreground process should classify as alive, got '$out'"
+  done
 
-  out=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "dead"; }; fm_backend_herdr_agent_alive "sess:p1"' "$ROOT")
-  [ "$out" = dead ] || fail "herdr pane_agent_state=dead should map to dead, got '$out'"
+  for shell in zsh bash -zsh; do
+    fb=$(make_probe_tmux "$TMP_ROOT/tmux-${shell#-}" "$shell")
+    out=$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_state tmux sess:win' "$ROOT")
+    [ "$out" = dead ] || fail "a bare $shell foreground process should classify as dead, got '$out'"
+  done
+
+  fb=$(make_probe_tmux "$TMP_ROOT/tmux-node" node)
+  out=$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_state tmux sess:win' "$ROOT")
+  [ "$out" = ambiguous ] || fail "an existing node process should classify as ambiguous, got '$out'"
+  [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_alive tmux sess:win' "$ROOT")" = unknown ] \
+    || fail "the compatibility view must keep an existing node process unknown"
+
+  fb=$(make_failed_probe_tmux "$TMP_ROOT/tmux-missing" missing)
+  out=$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_state tmux sess:fm-sm1' "$ROOT")
+  [ "$out" = missing ] || fail "a readable inventory omitting the target should classify as missing, got '$out'"
+  [ "$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_alive tmux sess:fm-sm1' "$ROOT")" = dead ] \
+    || fail "the compatibility view should treat an authoritatively missing target as dead"
+
+  for inventory in present unreadable; do
+    fb=$(make_failed_probe_tmux "$TMP_ROOT/tmux-$inventory" "$inventory")
+    out=$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_state tmux sess:fm-sm1' "$ROOT")
+    [ "$out" = unreadable ] || fail "a $inventory inventory case should stay unreadable, got '$out'"
+  done
+
+  for inventory in missing-session missing-server missing-socket; do
+    fb=$(make_failed_probe_tmux "$TMP_ROOT/tmux-$inventory" "$inventory")
+    out=$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_state tmux sess:fm-sm1' "$ROOT")
+    [ "$out" = missing ] || fail "a confirmed $inventory inventory failure should classify as missing, got '$out'"
+  done
+
+  pass "fm_backend_tmux_agent_state: separates live, dead, missing, ambiguous, and unreadable"
+}
+
+test_tmux_agent_state_rejects_malformed_targets_before_probe() {
+  local fakebin marker target out
+  fakebin=$(fm_fakebin "$TMP_ROOT/tmux-malformed")
+  marker="$TMP_ROOT/tmux-malformed-called"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+printf 'called\n' > "$FM_TEST_TMUX_MARKER"
+printf 'bash\n'
+SH
+  chmod +x "$fakebin/tmux"
+
+  for target in sess sess: :win sess:win:extra; do
+    out=$(PATH="$fakebin:$BASE_PATH" FM_TEST_TMUX_MARKER="$marker" \
+      bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_state tmux "$1"' "$ROOT" "$target")
+    [ "$out" = unreadable ] || fail "malformed tmux target '$target' should classify as unreadable, got '$out'"
+    [ ! -e "$marker" ] || fail "malformed tmux target '$target' invoked tmux"
+  done
+
+  pass "fm_backend_tmux_agent_state: rejects malformed targets before probing tmux"
+}
+
+# --- unit level: fm_backend_herdr_agent_state -------------------------------
+
+test_herdr_agent_state_preserves_husk_classifier() {
+  local pane_state server_state expected out
+
+  # server_running_state is stubbed so the real local herdr cannot leak in.
+  for row in 'dead unknown missing' 'no-agent unknown dead' 'live unknown alive' \
+    'unknown unknown unreadable' 'unknown running unreadable' 'unknown stopped missing'; do
+    read -r pane_state server_state expected <<<"$row"
+    out=$(FM_TEST_PANE_STATE="$pane_state" FM_TEST_SERVER_STATE="$server_state" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "%s" "$FM_TEST_PANE_STATE"; }; fm_backend_herdr_server_running_state() { printf "%s" "$FM_TEST_SERVER_STATE"; }; fm_backend_herdr_agent_state "sess:p1"' "$ROOT")
+    [ "$out" = "$expected" ] || fail "Herdr pane state $pane_state (server $server_state) should map to $expected, got '$out'"
+  done
+
+  out=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state "no-colon-target"' "$ROOT")
+  [ "$out" = unreadable ] || fail "an unparseable Herdr target should classify as unreadable, got '$out'"
 
   out=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "no-agent"; }; fm_backend_herdr_agent_alive "sess:p1"' "$ROOT")
-  [ "$out" = dead ] || fail "herdr pane_agent_state=no-agent (restored bare shell) should map to dead, got '$out'"
+  [ "$out" = dead ] || fail "the Herdr compatibility view should keep a no-agent husk dead, got '$out'"
 
-  out=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "live"; }; fm_backend_herdr_agent_alive "sess:p1"' "$ROOT")
-  [ "$out" = alive ] || fail "herdr pane_agent_state=live should map to alive, got '$out'"
-
-  out=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_agent_state() { printf "unknown"; }; fm_backend_herdr_agent_alive "sess:p1"' "$ROOT")
-  [ "$out" = unknown ] || fail "herdr pane_agent_state=unknown should stay unknown, got '$out'"
-
-  out=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_alive "no-colon-target"' "$ROOT")
-  [ "$out" = unknown ] || fail "an unparseable target should classify as unknown, got '$out'"
-
-  pass "fm_backend_herdr_agent_alive: dead/no-agent->dead, live->alive, unknown->unknown"
+  pass "fm_backend_herdr_agent_state: preserves missing/no-agent/live/unknown husk behavior"
 }
 
-# --- unit level: the generic fm_backend_agent_alive dispatcher --------------
+# --- unit level: the generic dispatchers ------------------------------------
 
-test_agent_alive_dispatcher_routes_and_falls_back() {
+test_agent_state_dispatcher_and_compatibility() {
   local fb out
 
   fb=$(make_probe_tmux "$TMP_ROOT/dispatch-tmux" claude)
-  out=$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_alive tmux sess:win' "$ROOT")
-  [ "$out" = alive ] || fail "dispatcher should route tmux to fm_backend_tmux_agent_alive, got '$out'"
+  out=$(PATH="$fb:$BASE_PATH" bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_state tmux sess:win' "$ROOT")
+  [ "$out" = alive ] || fail "detailed dispatcher should route tmux, got '$out'"
 
-  out=$(bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source herdr; fm_backend_herdr_pane_agent_state() { printf "live"; }; fm_backend_agent_alive herdr sess:p1' "$ROOT")
-  [ "$out" = alive ] || fail "dispatcher should route herdr to fm_backend_herdr_agent_alive, got '$out'"
+  out=$(bash -c '. "$0/bin/fm-backend.sh"; fm_backend_source herdr; fm_backend_herdr_pane_agent_state() { printf "live"; }; fm_backend_agent_state herdr sess:p1' "$ROOT")
+  [ "$out" = alive ] || fail "detailed dispatcher should route Herdr, got '$out'"
 
-  out=$(bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_alive zellij sess:win' "$ROOT")
-  [ "$out" = unknown ] || fail "dispatcher should report unknown for a backend with no verified classifier, got '$out'"
+  out=$(bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_state zellij sess:7' "$ROOT")
+  [ "$out" = unverified ] || fail "Zellij should remain unverified, got '$out'"
+  out=$(bash -c '. "$0/bin/fm-backend.sh"; fm_backend_agent_alive zellij sess:7' "$ROOT")
+  [ "$out" = unknown ] || fail "the compatibility dispatcher should map unverified to unknown, got '$out'"
 
-  pass "fm_backend_agent_alive: routes tmux/herdr correctly, unknown for an unverified backend"
+  pass "fm_backend_agent_state: routes tmux/Herdr and keeps Zellij unverified"
 }
 
 # --- sweep level: bin/fm-bootstrap.sh's secondmate_liveness_sweep -----------
@@ -169,7 +207,17 @@ test_agent_alive_dispatcher_routes_and_falls_back() {
 make_toolchain() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
-  fm_fake_exit0 "$fakebin" node gh-axi chrome-devtools-axi lavish-axi
+  fm_fake_exit0 "$fakebin" node chrome-devtools-axi pi-signed
+  fm_fake_version_tool "$fakebin" lavish-axi FM_FAKE_LAVISH_AXI_VERSION 0.1.80
+  cat > "$fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' '0.1.29'
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$fakebin/gh-axi"
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 exit 0
@@ -186,7 +234,7 @@ SH
   cat > "$fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' 'no-mistakes version v1.31.2 (fake)'
+  printf '%s\n' 'no-mistakes version v1.46.0 (fake)'
   exit 0
 fi
 exit 0
@@ -195,7 +243,7 @@ SH
   cat > "$fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
-  "--version ") printf '%s\n' '0.1.1' ;;
+  "--version ") printf '%s\n' '0.2.6' ;;
   "update --help") printf '%s\n' 'usage: tasks-axi update <id> [flags]' '  --archive-body' ;;
   "mv --help") printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <path-or-dir>' ;;
 esac
@@ -204,30 +252,85 @@ SH
   chmod +x "$fakebin/tasks-axi"
   cat > "$fakebin/quota-axi" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' '0.1.51'
+  exit 0
+fi
 exit 0
 SH
   chmod +x "$fakebin/quota-axi"
   printf '%s\n' "$fakebin"
 }
 
-# make_liveness_tmux <dir>: a tmux stub whose #{pane_current_command} answer is
-# read fresh from $FM_TEST_PANE_CMD on every query (so a test can flip it
-# between bootstrap runs), and which logs every new-window/kill-window call
-# (the only two operations a respawn performs) to $FM_TMUX_CALL_LOG.
+# make_liveness_tmux <dir>: a controllable tmux stub. FM_TEST_PANE_CMD may be
+# a foreground command, `missing` (readable inventory omits the window), or
+# `unreadable` (both pane and inventory reads fail).
 make_liveness_tmux() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
+mode=${FM_TEST_PANE_CMD:-zsh}
+windows="${FM_TMUX_CALL_LOG:?}.windows"
 case "${1:-}" in
-  display-message)
-    for a in "$@"; do case "$a" in *pane_current_command*) printf '%s\n' "${FM_TEST_PANE_CMD:-zsh}"; exit 0 ;; esac; done
+  send-keys)
+    if [ -n "${FM_FAKE_LAUNCH_LOG:-}" ]; then
+      for arg in "$@"; do
+        case "$arg" in
+          ". '"*"'") staged=${arg#". '"}; staged=${staged%"'"}; [ ! -f "$staged" ] || cat "$staged" >> "$FM_FAKE_LAUNCH_LOG" ;;
+          *'encode launch-brief'*|*'Firstmate operational input waiting: read'*) printf '%s\n' "$arg" >> "$FM_FAKE_LAUNCH_LOG" ;;
+        esac
+      done
+    fi
     exit 0 ;;
+  display-message)
+    for a in "$@"; do
+      case "$a" in
+        *pane_current_command*)
+          case "$mode" in
+            missing) printf '%s\n' node; exit 0 ;;
+            unreadable) exit 1 ;;
+            *) printf '%s\n' "$mode"; exit 0 ;;
+          esac
+          ;;
+      esac
+    done
+    exit 0
+    ;;
+  list-windows)
+    case "$mode" in
+      missing)
+        printf '%s\n' main
+        [ ! -s "$windows" ] || cat "$windows"
+        exit 0 ;;
+      unreadable) exit 1 ;;
+      *)
+        [ -e "${FM_TMUX_CALL_LOG:?}.killed" ] || printf '%s\n' fm-sm1
+        [ ! -s "$windows" ] || cat "$windows"
+        exit 0 ;;
+    esac
+    ;;
   new-window|kill-window)
     printf '%s\n' "$*" >> "${FM_TMUX_CALL_LOG:?}"
-    exit 0 ;;
-  list-windows|has-session) exit 0 ;;
+    if [ "${1:-}" = new-window ] && [ -n "${FM_TEST_NEW_WINDOW_PAUSE:-}" ]; then
+      sleep "$FM_TEST_NEW_WINDOW_PAUSE"
+    fi
+    if [ "${1:-}" = new-window ]; then
+      name=
+      previous=
+      for arg in "$@"; do
+        [ "$previous" = -n ] && name=$arg
+        previous=$arg
+      done
+      grep -Fqx -- "$name" "$windows" 2>/dev/null || printf '%s\n' "$name" >> "$windows"
+    fi
+    [ "${1:-}" = kill-window ] && : > "${FM_TMUX_CALL_LOG}.killed"
+    [ "${FM_TEST_FAIL_NEW_WINDOW:-0}" = 1 ] && [ "${1:-}" = new-window ] && exit 1
+    [ "${1:-}" = new-window ] && rm -f "${FM_TMUX_CALL_LOG}.killed"
+    exit 0
+    ;;
+  has-session) exit 0 ;;
 esac
 exit 0
 SH
@@ -264,6 +367,8 @@ add_sm_home() {
   printf '%s\n' "$id" > "$home/.fm-secondmate-home"
   printf '# Firstmate\n' > "$home/AGENTS.md"
   printf 'charter\n' > "$home/data/charter.md"
+  printf '%s\n' 'projects/' 'state/' 'data/' 'config/' '.no-mistakes/' > "$home/.gitignore"
+  git -C "$home" init -q -b main
   {
     printf 'window=%s\n' "$window"
     printf 'kind=secondmate\n'
@@ -290,11 +395,158 @@ test_sweep_respawns_confirmed_dead_secondmate() {
 
   assert_not_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: respawned" \
     "a successfully respawned secondmate should be handled silently"
-  assert_contains "$(cat "$log")" "kill-window -t firstmate:fm-sm1" \
+  assert_contains "$(cat "$log")" "kill-window -t =firstmate:=fm-sm1" \
     "the stale endpoint must be killed before respawn (tmux refuses a same-named window over a live one)"
   assert_contains "$(cat "$log")" "new-window" \
     "a confirmed-dead secondmate should actually be relaunched"
+  assert_grep 'relaunched' "$w/home/state/.secondmate-relaunch-sm1" \
+    "the shared library did not leave the durable per-mate relaunch record"
   pass "sweep: a confirmed-dead secondmate endpoint is killed and respawned"
+}
+
+test_sweep_recovers_the_durable_secondmate_account() {
+  local w fb tmuxfb log out
+  w=$(new_world sweep-account)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  mkdir -p "$w/home/config/secondmate-accounts/sm1" "$w/mate-account" "$w/primary-account" "$w/user-home"
+  printf 'claude\n' > "$w/home/config/secondmate-harness"
+  printf '%s\n' "$w/primary-account" > "$w/home/config/claude-account"
+  printf '%s\n' "$w/mate-account" > "$w/home/config/secondmate-accounts/sm1/claude-account"
+  : > "$w/mate-account/.credentials.json"
+  cat > "$fb/claude" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = auth ] && [ "${2:-}" = status ] || exit 0
+[ -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json" ]
+SH
+  chmod +x "$fb/claude"
+  log="$w/calls.log"; : > "$log"
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log" \
+    HOME="$w/user-home" CLAUDE_CONFIG_DIR="$w/ambient-account" FM_FAKE_LAUNCH_LOG="$w/launch.log")
+  assert_not_contains "$out" 'SECONDMATE_LIVENESS: secondmate sm1:' "account recovery should succeed: $out"
+  assert_grep 'relaunched' "$w/home/state/.secondmate-relaunch-sm1" "recovery must finish"
+  assert_grep "account=$w/mate-account" "$w/home/state/sm1.meta" "recovery must record the configured mate account"
+  assert_grep "CLAUDE_CONFIG_DIR='$w/mate-account'" "$w/launch.log" "recovery must launch on the durable mate pin, not the ambient account"
+  pass "sweep: secondmate recovery resolves its durable account despite a different ambient login"
+}
+
+test_sweep_serializes_distinct_secondmate_relaunches() {
+  local w fb tmuxfb log out id
+  w=$(new_world sweep-concurrent-relaunch)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  add_sm_home "$w" sm2 firstmate:fm-sm2
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  # Keep the first fresh spawn inside new-window with its task-set lock held.
+  # A parallel sweep races the second spawn into that lock and loses it.
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log" FM_TEST_NEW_WINDOW_PAUSE=2)
+
+  assert_not_contains "$out" 'SECONDMATE_LIVENESS: secondmate sm' \
+    "both distinct mates should relaunch without task-set contention"
+  for id in sm1 sm2; do
+    assert_grep 'relaunched' "$w/home/state/.secondmate-relaunch-$id" \
+      "$id did not complete its relaunch"
+  done
+  [ "$(grep -c '^new-window ' "$log")" -eq 2 ] \
+    || fail "both mates should reach a fresh spawn: $(cat "$log")"
+  pass "sweep: distinct secondmate relaunches serialize across the task-set lock"
+}
+
+test_sweep_skips_mate_whose_liveness_lock_is_held() {
+  local w fb tmuxfb log out holder i=0
+  w=$(new_world sweep-lock-held)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  # A concurrent liveness episode (the watcher's tick) owns the per-mate lock;
+  # the sweep must skip rather than probe or relaunch a moving target.
+  ( STATE="$w/home/state" bash -c \
+      '. "$1" && fm_lock_acquire_wait "$2" && sleep 30' \
+      _ "$ROOT/bin/fm-wake-lib.sh" "$w/home/state/.secondmate-liveness-sm1.lock" ) &
+  holder=$!
+  while [ ! -d "$w/home/state/.secondmate-liveness-sm1.lock" ] && [ "$i" -lt 100 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -d "$w/home/state/.secondmate-liveness-sm1.lock" ] || fail "the fixture never acquired the liveness lock"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log")
+
+  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped: another liveness check is already in progress" \
+    "a mate under an active liveness lock should be skipped, not probed"
+  [ ! -s "$log" ] || fail "a locked mate must never be killed or respawned: $(cat "$log")"
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  pass "sweep: a mate mid-episode under the shared liveness lock is skipped entirely"
+}
+
+test_relaunch_waits_for_other_mates_relaunch_lock() {
+  local w fb tmuxfb log out holder i=0 lock
+  w=$(new_world sweep-relaunch-lock-held)
+  add_sm_home "$w" sm1 firstmate:fm-sm1
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+  lock="$w/home/state/.secondmate-relaunch.lock"
+
+  ( STATE="$w/home/state" bash -c \
+      '. "$1" && fm_lock_try_acquire "$2" && trap '\''fm_lock_release "$2"'\'' EXIT && sleep 5' \
+      _ "$ROOT/bin/fm-wake-lib.sh" "$lock" ) &
+  holder=$!
+  while [ ! -e "$lock" ] && [ "$i" -lt 100 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -e "$lock" ] || fail "the fixture never acquired the per-home relaunch lock"
+
+  out=$(PATH="$tmuxfb:$fb:$BASE_PATH" FM_HOME="$w/home" FM_BACKEND=tmux \
+    FM_ROOT="$ROOT" FM_TEST_PANE_CMD=zsh FM_TMUX_CALL_LOG="$log" \
+    STATE="$w/home/state" bash -c '
+      . "$1/bin/fm-secondmate-liveness-lib.sh"
+      fm_secondmate_liveness_probe "$2" sm1 poll
+      rc=0
+      fm_secondmate_liveness_relaunch "$2" sm1 1 || rc=$?
+      printf "rc=%s status=%s reason=%s\n" "$rc" "$FM_SM_LIVE_STATUS" "$FM_SM_LIVE_REASON"
+    ' _ "$ROOT" "$w/home/state/sm1.meta")
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+
+  assert_contains "$out" "rc=1 status=skipped" \
+    "a relaunch blocked on another mate must return a skipped failure"
+  assert_contains "$out" "another secondmate relaunch still owns the per-home relaunch lock after 1s" \
+    "a liveness relaunch must bound its lock wait by the spawn timeout"
+  [ ! -e "$w/home/state/.secondmate-relaunch-sm1" ] \
+    || fail "a relaunch blocked on another mate was counted as an attempt"
+  [ ! -s "$log" ] || fail "a blocked relaunch touched the endpoint: $(cat "$log")"
+  pass "relaunch: the spawn timeout bounds the lock wait before touching the endpoint"
+}
+
+test_sweep_refuses_relaunch_on_ledger_errors() {
+  local w fb tmuxfb log out mode ledger word
+  if [ "$(id -u)" -eq 0 ]; then
+    pass "sweep: ledger permission errors skipped (root ignores file modes)"
+    return 0
+  fi
+  for mode in 200 444; do
+    case "$mode" in 200) word=unreadable ;; *) word=unwritable ;; esac
+    w=$(new_world "sweep-ledger-$mode")
+    add_sm_home "$w" sm1 firstmate:fm-sm1
+    fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+    log="$w/calls.log"; : > "$log"
+    ledger="$w/home/state/.secondmate-relaunch-sm1"
+    : > "$ledger"
+    chmod "$mode" "$ledger"
+
+    out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log")
+    chmod 644 "$ledger"
+
+    assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped: relaunch ledger $ledger is $word" \
+      "a mode-$mode relaunch ledger should skip the relaunch with its reason"
+    [ ! -s "$log" ] || fail "a mode-$mode relaunch ledger still killed or spawned: $(cat "$log")"
+    [ ! -s "$ledger" ] || fail "a mode-$mode ledger gained rows: $(cat "$ledger")"
+  done
+  pass "sweep: an unreadable or unwritable relaunch ledger refuses to kill or spawn"
 }
 
 test_sweep_leaves_alive_secondmate_untouched() {
@@ -309,24 +561,90 @@ test_sweep_leaves_alive_secondmate_untouched() {
   assert_not_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: already-live" \
     "an already-live secondmate should be handled silently"
   [ ! -s "$log" ] || fail "an already-live secondmate must never be killed or respawned: $(cat "$log")"
-  pass "sweep: an already-live secondmate is left untouched (no kill, no respawn)"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" claude "$log" FM_BOOTSTRAP_VERBOSE_FACTS=1)
+  assert_contains "$out" "BOOTSTRAP_INFO: secondmate sm1 already live (backend=tmux)" \
+    "verbose diagnostics should identify the already-live outcome"
+  [ ! -s "$log" ] || fail "verbose reporting must not touch an already-live secondmate: $(cat "$log")"
+  pass "sweep: an already-live secondmate is untouched and distinguishable in verbose diagnostics"
 }
 
-test_sweep_never_acts_on_inconclusive_reading() {
+test_sweep_respawns_authoritatively_missing_pi_secondmate() {
   local w fb tmuxfb log out
-  w=$(new_world sweep-unknown)
-  add_sm_home "$w" sm1 firstmate:fm-sm1
+  w=$(new_world sweep-missing-pi)
+  add_sm_home "$w" sm1 firstmate:fm-sm1 pi
   fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
   log="$w/calls.log"; : > "$log"
 
-  # "node" is the ambiguous bare-interpreter case (docs/tmux-backend.md
-  # "Known gap") - ANY reading less than confident-dead must never respawn.
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log")
+
+  assert_not_contains "$out" "SECONDMATE_LIVENESS:" "a successful missing-window recovery should stay silent by default"
+  assert_contains "$(cat "$log")" "new-window" "an authoritatively missing Pi secondmate should be relaunched"
+  assert_not_contains "$(cat "$log")" "kill-window" "an absent window should not need a destructive pre-kill"
+  pass "sweep: an authoritatively missing Pi secondmate window is relaunched"
+}
+
+test_sweep_respawns_authoritatively_missing_pi_signed_secondmate() {
+  local w fb tmuxfb log out
+  w=$(new_world sweep-missing-pi-signed)
+  printf '%s\n' pi-signed > "$w/home/config/secondmate-harness"
+  add_sm_home "$w" sm1 firstmate:fm-sm1 pi-signed
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log")
+
+  assert_not_contains "$out" "unverified for recovery" \
+    "a recorded pi-signed secondmate should be verified for recovery"
+  assert_contains "$(cat "$log")" "new-window" \
+    "an authoritatively missing pi-signed secondmate should be relaunched"
+  assert_not_contains "$(cat "$log")" "kill-window" \
+    "an absent pi-signed window should not need a destructive pre-kill"
+  pass "sweep: an authoritatively missing pi-signed secondmate window is relaunched"
+}
+
+test_sweep_never_acts_on_ambiguous_existing_process() {
+  local w fb tmuxfb log out
+  w=$(new_world sweep-ambiguous)
+  add_sm_home "$w" sm1 firstmate:fm-sm1 pi
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
   out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" node "$log")
 
-  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped: liveness probe inconclusive" \
-    "an inconclusive (unknown) probe reading should be reported as skipped"
-  [ ! -s "$log" ] || fail "an inconclusive reading must NEVER trigger a kill or respawn (would risk a duplicate agent): $(cat "$log")"
-  pass "sweep: a transient/unknown probe reading is reported but never acted on"
+  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped: existing endpoint has ambiguous agent process" \
+    "an existing Pi-shaped node process should be reported as ambiguous"
+  [ ! -s "$log" ] || fail "an ambiguous existing process must never trigger kill or relaunch: $(cat "$log")"
+  pass "sweep: an existing ambiguous Pi process prevents duplicate recovery"
+}
+
+test_sweep_never_acts_on_transient_unreadability() {
+  local w fb tmuxfb log out
+  w=$(new_world sweep-unreadable)
+  add_sm_home "$w" sm1 firstmate:fm-sm1 pi
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" unreadable "$log")
+
+  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped: endpoint probe unreadable" \
+    "a transiently unreadable target should be distinguished from an absent one"
+  [ ! -s "$log" ] || fail "an unreadable target must never trigger kill or relaunch: $(cat "$log")"
+  pass "sweep: transient target unreadability never licenses recovery"
+}
+
+test_sweep_reports_missing_endpoint_relaunch_failure() {
+  local w fb tmuxfb log out
+  w=$(new_world sweep-missing-failure)
+  add_sm_home "$w" sm1 firstmate:fm-sm1 pi
+  fb=$(make_toolchain "$w"); tmuxfb=$(make_liveness_tmux "$w")
+  log="$w/calls.log"; : > "$log"
+
+  out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" missing "$log" FM_TEST_FAIL_NEW_WINDOW=1)
+
+  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: respawn failed after recorded endpoint confidently missing" \
+    "a failed missing-endpoint relaunch should retain its authorizing cause"
+  pass "sweep: failed relaunch diagnostics distinguish a confidently missing endpoint"
 }
 
 test_sweep_never_acts_on_unverified_harness_dead_reading() {
@@ -338,10 +656,10 @@ test_sweep_never_acts_on_unverified_harness_dead_reading() {
 
   out=$(run_bootstrap "$tmuxfb:$fb" "$w/home" zsh "$log")
 
-  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped: liveness probe inconclusive" \
-    "an unverified harness should not let a dead-looking endpoint become actionable"
-  [ ! -s "$log" ] || fail "an unverified harness must NEVER trigger a kill or respawn: $(cat "$log")"
-  pass "sweep: an unverified harness makes a dead-looking probe inconclusive"
+  assert_contains "$out" "SECONDMATE_LIVENESS: secondmate sm1: skipped: recorded harness 'custom-agent' is unverified for recovery" \
+    "an unverified harness should not let a dead endpoint become actionable"
+  [ ! -s "$log" ] || fail "an unverified harness must never trigger kill or relaunch: $(cat "$log")"
+  pass "sweep: an unverified harness blocks recovery with a concrete diagnostic"
 }
 
 test_sweep_converges_no_retouch_once_alive() {
@@ -401,15 +719,127 @@ test_sweep_noop_with_no_secondmate_meta() {
   pass "sweep: a silent no-op with no kind=secondmate meta present (a secondmate home's own natural scoping)"
 }
 
-test_tmux_agent_alive_classifies
-test_herdr_agent_alive_maps_pane_agent_state
-test_agent_alive_dispatcher_routes_and_falls_back
+# --- library level: the watcher's poll-mode remote probe ---------------------
+# bin/fm-secondmate-liveness-lib.sh's `poll` mode is the read-only probe the
+# watcher tick runs per cadence: exactly one remote `state` call, `dead` and
+# `missing` alone authorize relaunch, and transport failure (ssh exit 255) is
+# never evidence of death. Full-mode remote readiness repair and route
+# revalidation remain the startup sweep's own behavior, covered by the sweep
+# tests above and tests/fm-remote-secondmate-lifecycle-e2e.test.sh.
+
+# make_remote_probe_world <name>: a parent home carrying one remote-route
+# secondmate meta plus a fake ssh that logs every call and answers with
+# FM_FAKE_REMOTE_REPLY on FM_FAKE_REMOTE_RC.
+make_remote_probe_world() {
+  local name=$1 w fakebin
+  w="$TMP_ROOT/$name"
+  fakebin=$(fm_fakebin "$w")
+  mkdir -p "$w/home/state" "$w/home/data" "$w/home/config"
+  cat > "$w/home/state/rsm1.meta" <<EOF
+window=remote:rsm1
+kind=secondmate
+harness=claude
+remote_host=lab-host
+remote_backend=herdr
+remote_herdr_session=fm-remote
+remote_target=fm-remote:w1:p1
+home=/remote/rsm1-home
+EOF
+  cat > "$w/home/data/secondmates.md" <<EOF
+- rsm1 - Remote mate (host: lab-host; root: /remote/root; home: /remote/rsm1-home; scope: remote work; projects: alpha; added 2026-01-01)
+EOF
+  cat > "$fakebin/ssh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FM_FAKE_SSH_LOG:?}"
+[ -z "${FM_FAKE_REMOTE_REPLY:-}" ] || printf '%s\n' "$FM_FAKE_REMOTE_REPLY"
+exit "${FM_FAKE_REMOTE_RC:-0}"
+SH
+  chmod +x "$fakebin/ssh"
+  printf '%s\n' "$w"
+}
+
+# probe_remote <w> <mode> [env...] -> "<status>|<state>|<kill>|<cause>|<where>|<reason>"
+probe_remote() {
+  local w=$1 mode=$2; shift 2
+  # shellcheck disable=SC2016 # positional params expand in the child shell.
+  env STATE="$w/home/state" FM_HOME="$w/home" FM_DATA_OVERRIDE="$w/home/data" \
+    FM_SSH_BIN="$w/fakebin/ssh" FM_FAKE_SSH_LOG="$w/ssh.log" "$@" \
+    bash -c '
+      . "$0/bin/fm-secondmate-liveness-lib.sh"
+      fm_secondmate_liveness_probe "$1" rsm1 "$2"
+      printf "%s|%s|%s|%s|%s|%s\n" \
+        "$FM_SM_LIVE_STATUS" "$FM_SM_LIVE_STATE" "$FM_SM_LIVE_KILL" \
+        "$FM_SM_LIVE_CAUSE" "$FM_SM_LIVE_WHERE" "$FM_SM_LIVE_REASON"
+    ' "$ROOT" "$w/home/state/rsm1.meta" "$mode"
+}
+
+test_remote_poll_probe_maps_states() {
+  local w out
+  w=$(make_remote_probe_world probe-states)
+
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_REPLY=dead)
+  [ "$out" = 'relaunchable|dead|0|remote endpoint dead on its configured host|host=lab-host|' ] \
+    || fail "a dead remote reply should authorize relaunch on its own host, got: $out"
+
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_REPLY=missing)
+  [ "$out" = 'relaunchable|missing|0|remote endpoint missing on its configured host|host=lab-host|' ] \
+    || fail "a missing remote reply should authorize relaunch on its own host, got: $out"
+
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_REPLY=alive)
+  [ "$out" = 'alive|alive|0|||' ] || fail "an alive remote reply should be a quiet no-op, got: $out"
+
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_REPLY=ambiguous)
+  [ "$out" = 'skipped|ambiguous|0|||remote endpoint state is ambiguous on lab-host' ] \
+    || fail "an ambiguous remote reply must preserve the endpoint, got: $out"
+
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_REPLY=unverified)
+  [ "$out" = 'skipped|unverified|0|||remote endpoint state is unverified on lab-host' ] \
+    || fail "an unverified remote reply must preserve the endpoint, got: $out"
+
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_REPLY=bogus)
+  [ "$out" = 'skipped|bogus|0|||remote endpoint returned an invalid state' ] \
+    || fail "an invalid remote reply must preserve the endpoint, got: $out"
+
+  [ "$(wc -l < "$w/ssh.log" | tr -d ' ')" -eq 6 ] \
+    || fail "each poll-mode probe should spend exactly one remote state call: $(cat "$w/ssh.log")"
+  pass "poll probe: remote states map to the same contract as local, one call each"
+}
+
+test_remote_poll_probe_unreachable_preserves_route() {
+  local w out
+  w=$(make_remote_probe_world probe-unreachable)
+
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_RC=255)
+  [ "$out" = 'skipped|unknown|0|||remote host unavailable or endpoint state unknown; route preserved on lab-host' ] \
+    || fail "ssh exit 255 must never read as a dead endpoint, got: $out"
+
+  out=$(probe_remote "$w" poll FM_FAKE_REMOTE_RC=1)
+  [ "$out" = 'skipped|unknown|0|||remote endpoint probe unreadable on lab-host' ] \
+    || fail "a non-transport remote probe failure must stay inconclusive, got: $out"
+  pass "poll probe: unreachable or inconclusive remote reads preserve the route"
+}
+
+test_tmux_agent_state_classifies
+test_tmux_agent_state_rejects_malformed_targets_before_probe
+test_herdr_agent_state_preserves_husk_classifier
+test_agent_state_dispatcher_and_compatibility
 test_sweep_respawns_confirmed_dead_secondmate
+test_sweep_recovers_the_durable_secondmate_account
+test_sweep_serializes_distinct_secondmate_relaunches
 test_sweep_leaves_alive_secondmate_untouched
-test_sweep_never_acts_on_inconclusive_reading
+test_sweep_respawns_authoritatively_missing_pi_secondmate
+test_sweep_respawns_authoritatively_missing_pi_signed_secondmate
+test_sweep_never_acts_on_ambiguous_existing_process
+test_sweep_never_acts_on_transient_unreadability
+test_sweep_reports_missing_endpoint_relaunch_failure
 test_sweep_never_acts_on_unverified_harness_dead_reading
 test_sweep_converges_no_retouch_once_alive
 test_sweep_skipped_under_detect_only
 test_sweep_noop_with_no_secondmate_meta
+test_sweep_skips_mate_whose_liveness_lock_is_held
+test_relaunch_waits_for_other_mates_relaunch_lock
+test_sweep_refuses_relaunch_on_ledger_errors
+test_remote_poll_probe_maps_states
+test_remote_poll_probe_unreachable_preserves_route
 
 echo "# all fm-secondmate-liveness tests passed"

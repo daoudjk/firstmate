@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tests/fm-supervision-events.test.sh - unit tests for the watcher's native
-# event-wait splice (event_wait_or_sleep, handle_push_transition in
-# bin/fm-watch.sh). The watcher's source guard lets this file source it to load
+# event-wait splice (event_wait_or_sleep in bin/fm-watch.sh and
+# handle_push_transition in bin/fm-push-transition-lib.sh). The watcher's source
+# guard lets this file source it to load
 # the functions WITHOUT acquiring the singleton lock or entering the blocking
 # loop; wake/sleep and the backend dispatchers are overridden so the exemptions,
 # capability memo, and fail-closed disable are asserted deterministically with no
@@ -19,7 +20,9 @@ mkdir -p "$STATE_DIR"
 # lock/loop, so only the functions load.
 export FM_STATE_OVERRIDE="$STATE_DIR"
 export FM_ROOT_OVERRIDE="$ROOT"
-# shellcheck source=bin/fm-watch.sh
+# Production modules are independently linted canonical roots. Keep this test's
+# ShellCheck context local while preserving its unchanged runtime source path.
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-watch.sh"
 
 # Overrides: capture wake reasons and neutralize real sleeps (POLL is 15s).
@@ -59,6 +62,7 @@ pass "handle_push_transition: a blocked crew enqueues a stale wake naming its wi
 reset_state
 fm_write_meta "$STATE_DIR/tk1.meta" "window=default:wG:pQ" "backend=herdr" "kind=ship"
 (
+  # shellcheck disable=SC2329 # Runtime override called by the isolated production owner.
   fm_wake_append() { return 1; }
   handle_push_transition herdr default "$(mkrec wG:pQ blocked)"
 ) >/dev/null 2>&1 || true
@@ -78,12 +82,27 @@ fi
 grep -q 'absorbed push' "$STATE_DIR/.watch-triage.log" 2>/dev/null || fail "the paused absorb should be logged to the triage log"
 pass "handle_push_transition: a declared-pause crew is absorbed (no fast wake), left to the poll loop's long cadence"
 
+# --- handle_push_transition: absorb for a verified captain-held transfer -------
+
+reset_state
+fm_write_meta "$STATE_DIR/tk2h.meta" "window=default:wG:pQ" "backend=herdr" "kind=ship"
+printf 'captain-held [key=route]: tracked by task-decision-route\n' > "$STATE_DIR/tk2h.status"
+handle_push_transition herdr default "$(mkrec wG:pQ blocked)"
+if [ -e "$STATE_DIR/.wake-queue" ] && grep -q 'stale' "$STATE_DIR/.wake-queue"; then
+  fail "a captain-held crew must NOT be fast-escalated: $(cat "$STATE_DIR/.wake-queue")"
+fi
+[ ! -s "$WAKE_LOG" ] || fail "a captain-held crew must not wake the supervisor from the event fast-path"
+grep -q 'absorbed push' "$STATE_DIR/.watch-triage.log" 2>/dev/null || fail "the captain-held absorb should be logged to the triage log"
+pass "handle_push_transition: a captain-held crew is absorbed (no fast wake), left to the poll loop's long cadence"
+
 # --- event_wait_or_sleep: secondmate windows are excluded from the pane list --
 
 reset_state
 fm_write_meta "$STATE_DIR/tk3.meta" "window=default:wG:pQ" "backend=herdr" "kind=ship"
 fm_write_meta "$STATE_DIR/sm1.meta" "window=default:wA:pS" "backend=herdr" "kind=secondmate"
+# shellcheck disable=SC2329 # Runtime overrides called by the isolated watcher.
 fm_backend_events_capable() { return 0; }
+# shellcheck disable=SC2329 # Runtime overrides called by the isolated watcher.
 fm_backend_wait_transition() { shift 4; printf '%s\n' "$*" > "$TMP/panes"; return 1; }
 event_wait_or_sleep
 PANES=$(cat "$TMP/panes" 2>/dev/null || true)
@@ -94,7 +113,9 @@ pass "event_wait_or_sleep: herdr windows go on the event pane list, but kind=sec
 reset_state
 fm_write_meta "$STATE_DIR/tk3.meta" "window=default:wG:pQ" "backend=herdr" "kind=ship"
 CAP_CALLS=0
+# shellcheck disable=SC2329 # Runtime overrides called by the isolated watcher.
 fm_backend_events_capable() { CAP_CALLS=$((CAP_CALLS + 1)); return 0; }
+# shellcheck disable=SC2329 # Runtime overrides called by the isolated watcher.
 fm_backend_wait_transition() {
   [ "${FM_BACKEND_EVENTS_CAPABILITY_CONFIRMED:-0}" = 1 ] || fail "cached capability verdict was not passed to the wait"
   return 1
@@ -108,6 +129,7 @@ pass "event_wait_or_sleep: one cached capability probe owns validation across bo
 
 reset_state
 fm_write_meta "$STATE_DIR/tk4.meta" "window=fmses:fm-tk4" "kind=ship"   # no backend= -> tmux
+# shellcheck disable=SC2329 # Runtime override called by the isolated watcher.
 fm_backend_wait_transition() { printf 'CALLED\n' > "$TMP/wtcalled"; return 1; }
 event_wait_or_sleep
 [ ! -e "$TMP/wtcalled" ] || fail "a tmux-only home must never invoke the event wait path"
@@ -118,8 +140,10 @@ pass "event_wait_or_sleep: a home with no push-capable window is inert (sleeps P
 
 reset_state
 fm_write_meta "$STATE_DIR/tk5.meta" "window=default:wG:pQ" "backend=herdr" "kind=ship"
-EVENT_CAP_FAIL_MAX=2
+export EVENT_CAP_FAIL_MAX=2
+# shellcheck disable=SC2329 # Runtime overrides called by the isolated watcher.
 fm_backend_events_capable() { return 0; }
+# shellcheck disable=SC2329 # Runtime overrides called by the isolated watcher.
 fm_backend_wait_transition() { printf 'WT\n' >> "$TMP/wtcalls"; return 2; }
 : > "$TMP/wtcalls"
 event_wait_or_sleep   # fails=1

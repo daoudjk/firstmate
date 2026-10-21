@@ -1,151 +1,620 @@
 # Primary turn-end supervision guard
 
-This is the authoritative contract for the "no turn ends blind" primary guard referenced from AGENTS.md section 8.
-The shared predicate lives in `bin/fm-turnend-guard.sh`.
-Harness-specific tracked hook files only adapt each verified harness's real turn-end mechanism to that shared predicate.
-Two related but separate PreToolUse seatbelts deny a bad command shape before it runs rather than detecting a blind turn end afterward: the watcher-arm seatbelt (`bin/fm-arm-pretool-check.sh`, `docs/arm-pretool-check.md`) and the cd-guard (`bin/fm-cd-pretool-check.sh`, `docs/cd-guard.md`).
-Each seatbelt's own document defines its scope; they do not share the turn-end guard's marker-aware primary detection.
+This doc explains the check that stops a primary Firstmate session from ending a turn while its work has no live supervision, and how each harness enforces that check at its turn boundary.
+It is for operators working out why a turn end was blocked or followed up, and for anyone changing a harness turn-end hook.
 
-## Gap Closed
+This is the authoritative current contract for the "no turn ends blind" primary backstop referenced from AGENTS.md section 8.
+The predicate lives in `bin/fm-turnend-guard.sh`.
+Primary scope lives in `bin/fm-primary-scope-lib.sh`, shared with the native session-start adapters in [`sessionstart-nudge.md`](sessionstart-nudge.md).
+Harness hook files adapt each enabled primary harness integration's turn-end mechanism to that shared predicate.
 
-`bin/fm-guard.sh` is pull-based: it warns whenever some other supervision script happens to run, and prints nothing otherwise.
-The primary can otherwise end a turn after handling wakes without resuming supervision, then sit blind until another fleet command happens to run.
-On 2026-07-04, that exact gap left a parked no-mistakes gate unwatched for about nine hours.
+Related PreToolUse guards deny unsafe commands before execution rather than detecting a blind turn end afterward.
+Their separate owners are [`arm-pretool-check.md`](arm-pretool-check.md), [`cd-guard.md`](cd-guard.md), and [`subagent-guard.md`](subagent-guard.md).
+Do not infer this guard's scope, loop safety, or compatibility tradeoffs for those guards.
 
-`bin/fm-turnend-guard.sh` closes the gap by checking the primary's own turn-end path.
-When tasks are in flight and there is no live identity-matched watcher with a fresh beacon, a harness hook must either block the turn end or force a bounded follow-up turn that tells the primary to resume the session-start supervision protocol for its harness.
+## Find a topic
 
-## Shared Predicate
+| Question | Start here |
+| --- | --- |
+| What the guard enforces | [Current invariant](#current-invariant) |
+| Which sessions are in scope and what counts as supervision need | [Primary scope](#primary-scope) and [supervision need](#supervision-need) |
+| How the turn-end check and the mid-turn pull warning judge watcher health | [Strict watcher check at the turn boundary](#strict-watcher-check-at-the-turn-boundary) and [pull-warning verdict by supervision model](#pull-warning-verdict-by-supervision-model) |
+| Away and quiet mode | [Away and quiet mode daemon ownership](#away-and-quiet-mode-daemon-ownership) |
+| How long a beacon stays fresh | [Guard grace and the poll cadence](#guard-grace-and-the-poll-cadence) |
+| How each harness blocks or follows up | [Harness integrations](#harness-integrations) |
+| Claude's Stop auto-arm cooperation, block budget, and fail-open | [Claude cooperative mode](#claude-cooperative-mode) |
+| Cursor's parked hook | [Cursor park](#cursor-park) |
+| Known gaps | [Compatibility limits](#compatibility-limits) |
+| Tests and live evidence | [Regression coverage](#regression-coverage) |
 
-The guard first scopes itself to a real primary checkout.
-A secondmate home runs its own primary firstmate session, so a genuine `.fm-secondmate-home` marker force-includes it whether treehouse leased it as a linked worktree or it is a git-cloned plain checkout.
-The marker must be a regular non-symlink file whose first line, after all whitespace is removed, contains a non-empty identifier made only of letters, digits, dots, underscores, and dashes.
-An unmarked checkout, or one with an invalid marker, falls through to the git-dir check.
-That check keeps crewmate and scout worktrees inert because firstmate provisions them as linked git worktrees, where `git rev-parse --git-dir` differs from `git rev-parse --git-common-dir`.
-It also requires `AGENTS.md`, `bin/`, and the effective state directory to exist.
+## Current invariant
 
-For an in-scope primary checkout, it counts in-flight work from `state/*.meta`.
-If no task is in flight, it exits silently.
-If work is in flight, it requires `fm_watcher_healthy <state-dir> <watch-path> [grace-seconds] [home]` from `bin/fm-wake-lib.sh`.
-That is the same identity-matched live lock and fresh beacon check used by `bin/fm-watch-arm.sh`.
-A stale beacon blocks even if a watcher pid is still live.
-A fresh leftover beacon blocks if the watcher lock is missing, dead, or identity-mismatched.
+`bin/fm-guard.sh` is a pull-based warning that runs only when another supervision command invokes it.
+The turn-end guard closes the remaining gap at the primary's own turn boundary.
 
-`FM_STATE_OVERRIDE` wins over `FM_HOME/state`, and `FM_HOME` wins over repo-root `state/`.
-`FM_GUARD_GRACE` controls the beacon freshness window and defaults to 300 seconds.
-If `jq` is missing or hook stdin is empty, the guard fails open and exits 0 because it cannot safely read loop-guard fields.
+The guard acts at that boundary when both of these hold:
 
-## Harness Integrations
+- Work, a process-event source, a registered custom check, or Relay polling needs supervision.
+- No identity-matched watcher has a fresh beacon.
 
-All verified primary harnesses have a tracked integration:
+The beacon is `state/.last-watcher-beat`, which `bin/fm-watch.sh` touches every cycle, as [Guard grace and the poll cadence](#guard-grace-and-the-poll-cadence) describes.
+When the guard acts, the harness integration must do one of two things:
 
-- `claude`: `.claude/settings.json` registers a `Stop` hook command anchored through `"$CLAUDE_PROJECT_DIR"/bin/fm-turnend-guard.sh`.
-- `codex`: `.codex/hooks.json` registers a `Stop` hook that reads the hook payload once, anchors the executable to the hook command process working directory, verifies that root is firstmate-shaped and hook-bearing, and pipes the original payload to that checkout's `bin/fm-turnend-guard.sh`.
-- `opencode`: `.opencode/plugins/fm-primary-turnend-guard.js` listens for `session.idle`, lets the watcher-arm coordinator handle normal idle supervision first, runs the shared guard only when that coordinator does not act, and uses `client.session.promptAsync` to force one follow-up prompt when the guard returns 2.
-- `pi`: `.pi/extensions/fm-primary-turnend-guard.ts` listens for `agent_settled`, marks the extension version loaded for session-start checks, runs the shared guard once per logical agent run, and uses `pi.sendUserMessage(..., { deliverAs: "followUp" })` to force one follow-up prompt when the guard returns 2.
-- `grok`: `.grok/hooks/fm-primary-turnend-guard.json` registers a `Stop` hook that invokes `bin/fm-turnend-guard-grok.sh`.
-  The adapter runs the shared guard and, when it returns 2, invokes `grok --resume <sessionId> -p <guard-reason>` with `GROK_TURNEND_GUARD_ACTIVE=1`.
-  It does not pass `--permission-mode`, so the passive Stop hook cannot grant stronger tool permissions than Grok's resumed-session default.
+- Block the turn end.
+- Force one bounded follow-up that uses the recovery instruction from the emitted session-start protocol.
 
-Claude and Codex support a direct blocking Stop hook.
-For those harnesses, exit status 2 plus stderr from `bin/fm-turnend-guard.sh` blocks the stop and feeds the reason back into the model.
-Both payloads include `stop_hook_active`; when it is true, the shared guard exits 0 so the harness can end after one forced continuation.
+The mid-turn pull warning uses the model-aware supervision verdict described below, while the turn-end guard keeps the PID-strict watcher predicate except for the Stop-owned Codex checkpoint under "Harness integrations".
 
-OpenCode, Pi, and Grok expose passive lifecycle callbacks for this purpose.
-Their adapters fail open at the hook boundary to avoid corrupting a user session, but they force one follow-up turn when the shared predicate blocks.
-Each adapter carries its own in-process or environment loop guard so the forced follow-up does not recursively schedule another follow-up.
-Pi keeps that latch active across every internal tool turn and clears it only when the generated guard follow-up reaches `agent_settled`, or immediately when follow-up delivery fails.
-If a passive adapter cannot call its SDK method, cannot find `grok`, or cannot recover the Grok session id, it fails open and relies on the pull-based `fm-guard.sh` warning at the next fleet command.
-That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it points back to the active harness protocol instead of hardcoding one background-arm command.
+Away and quiet mode are the one place the turn-end guard accepts a different supervisor.
+While `state/.afk` exists, in either mode (`bin/fm-wake-lib.sh`'s `fm_afk_mode`), the daemon owns supervision.
+A live identity-matched daemon with a fresh beacon then satisfies that boundary in place of a watcher process holding the lock.
 
-## Empirical Validation
+Outside that Codex path, the guard remains a backstop.
+[`watcher-continuity.md`](watcher-continuity.md) owns normal continuity.
 
-All harnesses were validated on 2026-07-08 in scratch repos or throwaway homes, not against the captain's live primary fleet state.
+## Guard predicates
 
-Claude Code 2.1.204 preserved the existing behavior.
-Hook file used: `.claude/settings.json`.
-Command run: `claude -p "Say hi in exactly one word." --dangerously-skip-permissions --output-format json` with a scratch Stop hook that printed `SMOKETEST: you must say the word BANANA before stopping` and exited 2.
-Observed output: the first stop payload had `stop_hook_active=false`, the stop was blocked, the model continued with `BANANA`, and the second stop payload had `stop_hook_active=true` and was allowed.
-Earlier validation on 2026-07-04 also verified that `CLAUDE_PROJECT_DIR` is set to the settings-loaded project root, while the hook command itself runs from the session cwd.
+The turn-end guard checks primary scope first, then supervision need, then watcher health.
+The mid-turn pull warning in `bin/fm-guard.sh` judges watcher health differently, as described under [pull-warning verdict by supervision model](#pull-warning-verdict-by-supervision-model).
 
-Codex `codex-cli 0.142.1` was validated with a scratch `.codex/hooks.json` Stop hook.
-Hook file used: `.codex/hooks.json`.
-Command run: `codex exec --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --output-last-message last.txt 'Say hi in exactly one word.'`.
-Observed output: the first model output was `Hi`, the Stop hook exited 2, Codex logged `hook: Stop Blocked`, the model continued with `CODEXHOOK`, and the second hook call had `stop_hook_active=true`.
-The Stop payload included `cwd`.
-Command run for root-signal probe: `codex exec --ephemeral --json --dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --output-last-message last.txt 'Use the shell tool to run mkdir -p outside && cd outside && pwd, then use the shell tool again to run pwd. Your final answer must include the two observed outputs.'`.
-Observed output: the first command printed `<scratch>/outside`, the second command printed `<scratch>`, the Stop hook process `pwd -P` printed `<scratch>`, payload `cwd` printed `<scratch>`, and `CODEX_PROJECT_DIR`, `CODEX_WORKSPACE_ROOT`, and `CODEX_CWD` were empty.
-The tracked command therefore treats hook process PWD as the hook-loaded firstmate root and does not let payload `cwd` choose an executable.
-It still passes the original payload to `bin/fm-turnend-guard.sh`, so the shared loop guard reads `stop_hook_active`.
+### Primary scope
 
-OpenCode 1.17.6 was validated with project plugins under scratch `.opencode/plugins/`.
-Hook file used: `.opencode/plugins/fm-smoke.js` for throw testing and `.opencode/plugins/fm-primary-turnend-guard.js` for follow-up testing.
-Command run for passive behavior: `opencode run --print-logs --log-level DEBUG --dangerously-skip-permissions 'Say hi in exactly one word.'`.
-Observed output: the plugin received `session.idle`, threw an error, and `opencode run` still exited 0 with `Hi`, proving `session.idle` cannot block directly.
-Command run for follow-up behavior: `OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}' opencode --prompt 'Say hi in exactly one word.' --print-logs --log-level INFO`.
-Observed output: the plugin called `client.session.promptAsync`, the TUI ran a second turn, and the second model output contained `OPENCODEHOOK`.
-In noninteractive `opencode run`, `promptAsync` returned successfully but the process exited before displaying the follow-up, so this adapter is trusted for primary TUI sessions and documented as passive/fail-open in headless mode.
+The guard first calls the shared primary scope.
+A secondmate home runs its own primary Firstmate session, so a genuine `.fm-secondmate-home` marker includes it whether the home is a linked worktree or plain clone.
+The marker must meet both of these conditions:
 
-Pi 0.80.5 was re-validated on 2026-07-09 in a disposable primary-shaped clone with isolated `PI_CODING_AGENT_DIR`, isolated `FM_HOME`, and tmux socket `fm-pi-q6-lab`.
-Hook files used: the tracked `.pi/extensions/fm-primary-turnend-guard.ts` and `.pi/extensions/fm-primary-pi-watch.ts`.
-Commands run inside separate interactive turns: `printf PI_E2E_BASH_ONE` through Pi's bash tool, `README.md:1-5` through Pi's read tool, and `printf PI_E2E_BASH_TWO` through Pi's bash tool.
-Command used to make the shared predicate unhealthy: `: > "$FM_HOME/state/pi-e2e.meta"`.
-The next no-tool prompt produced exactly one `TURN WOULD END BLIND` follow-up, and that follow-up called `fm_watch_arm_pi` once with output `watcher: started Pi extension arm child 1`.
-The three earlier tool turns produced no guard follow-up because no work was in flight.
-Command used to fire the watcher: `printf 'done: pi e2e watcher fire\n' > "$FM_HOME/state/pi-e2e.status"`.
-Observed output after the wake: Pi ran `bin/fm-wake-drain.sh`, read the terminal status, called `fm_watch_arm_pi`, and rendered `watcher: started Pi extension arm child 2`.
-The complete pane contained one guard message and zero foreground `bin/fm-watch-arm.sh` bash calls.
-`/quit` printed `PI_EXIT=0`, and the second arm process plus its watcher child were both gone afterward.
+- It is a regular non-symlink file.
+- Its whitespace-stripped first line is a non-empty identifier containing only letters, digits, dots, underscores, and dashes.
 
-Grok 0.2.91 was validated with a scratch `GROK_HOME` and symlinked auth/config.
-Hook file used for tracked project-hook loading: `<scratch-project>/.grok/hooks/fm-smoke.json`, matching the tracked `.grok/hooks/fm-primary-turnend-guard.json` location.
-Command run for project-hook loading: `GROK_HOME="$scratch/grok-home" grok --trust -p 'Say hi in exactly one word.' --permission-mode bypassPermissions --output-format plain --leader-socket "$scratch/leader.sock"`.
-Observed output: the project Stop hook fired under `--trust` and received `GROK_HOOK_EVENT=stop`, `GROK_WORKSPACE_ROOT`, and a payload containing `sessionId`.
-Hook file used for passive behavior and forced-resume behavior: `$GROK_HOME/hooks/fm-primary-turnend-guard.json` plus `bin/fm-turnend-guard-grok.sh`.
-Command run for passive behavior: `GROK_HOME="$scratch/grok-home" grok -p 'Say hi in exactly one word.' --permission-mode bypassPermissions --output-format plain --leader-socket "$scratch/leader.sock"`.
-Observed output: the global Stop hook fired and received `GROK_HOOK_EVENT=stop`, `GROK_WORKSPACE_ROOT`, and a payload containing `sessionId`, but exiting 2 did not make the model continue.
-Command run for forced resume behavior: the Stop hook ran `GROK_TURNEND_GUARD_ACTIVE=1 GROK_HOME="$scratch/grok-home" grok --resume "$session_id" -p 'SMOKETEST: say exactly GROKRESUMEHOOK...' --permission-mode bypassPermissions --output-format plain --leader-socket "$scratch/leader.sock"`.
-Observed output: the outer turn printed `Hi`, the nested resumed turn printed `GROKRESUMEHOOK`, and the nested Stop hook saw `GROK_TURNEND_GUARD_ACTIVE=1` and did not recurse.
-That validation command used `--permission-mode bypassPermissions` only to keep the scratch smoke unattended; the tracked adapter intentionally omits `--permission-mode`.
-Project-local Grok hooks did not fire in scratch single mode without a trust grant.
-The primary integration therefore requires the primary firstmate checkout to be trusted for Grok hooks, which can be done with `/hooks-trust` or launch-time `--trust`.
-If Grok declines to load project hooks, this primary guard fails open and `fm-guard.sh` remains the next-command alarm.
+An unmarked checkout or invalid marker falls through to the git-dir check.
+That check keeps crewmate and scout linked worktrees inert because their git dir differs from their git common dir.
+It also requires `AGENTS.md`, `bin/`, and the effective state directory.
 
-**2026-07-09 update:** grok 0.2.93 broke the `.grok/hooks/fm-primary-turnend-guard.json` Stop hook with `hook not executed: required env var(s) not set: ${root}`, because grok's own `${VAR}` expansion over the raw `command` string does not tolerate a bare local variable assigned earlier in the same `bash -lc` script.
-The hook command was fixed to reference `${GROK_WORKSPACE_ROOT:-}` directly everywhere instead of assigning it to `$root` first, and re-validated against grok 0.2.93 to fire and complete cleanly.
-See `docs/arm-pretool-check.md`'s "Harness wiring" section for the same Grok expansion requirement; that document's Grok hook shares the same fix.
+### Supervision need
 
-### 2026-07-12: secondmate-home enablement and the autonomous background-notify wake
+For an in-scope primary, the guard counts in-flight work from `state/*.meta`.
+These sources also count toward supervision need:
 
-The guard originally early-exited in every secondmate home on the `.fm-secondmate-home` marker.
-That was a scoping choice inherited from the guard's primary-only origin, not a defense against any secondmate-specific hazard.
-A genuinely marked secondmate home is now force-included as a guarded primary regardless of whether it is a treehouse-leased linked worktree or a git-cloned plain checkout.
-Only unmarked child worktrees fall through to the linked-worktree exemption, and marker validation prevents an empty, malformed, or symlink marker from spoofing inclusion.
+- Registered `state/procevent/*.source` records require supervision even though they have no task metadata.
+- Every mode treats `state/x-watch.check.sh` as supervision need, so Relay polling remains guarded without an in-flight task.
+- A custom check registered with `bin/fm-check-register.sh` counts the same way, so an operator's home-level poll keeps running after the last task is torn down.
 
-"No turn ends blind" for a secondmate is delivered by the same two mechanisms the main primary relies on.
-Mechanism B, the turn-end backstop, is this guard; its secondmate-home behavior is covered by hermetic tests in `tests/fm-turnend-guard.test.sh` (`test_hook_blocks_in_secondmate_own_home`, `test_hook_blocks_in_treehouse_leased_secondmate_home`, `test_hook_silent_in_idle_secondmate_home`, `test_hook_secondmate_loop_guard_allows_retry`, `test_hook_secondmate_reinvoke_recovery_loop`, `test_hook_silent_in_secondmate_child_worktree`, and `test_hook_exempts_linked_worktree_with_stray_marker`).
-Mechanism A, the autonomous wake, is a harness property: when a background watcher task exits, the harness re-invokes the model, which drains the wake, advances children, and re-arms a fresh watcher.
-Mechanism A cannot be a hermetic CI assertion because it requires a live model session, so it is recorded here as a dated first-hand measurement while `test_hook_secondmate_reinvoke_recovery_loop` covers the guard's deterministic half of the same recovery loop.
+The default cross-harness mode exits silently with no supervision need.
 
-Autonomous-re-invoke measurement, run first-hand on Claude Code 2.1.207 (Darwin 25.5.0) on 2026-07-12.
-Procedure: launch a detached `run_in_background` Bash task that models a one-shot watcher - it records a launch epoch, runs `sleep 25`, then records a completion epoch just before exit, writing only to the session scratchpad - then end the turn with no further tool calls and no pending question, a genuinely idle session with no human input.
-Observed marker timestamps:
+### Strict watcher check at the turn boundary
 
-```
-launch_epoch    = 1783890980   (14:16:20)   turn ends, session goes idle
-complete_epoch  = 1783891005   (14:16:45)   background task exits, 25s idle
-reinvoke_epoch  = 1783891016   (14:16:56)   MODEL RE-INVOKED
---------------------------------------------------------------
-wake latency (task complete -> model re-invoked): 11s, with ZERO human input
-```
+Outside Codex mode the guard calls `fm_watcher_healthy <state-dir> <watch-path> [grace-seconds] [home]` from `bin/fm-wake-lib.sh`.
+It is the same PID-strict identity-matched lock and fresh-beacon check used by `bin/fm-watch-arm.sh`.
+Under that check:
 
-The re-invocation arrived as a `<task-notification>` whose accompanying system notice stated verbatim "No human input has been received since the last genuine user message in this conversation".
-So the model was re-invoked solely by the background task's completion while idle, which is Mechanism A - the same background-notify wake the Claude supervision protocol relies on for the main primary.
-This matches the harness tool contract that a `run_in_background` task "keeps running across turns and re-invokes you when it exits", and reproduces the 11s latency the task audit measured independently on the same harness version.
-No Herdr command was issued and no fleet state was touched; the experiment wrote only to the session scratchpad, which was discarded.
+- A stale beacon blocks even when a watcher pid is live.
+- A fresh leftover beacon blocks when the lock is missing, dead, or identity-mismatched.
 
-## Tests
+The turn-end guard needs that strict check because it fires at the turn boundary.
+At that boundary the auto-arm is bringing a fresh watcher up for the upcoming idle period.
+The guard cooperates with that arm rather than trusting a beacon left by the cycle that just ended.
 
-`tests/fm-turnend-guard.test.sh` covers the shared predicate, primary scoping (including a secondmate's own home being guarded like the main primary while its child worktrees stay exempt), `FM_HOME` and `FM_STATE_OVERRIDE` precedence, Pi logical-run latch behavior for no-tool and multi-tool runs, fail-open behavior without `jq`, tracked hook registration for all five harnesses, and the Grok adapter's forced-resume loop guard and permission-mode regression.
-The default behavior suite does not invoke live language-model harnesses.
-`FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` opts into the isolated interactive Pi regression recorded above.
+### Foreign session-lock owner
+
+When an active home instead has a live session lock held by a verified harness that the current session does not own, the Claude guard emits a read-only ownership diagnostic and allows the turn to end safely.
+
+Ownership is the shared `fm_session_lock_owned_by_self` verdict in `bin/fm-session-lock-lib.sh`.
+The current session owns the lock when either of these holds:
+
+- The recorded pid is a member of the current session's contiguous harness ancestry.
+- The trusted Claude session id recorded beside the lock in `state/.lock-session` matches this hook's own environment while the recorded pid is still a live harness.
+
+That second signal keeps a background Claude session owning its own lock after the transient helper chain between its hooks and its recorded owner is recycled.
+The library's header owns the trust gate (`CLAUDE_PID` must be a Claude-shaped member of the current run).
+`bin/fm-lock.sh` owns the sidecar and the line-1 anchor it records for such a session.
+
+A Claude session that does not own the lock cannot arm or repair the home without stealing the live owner's lock, so blocking it would create an unbounded loop.
+The lock-owning session remains responsible for restoring supervision.
+
+The exception has these limits:
+
+- Malformed, absent, dead, or ancestry-uncertain lock records do not satisfy this Claude-specific exception and retain the ordinary guard behavior.
+- A missing or mismatched sidecar or an untrusted id adds nothing to the verdict, so a live owner outside the ancestry still takes this exit exactly as before.
+
+### Pull-warning verdict by supervision model
+
+`bin/fm-guard.sh`, the pull warning, instead uses the model-aware `fm_watcher_supervision_verdict` from `bin/fm-wake-lib.sh`.
+It needs a different verdict because it fires mid-turn, when the auto-arm model runs no watcher at all.
+The verdict depends on the supervision model.
+
+#### Claude Stop auto-arm model
+
+Under the Claude Stop auto-arm model a beacon fresh within grace is healthy even with no live watcher process.
+A stale beacon is still healthy while `fm_autoarm_midturn_healthy` in `bin/fm-wake-lib.sh` proves a Claude rewake explains the mid-turn gap.
+That proof requires both of these:
+
+- The rewake is bound to the current recovery generation and live session-lock owner.
+- No later watcher beacon or exhausted-failure marker supersedes it.
+
+The tolerance holds because that session's turn-end will re-arm.
+Without that proof a stale or absent beacon is a genuine lapse and alarms.
+
+#### Extension model
+
+Under the extension model (Pi, pi-signed, and omp) a live identity-matched watcher is the ordinary healthy state.
+A genuinely unheld lock with a beacon fresh within grace is also healthy while a live Pi or omp session provably owns continuity.
+That hand-off is benign because `.pi/extensions/fm-primary-pi-watch.ts` and `.omp/extensions/fm-primary-omp-watch.ts` tear the watcher down on every actionable wake and spawn the replacement themselves.
+
+A lock is genuinely unheld only in one of these cases:
+
+- The lock directory or its symlinked owner directory is absent.
+- The existing lock records no pid at all.
+
+Any lock with a recorded pid remains down when its pid, home, watcher path, or process identity fails the strict watcher health check.
+
+That ownership proof is `fm_extension_owns_supervision` in `bin/fm-wake-lib.sh`.
+It accepts either the Pi pair (`fm_pi_extension_owns_supervision`) or the omp pair (`fm_omp_extension_owns_supervision`).
+The proof requires all of these:
+
+- Both primary extensions of one family must be recorded in their state markers at their current on-disk builds by the process named in `state/.lock`.
+- That process must still be alive.
+- Pi's watcher marker must additionally name an active generation rather than a retiring handoff.
+
+omp never inherits the Pi tolerance because its proof is keyed on its own two files and markers.
+Requiring the turn-end guard extension as well as the watch extension is deliberate, because a home without that structural backstop has no benign hand-off to tolerate.
+
+Without that proof an unheld lock alarms exactly as it did before.
+An unloaded, version-drifted, or exited Pi or omp session is therefore loud immediately.
+A cycle the extension never restores is loud once the beacon passes grace.
+
+#### Persistent-watcher harnesses
+
+Under every persistent-watcher harness a live identity-matched watcher with a fresh beacon is still required, so the pull guard keeps the same strict semantics there.
+Its banner names the true failing condition, either a missing live watcher process or a genuinely stale beacon with its real age.
+It keys the once-per-episode dedup on that condition rather than the beacon mtime.
+
+### Away and quiet mode daemon ownership
+
+While `state/.afk` exists the daemon (`bin/fm-supervise-daemon.sh`) owns supervision and runs the watcher one-shot, in either away or quiet mode.
+The watcher exits on every wake and the daemon starts its replacement.
+A turn boundary therefore regularly lands in a hand-off where no watcher process holds the lock and nothing is wrong.
+
+The turn-end guard therefore accepts `fm_afk_daemon_owns_supervision` from `bin/fm-wake-lib.sh` as proof of supervision on that path.
+The proof requires both of these:
+
+- `state/.afk` must exist; the predicate does not distinguish away from quiet mode.
+- This home's `state/.supervise-daemon.lock` must name a live pid whose current process identity still matches the identity the daemon recorded for itself.
+
+That is the same identity discipline the watcher lock uses.
+A recycled pid, a lock left behind by a killed daemon, and a daemon that never recorded its identity all fail it.
+
+A daemon that cannot record its own identity at startup logs a warning and keeps running, because a supervisor must not refuse to run over an unreadable `ps`.
+That warning is what names the cause when the guard then keeps blocking away/quiet-mode turn boundaries for the rest of that daemon's life.
+
+The proof covers ownership only, never freshness.
+The guard still requires a fresh beacon, with these results:
+
+- A daemon that stops restarting its watcher still blocks once the beacon passes grace.
+- A home with no daemon and no watcher blocks exactly as it did before.
+
+That beacon check uses the poll-derived grace described below rather than the flat `FM_GUARD_GRACE` default.
+It uses that grace because the daemon starts a fresh one-shot watcher only after it finishes handling the previous wake.
+That handling can legitimately outrun a fixed 300-second window under load (a slow registered check, a busy supervisor pane) with the daemon perfectly healthy throughout.
+
+With `state/.afk` absent the daemon lock proves nothing and the strict watcher predicate is unchanged.
+
+### State directory, grace, and missing input
+
+- `FM_STATE_OVERRIDE` wins over `FM_HOME/state`, and `FM_HOME` wins over repository-root `state/`.
+- `FM_GUARD_GRACE` controls beacon freshness and defaults to 300 seconds.
+- If `jq` is missing or hook stdin is empty, the guard exits 0 because it cannot safely read loop-guard fields.
+
+### Guard grace and the poll cadence
+
+`bin/fm-watch.sh` touches `state/.last-watcher-beat` once per cycle, immediately before its terminal wait (`event_wait_or_sleep`) as well as at the top of the next cycle.
+A healthy watcher's beacon can therefore legitimately age up to `FM_POLL` seconds between touches.
+
+A fixed 300-second grace default stops correctly bounding staleness once a home's `FM_POLL` reaches or exceeds it.
+A perfectly healthy watcher mid-wait would then read stale at the edge of every full poll cycle by definition.
+That is exactly what a long-poll home (`FM_POLL=300`) hit against the Claude Stop-hook auto-arm (`bin/fm-claude-stop-autoarm.sh`).
+
+Two readers derive their default grace from the configured poll instead of a bare constant:
+
+- That hook.
+- `bin/fm-watch.sh`'s own pre-acquisition staleness check (the "lock held by live pid but heartbeat is stale" refusal).
+
+Both use `max(300, FM_POLL + 60)`.
+The default never drops below the historical 300-second floor for the common short-poll case, but grows with the poll cadence once that cadence would otherwise outrun it.
+`fm_poll_derived_grace` in `bin/fm-wake-lib.sh` is the single owner of that formula.
+
+That refusal has a ceiling.
+Once the live holder's beacon is stale past `FM_WATCHER_STALL_BOUND` (default three times the grace), the re-arm takes these steps:
+
+1. It re-verifies the holder against the lock's recorded identity.
+2. It retires the holder with TERM.
+3. It starts in the holder's place.
+
+A watcher wedged mid-cycle can therefore no longer refuse every replacement indefinitely.
+`bin/fm-watch.sh`'s header owns the exact wording and the survives-TERM fallback.
+Below that bound a stale beacon alone does not end an attached arm's watch of a live, identity-matched holder; a changed lock can end it sooner.
+At the bound the arm reports a typed stalled-holder failure so its owner's retry can replace the holder.
+`fm_watcher_stall_bound` in `bin/fm-wake-lib.sh` owns the shared derivation; `bin/fm-watch-arm.sh`'s header owns the exact attached-arm close behavior.
+
+The auto-arm hook additionally exports its resolved `FM_GUARD_GRACE` when it forks `bin/fm-watch-arm.sh`.
+The arm wrapper and the watcher it may start then judge staleness with the exact same value the hook just judged it with, whether that value came from an operator override or the poll-derived default.
+
+`bin/fm-turnend-guard.sh`'s daemon-ownership branch (`fm_afk_daemon_owns_supervision`, above, covering both away and quiet mode) also derives its beacon grace from `fm_poll_derived_grace` rather than falling back to the bare 300-second default.
+The reason is the same.
+The daemon's watcher-restart cadence there is not a fixed poll loop, so a flat grace misreads a daemon that is genuinely still cycling as down.
+
+Every other direct `FM_GUARD_GRACE` reader still falls back to the bare 300-second default unless `FM_GUARD_GRACE` is set explicitly in the environment.
+Those readers are:
+
+- `bin/fm-guard.sh`.
+- The strict-watcher checks in `bin/fm-turnend-guard.sh` and its harness-specific wrappers.
+- `bin/fm-wake-lib.sh`.
+
+## Harness integrations
+
+Each enabled primary harness adapts its own turn-end mechanism to the shared guard.
+
+| Harness | Turn-end hook | How it enforces the guard |
+| --- | --- | --- |
+| Claude | Two `Stop` hooks in `.claude/settings.json` | Blocks with exit status 2, cooperating with the Stop auto-arm |
+| Codex | `Stop` hook in `.codex/hooks.json` | Blocks with exit status 2 |
+| OpenCode | `session.idle` in `.opencode/plugins/fm-primary-turnend-guard.js` | Passive callback that schedules one follow-up |
+| Pi | `agent_settled` in `.pi/extensions/fm-primary-turnend-guard.ts` | Passive callback that schedules one follow-up |
+| omp | `session_stop` in `.omp/extensions/fm-primary-turnend-guard.ts` | Blocking hook that compels one continuation |
+| Cursor | `stop` hook in `.cursor/hooks.json` | Cannot block, so it parks and returns at most one follow-up |
+| Grok | `Stop` hook in `.grok/hooks/fm-primary-turnend-guard.json` | Native blocking, or one legacy `grok --resume` fallback |
+
+The registrations in detail:
+
+- Claude registers two `Stop` hooks in `.claude/settings.json`, both anchored through `CLAUDE_PROJECT_DIR`: `bin/fm-turnend-guard.sh --claude`, and `bin/fm-claude-stop-autoarm.sh` with `asyncRewake: true` and `timeout: 28800`.
+  In a Claude secondmate home, `bin/fm-spawn.sh` writes a `.fm-busy-stop` pointer and gives the mate no `Stop` busy hook, so `--claude` is the only Stop writer of the parent home's busy record for that generation.
+  It records idle when it allows the Stop and busy when its exit 2 blocks it into a continuation, because Claude runs Stop hooks in parallel and that continuation fires no `UserPromptSubmit`.
+  A home whose guard predates `.fm-busy-stop` cannot close the turn, so that launch keeps the ordinary `Stop` idle hook instead.
+  [Runtime backend verification](verification/runtime-backends.md#secondmate-busy-contract) owns the live evidence.
+- Codex registers a synchronous `Stop` checkpoint through `bin/fm-turnend-guard.sh --codex` in `.codex/hooks.json`, anchors the executable to the hook process working directory, verifies a Firstmate-shaped hook-bearing root, and passes the original payload to the shared guard.
+- OpenCode listens for `session.idle` in `.opencode/plugins/fm-primary-turnend-guard.js`, lets the watcher coordinator act first, and calls `client.session.promptAsync` once when the guard returns 2.
+- Pi listens for `agent_settled` in `.pi/extensions/fm-primary-turnend-guard.ts`, runs once per logical agent run, and calls `pi.sendUserMessage(..., { deliverAs: "followUp" })` once when the guard returns 2.
+- omp answers its blocking `session_stop` hook in `.omp/extensions/fm-primary-turnend-guard.ts`, passing the payload's own `stop_hook_active` to the shared guard.
+  When the guard returns 2, it returns `{ continue: true, additionalContext }`, so the continuation is compelled rather than requested.
+  The continuation's stop carries `stop_hook_active: true`, which bounds it to one per turn, and omp's own cap of eight consecutive continuations is the second backstop.
+  `session_stop` never fires for an interrupted turn or a task session, so those boundaries are deliberately unguarded.
+- Cursor registers a `stop` hook in `.cursor/hooks.json` and delegates the whole turn boundary to `bin/fm-turnend-guard-cursor.sh`, the park described below.
+  Cursor also loads `<project>/.claude/settings.json`, so every tracked Claude-shaped entrypoint whose event Cursor covers stands down on a Cursor-delivered payload through `bin/fm-hook-host-lib.sh`.
+  That predicate reads the delivered payload's own `cursor_version`, never the environment.
+  Cursor exports `CURSOR_INVOKED_AS`, `CURSOR_PROJECT_DIR`, and `CURSOR_VERSION` into every child process, so an environment guard would also disable the hooks of a Claude session started by hand from a Cursor pane, which is the hazard the `GROK_SESSION_ID` exclusion below records.
+  The guarded set is the `SessionStart` entry, the two `PreToolUse` Bash entries, and both `Stop` entries.
+  Cursor 2026.08.11-e8db854 does not fire the Claude-shaped `Stop` entry at all, but it is guarded anyway because Cursor has no `asyncRewake`.
+  If a later build did fire it, `bin/fm-claude-stop-autoarm.sh` would run synchronously inside Cursor's stop step and hold that turn open for its declared multi-hour timeout, exactly the wedge grok 1.0.0 produced.
+- Grok registers a `Stop` hook in `.grok/hooks/fm-primary-turnend-guard.json` and delegates capability selection to `bin/fm-turnend-guard-grok.sh`.
+  The tracked Claude Stop entries are inert when `GROK_AGENT` or `GROK_HOOK_EVENT` is present, so Grok's Claude-compatible settings loading cannot create a second continuation path.
+  Both markers are required because Grok does not inject the same variables into every process kind.
+  grok 0.2.73 set `GROK_AGENT` for child and tool processes, while grok 1.0.0 hook processes carry `GROK_HOOK_EVENT`, `GROK_HOOK_NAME`, `GROK_SESSION_ID`, and `GROK_WORKSPACE_ROOT` but no `GROK_AGENT`.
+  A guard keyed on `GROK_AGENT` alone therefore stopped firing on grok 1.0.0, and the resulting Claude-only auto-arm ran synchronously under Grok.
+  Grok has no `asyncRewake`, so it waited on the foregrounded watcher for the declared 28800-second timeout and the Grok turn never ended.
+  Do NOT widen this guard to `GROK_SESSION_ID`: Grok injects that into every child process, so it can survive into a Claude session that Grok launched and would silently disable Claude's own continuity.
+  The same marker guard carries every tracked `.claude/settings.json` entry whose event Grok already covers through its own `.grok/hooks/` registration, which is both `Stop` entries, the `SessionStart` entry, and the two `PreToolUse` Bash entries.
+  `bin/fm-subagent-pretool-check.sh` is the one deliberate unguarded exception because no Grok registration covers the subagent-spawn event, recorded in [`subagent-guard.md`](subagent-guard.md) "Known residual gap".
+  `tests/fm-turnend-guard.test.sh` pins that inventory so neither the guarded set nor the exception can change silently.
+- pi-code, Pi's Claude-hook compatibility extension, also loads `<project>/.claude/settings.json` and has no `asyncRewake`, so it awaits every Stop hook it delivers.
+  `bin/fm-claude-stop-autoarm.sh` therefore stands down on a pi-code-delivered payload.
+  Otherwise its foreground arm would run synchronously and hold Pi's turn open for the declared multi-hour timeout, exactly the wedge Cursor and grok 1.0.0 would produce (issue #3343).
+  Pi's own native extensions own its supervision.
+  The discriminator is the payload's own `transcript_path`, not the environment and not the shared foreign-host predicate above.
+  pi-code stamps it with Pi's session file under `/.pi/`, a path component a Claude transcript never carries.
+  The stand-down fails toward running, matching the guards above, so no payload, no `jq`, or no `transcript_path` still arms, and every other Claude-shaped hook pi-code delivers keeps running.
+
+### Claude and Codex blocking
+
+Claude and Codex can block a Stop directly with exit status 2 and stderr.
+Both payloads carry `stop_hook_active`.
+The trusted Codex mode checks primary scope and supervision need, then requires the live session-lock ownership verdict before running the existing foreground checkpoint.
+An actionable result or quiet interval forces another real model continuation even when `stop_hook_active` is already true.
+A watcher PID alone is insufficient because Codex has no verified asynchronous completion callback after an actual turn exit.
+A checkpoint failure forces one explicit failure-reporting continuation and latches that failure for the same session, owner PID, and process identity; the next continued Stop permits an attended exit without retrying.
+A fresh logical user turn can retry after repair.
+The script header owns the failure-latch format and the checkpoint interval's hook-timeout margin.
+An unowned or stale session lock is never recovered at Stop.
+An explicit interrupt ends the synchronous wait rather than starting a replacement supervisor.
+This path requires project hooks to be trusted and invoked; a surface that omits those hooks remains unsupported, and no monitoring is promised after the Codex process exits.
+
+### Claude cooperative mode
+
+Claude runs the guard with `--claude`, which ignores `stop_hook_active` and cooperates with the Stop-owned auto-arm.
+Claude Code sets `stop_hook_active=true` on every stop after any stop-hook continuation, including `asyncRewake` rewakes.
+Under the default one-shot behavior, that re-opened the 2026-07-21 blind window.
+
+Before the Claude cooperative budget can re-block a Stop, the guard checks for a live foreign session-lock owner and takes the same safe diagnostic exit described under "Guard predicates" ([foreign session-lock owner](#foreign-session-lock-owner)).
+
+The Claude mode waits up to `FM_CLAUDE_AUTOARM_SYNC_WAIT_MS` (default 800 milliseconds).
+It allows the stop when any of these holds:
+
+- The watcher is healthy.
+- The auto-arm's generation claim is open.
+- `state/.claude-autoarm-epoch` contains a fresh actionable rewake owned by this event epoch.
+
+#### Auto-arm generation claim
+
+The claim is the ledger entry itself.
+The ledger is `state/.claude-autoarm-epoch`:
+
+- Its epoch sequence is a monotonic claim generation.
+- Line 1 records the claim and terminal outcome.
+- Line 2 records the claiming process's mandatory pid-identity.
+- Line 3, on an arming entry that recorded `owner_session_id`, records the pid-identity of the session-lock holder the claim was taken under.
+
+`fm_autoarm_claim_open` and `fm_autoarm_claim_next` in `bin/fm-wake-lib.sh` own the format contract.
+
+A claim is open while all of these hold:
+
+- Its outcome is `arming`.
+- Its owner pid is alive.
+- Its recorded identity successfully recomputes and matches that pid.
+- Its owner is still reachable by its session: it descends from the numeric pid in `state/.lock`, or its recorded `owner_session_id` matches the trusted session id in `state/.lock-session` while the lock-holder pid-identity recorded on entry line 3 still recomputes from that lock's holder pid.
+- It is not stuck.
+
+Stuck means the entry and the watcher beacon are both older than the guard grace, which proves the owner hung mid-arm.
+A healthy hours-long foregrounded cycle keeps the beacon beating, and every arming phase with no watcher is bounded in seconds.
+A missing or malformed lock means no session can receive a rewake, so such a claim is never open.
+The reachability test is what makes an open claim deliverable: a hook whose session exited mid-cycle stays alive with no parent to receive its exit 2, so deferring to it would leave the replacement session deaf until a captain turn.
+The session-id signal is the second one the claiming hook's own admission accepts, so a background session whose bridge is recycled mid-cycle - breaking the ancestry to its still-live lock owner - keeps its live claim instead of being double-armed.
+Pinning that signal to the lock holder's pid-identity recorded at claim time is what keeps a resumed session, which carries the same conversation id in a new process, from reading its own dead predecessor's orphan as open - a reused pid number is a different identity, so it does not match.
+An orphan fails both signals: it no longer descends from the replacement's lock pid, and its recorded lock-holder identity is the dead session's.
+An entry from a build before these fields existed records neither and falls back to descent alone.
+
+Anything else lets the next Stop-owned firing take the next generation and arm.
+That covers a finished outcome, a dead or identity-mismatched owner, an owner orphaned by its session's exit, a stuck owner, an identityless entry, or no entry.
+Taking a newer generation is the reclaim, and a steady-state predecessor is never signalled or revoked.
+
+No mutex is held across arming or output.
+`state/.claude-autoarm.lock` survives only as a micro-mutex serializing individual ledger writes.
+A superseded owner goes completely silent.
+Ownership is re-verified before every arm invocation, episode-state mutation, ledger write, and continuation.
+
+#### Exit status as the commit point
+
+The irrevocable commit point of a translation is the exit status, because the harness delivers the collected stderr banner only on exit 2.
+An owned terminal commit therefore decides the exit:
+
+- Markerless outcomes commit with the ledger write.
+- The once-per-episode failure notice commits only when its marker is created after the winning failed write in the same critical section.
+
+A generation whose required marker cannot be created is refused and exits 0 silently even after printing.
+Its terminal ledger entry is superseded by a later firing, which retries the notice.
+
+#### Why the claim boundaries exist
+
+Without those boundaries, two failures occurred:
+
+- A cycle that armed, delivered one rewake, and exited left both Stop participants deferring to its leftover lock indefinitely.
+  On 2026-08-14 two tasks were in flight, a beacon was 40 minutes cold, and every turn was blind until an operator intervened.
+- A hook that hung mid-arm kept a live pid on the lock, so the watcher was never auto-re-armed again (2026-08-26).
+
+Two bounded residuals are accepted intent, each costing at most one extra continuation turn absorbed by the durable idempotent wake queue:
+
+- An owner that dies between its owned terminal write and its own process exit.
+- A hung old-build owner that resumes during the one legacy upgrade window.
+
+A legacy build's lock-holding claim (recognizable by its `autoarm` role file) still defers or reclaims under the legacy abandonment proof.
+A live identity-verified stuck legacy owner is retired via TERM before its lock is removed, and an unverified pid is never signalled.
+An upgrade mid-session can therefore neither double-arm nor deadlock, and a failed reclaim re-blocks rather than allowing a blind stop.
+
+#### Failure progression and block budget
+
+Fresh `failed` and `failed-suppressed` outcomes enter or advance the failure progression instead of acting as unconditional recovery proof.
+The auto-arm itself rechecks the healthy watcher predicate and retries a bounded number of times before reporting a genuine failure.
+
+The foreground arm legitimately follows a healthy watcher until its next wake.
+The hook therefore catches HUP, TERM, and INT from host timeout or teardown and commits the ordinary durable failed outcome and failure-notice marker before exiting 2 for a recovery turn.
+Claude drops that exit 2 when it terminated the hook at the configured timeout itself, so a park that outlives the timeout ends without a rewake (`bin/fm-claude-stop-autoarm.sh` header).
+
+The first fresh exhausted-failure epoch preserves its handoff without consuming a blocked-stop count.
+Later fresh failed epochs advance the same monotonic progression instead of resetting it.
+When none of those proofs appears, the guard re-blocks up to `FM_CLAUDE_TURNEND_BLOCK_BUDGET` times (default 3, below Claude's 8-block override).
+In Claude mode, positive watcher recovery clears the block budget, failure notice, and attended alarm together under the existing budget lock before either hook reports ordinary recovery.
+
+The block budget is charged by two rules:
+
+- Each epoch identity is charged at most once per Stop under the budget lock.
+- A re-block against an epoch the auto-arm did not advance past the previous re-block is charged as well.
+
+That second rule still bounds an inert auto-arm when a hook never fires or fails before its generation claim and therefore leaves the ledger frozen at its last outcome.
+Charging only epoch changes let the count freeze with that ledger, so the remaining inert-hook cases could re-block without limit and make the attended fail-open unreachable.
+`budget_account_current_epoch` in `bin/fm-turnend-guard.sh` owns the rule.
+A verified live foreign session-lock owner takes the earlier diagnostic safe exit instead and never reaches this budget path.
+Whenever both coordination locks are needed, positive auto-arm recovery and the terminal check acquire the auto-arm owner lock before the budget lock.
+
+#### Attended fail-open
+
+The one loud attended fail-open is available only when all of these hold:
+
+- The auto-arm has recorded an exhausted failure.
+- Its one notice is already consumed.
+- The block budget is exhausted.
+- A final check finds neither a healthy watcher nor an automatic continuation.
+
+After that alarm, the Stop auto-arm suppresses further exit-2 continuations until positive watcher recovery, so the final fail-open remains reachable.
+The alarm cannot repeat during that failure episode, and a later unhealthy stop blocks again.
+A positively verified healthy watcher clears the failure notice, alarm, and block budget for a future independent episode.
+A Claude failure notice describes the automatic mechanism as broken and does not direct a routine manual background arm.
+
+### Passive adapters
+
+OpenCode, Pi, and pi-signed expose passive callbacks for this purpose.
+Their adapters fail open at the hook boundary to protect the user session.
+When the predicate blocks, they schedule one bounded follow-up.
+omp is the exception among the Pi-derived harnesses: its `session_stop` hook can block directly, so no passive latch is needed and the `stop_hook_active` loop guard applies.
+
+The generated prompts use the canonical `turn-end-guard` kind after the U+2063 `FIRSTMATE_OP: ` prefix, so Ahoy does not treat them as captain messages.
+Each passive adapter owns a loop latch:
+
+- Pi keeps the latch across internal tool turns and clears it only when the generated follow-up settles or delivery fails.
+- OpenCode's forced follow-up is supported for persistent TUI sessions and remains fail-open in headless `opencode run`.
+
+### Grok capability selection
+
+Grok makes exactly one typed capability decision from each running Stop payload:
+
+- A boolean `stopHookActive` selects native blocking, including both false on the initial stop and true on the bounded continuation.
+- The camel-case field has precedence when both spellings appear.
+- When it is absent, a boolean `stop_hook_active` selects the same native path for compatibility.
+- When both capability spellings are absent, the adapter preserves one pre-native `grok --resume` fallback guarded by `GROK_TURNEND_GUARD_ACTIVE` and intentionally omits `--permission-mode`.
+- Malformed JSON, a selected field with a non-boolean type, missing `jq`, missing hook prerequisites, or an already-active legacy guard allows the stop without starting either continuation path.
+
+The native path returns the shared guard's status and stderr to the same Grok process and never starts `grok --resume`.
+Grok's project hook requires the checkout to be trusted with `/hooks-trust` or launch-time `--trust`.
+Genuine pre-native builds can run the same tracked hook from an isolated global hook directory.
+
+### Cursor park
+
+Cursor cannot block a turn end at all.
+Its blocked-response mapper returns an empty object for the `stop` step, so exit 2 is a silent no-op, verified both statically and live.
+`bin/fm-turnend-guard-cursor.sh` therefore never exits 2 and never writes a banner expecting it to be read.
+Every path exits 0, and its only channel is at most one `followup_message` on stdout.
+Cursor runs that hook synchronously and awaits it, so one script owns both halves of the boundary.
+
+While supervision is needed it PARKS:
+
+1. It runs `bin/fm-watch-arm.sh` as its own tracked child.
+2. It holds the boundary open until the watcher closes.
+3. It returns an actionable close as one `watcher`-kind follow-up.
+
+It spends no model tokens while parked.
+This is the same between-turns shape as Claude's Stop auto-arm, so `fm_supervision_model` classifies Cursor as `autoarm` and the mid-turn pull guard accepts a fresh beacon without a live watcher.
+
+#### Cursor park under a Pi host
+
+The park stands down without arming when `PI_CODING_AGENT=true` and neither `CURSOR_AGENT` nor `CURSOR_INVOKED_AS` is set.
+Pi-with-Cursor-provider sessions (pi-cursor-sdk) load project `.cursor/hooks.json` into the Pi process.
+A Cursor park there would race Pi's extension-owned `fm_watch_arm_pi` continuity, resurface rearm wakes, and abort in-flight asks.
+`fm-spawn`'s cursor launch clears `PI_CODING_AGENT`.
+A hand-started cursor-agent may still inherit it.
+When either Cursor identity marker is present, the park still runs despite a leaked `PI_CODING_AGENT`.
+
+#### Cursor repair nag and loop bounds
+
+When the park cannot establish a cycle it asks this shared guard with `--cursor` and renders a returned exit 2 as one bounded `turn-end-guard` follow-up.
+Those nags are capped by `FM_CURSOR_TURNEND_BLOCK_BUDGET` (default 3) consecutive unproductive nags per session.
+A delivered wake resets that budget because it is productive work.
+
+The follow-up loop is bounded TWICE, because either bound alone is insufficient:
+
+- `loop_limit` in `.cursor/hooks.json` is Cursor's own ceiling and the only one that still holds if the adapter is broken or replaced.
+  Once `loop_count` reaches it Cursor stops invoking the hook, verified live.
+- `FM_CURSOR_TURNEND_LOOP_CEILING` (default 180) bounds the payload's `loop_count` from inside and sits deliberately BELOW the registered `loop_limit`.
+  Firstmate's bound therefore bites first and emits one final loud notice instead of supervision going silently dark at Cursor's ceiling.
+
+`loop_count` is Cursor's richer analogue of `stop_hook_active`.
+Its behavior was verified live:
+
+- It is 0 on the first stop after a real user message.
+- It increases by +1 per follow-up-driven stop.
+- The next real user message resets it to 0.
+
+### Captain messages during a Cursor park
+
+A captain message typed while the hook is parked is accepted and runs its turn immediately, and Cursor does NOT terminate the parked hook.
+The older park remains the recorded owner until that captain turn ends and the next `stop` hook claims the baton.
+An actionable watcher close in that window can therefore still be delivered by the older park as one follow-up.
+That delivery is bounded and safe.
+Only one park exists before the next `stop` claim, so it is a real wake and never a stale duplicate of another park's wake, while the durable wake queue makes handling idempotent.
+
+Each invocation publishes its sequence in `state/.cursor-park-owner` under the short publication and commit lock `state/.cursor-park-owner.lock`.
+The same bounded critical section covers the final owner and away-mode checks, follow-up output, and repair-budget commit.
+The next `stop` claim therefore makes an older park that is still running stand down without emitting or changing shared state.
+The lock is never held while the arm is sleeping, while the hook is polling, or while output is prepared.
+
+The park revalidates session ownership while polling and again inside the final commit section.
+It deliberately does not hold the fleet session lock across output, because an awaited hook must not block home-wide session acquisition.
+The remaining microsecond takeover window can produce at most one harmless wake that drains the durable queue.
+Without those records an older park still running after the next `stop` could leak one process and one stale duplicate wake.
+
+Cursor's `beforeSubmitPrompt` step fires once on a real captain message and does not fire for hook-driven follow-ups, so invalidating the park baton there would close the pre-claim window exactly.
+The step is now registered only for the [dialog mirror](supervision-host.md#the-dialog-mirror); it does not invalidate the park baton.
+Baton invalidation and the `preCompact` surface remain deferred.
+
+### Adapter failures in the pull guard
+
+If a passive adapter cannot invoke its SDK, or the Grok legacy fallback cannot find `grok` or a session id, the next pull-based `fm-guard.sh` call reports the problem.
+That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it always points to the active harness protocol rather than embedding another repair command.
+
+## Compatibility limits
+
+- Child crewmate and scout worktrees are outside scope.
+- A valid secondmate home is in scope.
+  An idle secondmate endpoint with no Relay poll remains healthy because it has no supervision need.
+- The blocking and bounded-follow-up mechanisms are limited to the primary integrations listed above.
+- OpenCode headless mode and untrusted Grok project hooks remain fail-open at the host boundary.
+- Cursor's `stop` step does not fire in headless `cursor-agent -p`, the same class of limit as OpenCode headless; firstmate primaries run interactive.
+- A Cursor primary must be launched with `--trust`, or its project hooks never load and the whole integration is inert.
+- Cursor's `preCompact` step is deliberately unregistered.
+  Its response can return only `user_message` and it is absent from Cursor's `additional_context` step set, so a post-compaction re-emit needs its own design and is deferred to a follow-up ([`sessionstart-nudge.md`](sessionstart-nudge.md) owns that uncovered surface).
+- Kimi Code CLI 0.29.1 exposes only global `[[hooks]]` configuration in `~/.kimi-code/config.toml`, including a `Stop` event with snake_case payload fields `hook_event_name`, `session_id`, `cwd`, and `stop_hook_active`.
+- Kimi has no project-level hook configuration and remains outside the primary guard integrations above.
+- Captain-approved Kimi crew wake support uses `bin/fm-kimi-turnend-hook.sh` to edit only one marker-delimited Firstmate region in that global config and install a silent always-zero hook.
+- The hook remains inert unless the payload `cwd` contains a per-task token pointer that resolves through Firstmate's private registry to one `state/<id>.turn-ended` marker.
+- Installation refuses before writing unless `python3` with `tomllib` and `jq` are available.
+- If `jq` is removed after installation, the hook remains silent and exits 0, turn-end wakes stop, and Kimi crews fall back to idle detection.
+- Unreadable hook input remains fail-open.
+- No harness adapter uses a shell ampersand to manufacture supervision.
+
+## Regression coverage
+
+`tests/fm-codex-stop.test.sh` covers repeated Stop-owned checkpoints, loading Relay cadence in the actual Stop child, refusal to recover an unowned session lock, and bounded failure continuation.
+`tests/fm-watch-checkpoint.test.sh` covers the checkpoint's owned cancellation lifecycle; its `fm-watch-checkpoint-eventwait.py` fixture exercises backend-reader cancellation through the isolated executable boundary, not a native Herdr lifecycle.
+`tests/fm-turnend-guard.test.sh` covers:
+
+- The predicate.
+- Main and secondmate primary scope.
+- Child-worktree exclusion.
+- `FM_HOME` and `FM_STATE_OVERRIDE` precedence.
+- The live-lock and fresh-beacon guard predicate.
+- The cooperative `--claude` open-generation claim wait.
+- Monotonic failed-epoch progression.
+- Bounded attended fail-open.
+- The same bound against a ledger frozen by an inert auto-arm with and without a verified failure episode.
+- Post-alarm continuation suppression.
+- Positive recovery reset.
+- Generation and legacy claim cases that must block or clear instead of allowing a blind stop.
+- Away-mode daemon ownership between watcher cycles and over a watcher lock left behind by an exited watcher, plus its dead, pid-reused, absent, stale-beacon, and away-mode-off negatives.
+- The away-mode beacon's poll-derived grace widening for a live daemon still mid-cycle and its bound against a dead daemon, a beacon older than that wider grace, and FM_POLL's inapplicability with away mode off.
+- Pi logical-run latching.
+- Missing-`jq` behavior.
+- All five primary registrations.
+- Grok native and legacy selection.
+- Typed field precedence.
+- Malformed input.
+- Exactly-one-path safety.
+
+`tests/fm-turnend-foreign-owner-arm-fix.test.sh` runs the extracted isolated executable reproduction against real auto-arm and turn-end guard scripts.
+It proves that a live foreign owner still prevents arming while repeated non-owner Stops receive a diagnostic and exit safely.
+
+`tests/fm-guard-stale-banner.test.sh` covers the pull-guard predicate for each supervision model:
+
+- The persistent model's fresh-leftover-beacon negative control.
+- The auto-arm model's healthy fresh-beacon-without-a-watcher case, session-and-recovery-bound long-turn rewake tolerance, independently broken tolerance signals, open-claim negative control, stale-beacon alarm, and isolation from other models.
+- The extension model's live-watcher path, ownership-qualified fresh hand-off, held-lock failures, independently broken ownership signals, stale-beacon alarm, queued-wake warning, and Pi and pi-signed harness routing.
+
+It also covers true-reason banner wording and reason-keyed episode dedup surviving a beacon mtime change.
+
+`tests/fm-cursor-primary.test.sh` covers the Cursor park end to end over real processes with no harness installed:
+
+- Each tracked Claude-shaped entrypoint standing down on a Cursor payload.
+- Both follow-up sources.
+- The bounded repair nag and its reset.
+- The nested loop bounds.
+- Supersession.
+- Away-mode and lock-ownership inertness.
+- Pi-host stand-down without Cursor identity and continued parking when `PI_CODING_AGENT` leaks alongside `CURSOR_AGENT` or `CURSOR_INVOKED_AS`.
+- Child-worktree exclusion.
+- That the adapter never exits 2.
+
+`tests/fm-kimi-harness.test.sh` covers the separate Kimi crew hook's format preservation, idempotence, refusal cases, token guard, spawn registration, and teardown cleanup.
+`tests/fm-supervision-instructions.test.sh` covers recovery-line ownership and pi-signed's identity-preserving reuse of Pi's protocol.
+`tests/fm-omp-harness.test.sh` covers the omp extension pair over a fake omp API (forced continuation on exit 2, the `stop_hook_active` bound, the seatbelt block, the ownership proof).
+
+The opt-in live tests are:
+
+- `FM_CURSOR_PRIMARY_LIVE_E2E=1 tests/fm-cursor-primary-live-e2e.test.sh` is the opt-in guard that proves the Cursor park behavior covered by `tests/fm-cursor-primary.test.sh` against the installed cursor-agent and fails naming the harness and version.
+- `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` is the opt-in isolated Pi path.
+- `FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` is the opt-in isolated omp path.
+
+[`verification/supervision.md`](verification/supervision.md#turn-end-guard) records the active cross-harness empirical evidence, including the current Claude `asyncRewake` revalidation.
