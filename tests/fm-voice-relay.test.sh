@@ -81,6 +81,74 @@ records_status() {
 
 seed_home
 
+python3 - "$ROOT/bin" "$TMP_ROOT" <<'PY_BACKEND' || fail "backend-aware voice status"
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+root = pathlib.Path(sys.argv[1])
+home = pathlib.Path(sys.argv[2]) / "backend-voice"
+for name in ("data", "state", "config", "fakebin"):
+    (home / name).mkdir(parents=True)
+(home / ".tasks.toml").write_text('backend = "beads"\n')
+(home / "state" / "live.meta").write_text("pr=https://github.com/example/test/pull/1\n")
+(home / "state" / "closed.meta").write_text("pr=https://github.com/example/test/pull/2\n")
+rows = [
+    ["live", "in_flight", "ship", "sample", 'A "quoted", active task', "captain", "private hold", "none", "1", "none"],
+    ["queued", "queued", "captain", "sample", "Pending choice", "none", "none", "none", "2", "none"],
+    ["closed", "done", "captain", "sample", "NEVER_FINISHED", "captain", "none", "none", "1", "none"],
+]
+listing = "tasks[3]{id,state,kind,repo,title,hold_kind,hold_reason,hold_until,priority,links}:\n"
+listing += "".join("  " + ",".join(json.dumps(v) for v in row) + "\n" for row in rows)
+(home / "listing").write_text(listing + "help[1]:\n  NEVER_BODY\n")
+tool = home / "fakebin" / "tasks-axi"
+tool.write_text("#!/usr/bin/env python3\n" +
+    "import os, pathlib, sys\n" +
+    "home = pathlib.Path(os.environ['FM_HOME'])\n" +
+    "assert pathlib.Path.cwd() == home\n" +
+    "assert 'TASKS_AXI_FILE' not in os.environ\n" +
+    "assert sys.argv[1:] == ['list', '--fields', 'hold_kind,hold_reason,hold_until,priority,links']\n" +
+    "print((home / 'listing').read_text(), end='')\n")
+tool.chmod(0o755)
+env = dict(os.environ, PATH=str(home / "fakebin") + os.pathsep + os.environ["PATH"],
+           TASKS_AXI_FILE="/unrelated/backlog.md")
+for key in ("TASKS_AXI_BACKEND", "FM_DATA_OVERRIDE", "FM_CONFIG_OVERRIDE", "FM_STATE_OVERRIDE"):
+    env.pop(key, None)
+
+def status(scope="full", **overrides):
+    result = subprocess.run(
+        [sys.executable, str(root / "fm_voice_records.py"), "status", "--home", str(home), "--scope", scope],
+        env=dict(env, **overrides), capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+for stale in (False, True):
+    if stale:
+        (home / "data" / "backlog.md").write_text("## In flight\n- [ ] stale - STALE_MARKER (kind: captain)\n")
+    answer = status()
+    assert (answer["in_flight"], answer["queued"], answer["awaiting_captain"], answer["open_pull_requests"]) == (1, 1, 2, 1), answer
+    assert answer["in_flight_detail"][0]["title"] == 'A "quoted", active task', answer
+    assert not any(token in json.dumps(answer) for token in ("NEVER_FINISHED", "NEVER_BODY", "STALE_MARKER", "pull/2")), answer
+narrow = status("counts")
+assert not any(token in json.dumps(narrow) for token in ('"live"', "quoted", "github.com", "private hold")), narrow
+(home / "config" / "voice-read-deny").write_text("PRIVATE HOLD\n")
+denied = status()
+assert denied["withheld_as_confidential"] == 1, denied
+assert denied["in_flight_detail"] == denied["pull_request_detail"] == [], denied
+assert denied["awaiting_captain_detail"] == [{"id": "queued", "title": "Pending choice"}], denied
+moved = home / "relocated"
+(moved / "data").mkdir(parents=True)
+(moved / ".tasks.toml").write_text('backend = "markdown"\n')
+(moved / "data" / "backlog.md").write_text("## In flight\n- [ ] moved - Relocated task\n")
+assert status(FM_DATA_OVERRIDE=str(moved / "data"))["in_flight_detail"] == [{"id": "moved", "title": "Relocated task", "state": "not started"}]
+tool.write_text("#!/bin/sh\nexit 1\n")
+failed = subprocess.run([sys.executable, str(root / "fm_voice_records.py"), "status", "--home", str(home)], env=env, capture_output=True, text=True)
+assert failed.returncode != 0 and not failed.stdout, failed
+PY_BACKEND
+pass "voice status uses the configured backend and preserves scope and deny filters"
+
 # --- the wire format --------------------------------------------------------
 #
 # A desynchronised stream must be a loud error rather than audio interpreted as

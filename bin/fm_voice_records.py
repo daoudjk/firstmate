@@ -307,6 +307,63 @@ def _parse_backlog(path):
     return items
 
 
+def _backlog_items(home):
+    data = data_dir(home)
+    if not os.path.isdir(data):
+        return []
+    root = os.path.dirname(os.path.abspath(__file__))
+    env = dict(os.environ, FM_HOME=home)
+    try:
+        addressed = subprocess.run(
+            ["bash", "-c", '. "$2/fm-tasks-axi-lib.sh"; '
+             '. "$2/fm-backlog-transition-lib.sh"; '
+             'fm_backlog_tasks_axi_addressing "$1" || exit $?; '
+             'printf "%s" "$FM_BACKLOG_AXI_FILE"', "voice-backlog", data, root],
+            stdin=subprocess.DEVNULL, env=env, capture_output=True,
+            text=True, timeout=10, check=False)
+        if addressed.returncode != 0:
+            raise RecordError("cannot resolve voice backlog")
+        if addressed.stdout:
+            return _parse_backlog(addressed.stdout)
+        listed = subprocess.run(
+            ["bash", os.path.join(root, "fm-tasks-axi.sh"), "list", "--fields",
+             "hold_kind,hold_reason,hold_until,priority,links"],
+            stdin=subprocess.DEVNULL, env=env, capture_output=True,
+            text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RecordError("cannot read voice backlog") from exc
+    if listed.returncode != 0:
+        raise RecordError("cannot read voice backlog")
+    header = re.search(r"^tasks\[(\d+)\]\{([^}]+)\}:$", listed.stdout, re.MULTILINE)
+    if header is None:
+        raise RecordError("invalid voice backlog listing")
+    fields = header.group(2).split(",")
+    if not {"id", "state", "kind", "repo", "title", "hold_kind"}.issubset(fields):
+        raise RecordError("invalid voice backlog fields")
+    rows = []
+    for line in listed.stdout[header.end():].splitlines():
+        if not line:
+            continue
+        if not line.startswith("  "):
+            break
+        tokens = re.findall(r'"(?:[^"\\]|\\.)*"|[^,]+', line[2:])
+        if len(tokens) != len(fields):
+            raise RecordError("invalid voice backlog row")
+        try:
+            values = [json.loads(t) if t.startswith('"') else t for t in tokens]
+        except ValueError as exc:
+            raise RecordError("invalid voice backlog value") from exc
+        rows.append(dict(zip(fields, values)))
+    if len(rows) != int(header.group(1)):
+        raise RecordError("incomplete voice backlog listing")
+    return [{
+        "section": {"in_flight": "in flight", "queued": "queued"}[row["state"]],
+        "id": row["id"], "title": row["title"], "done": False,
+        "tags": {key.replace("_", "-"): value for key, value in row.items()
+                 if key not in ("id", "state", "title")},
+    } for row in rows if row["state"] in ("in_flight", "queued")]
+
+
 def _last_event(state_dir, task_id):
     """Return (verb, line) from the newest status event in the tail, or (None, None).
 
@@ -398,7 +455,7 @@ def fleet_status(home=None, scope=None):
 
     state = state_dir(home)
     workers = _workers(state)
-    items = _parse_backlog(os.path.join(data_dir(home), "backlog.md"))
+    items = _backlog_items(home)
 
     open_items = [i for i in items if not i["done"]]
     in_flight = [i for i in open_items if i["section"] == "in flight"]
