@@ -50,11 +50,10 @@ fm_backend_tmux_visible_capture() {  # <target>
   tmux capture-pane -p -t "$1" -S -0
 }
 
-# fm_backend_tmux_send_key: one named key. Mirrors fm-send.sh's --key path:
-# `tmux display-message -p -t "$T" '#{pane_id}' >/dev/null`, then
-# `tmux send-keys -t "$T" "$2"`.
+# fm_backend_tmux_send_key: one named key. Tmux can prefix-match a gone target
+# to a live neighbor, so require exact membership before sending the key.
 fm_backend_tmux_send_key() {  # <target> <key>
-  tmux display-message -p -t "$1" '#{pane_id}' >/dev/null
+  fm_backend_tmux_target_exists "$1" || return 1
   tmux send-keys -t "$1" "$2"
 }
 
@@ -157,47 +156,94 @@ fm_backend_tmux_window_inventory() {  # <session-target>
   return 1
 }
 
-# fm_backend_tmux_target_exists: does <target> name a pane that is really there?
-# `display-message -p -t` is NOT an existence probe: for a target that is
-# absent it falls back to the caller's current pane and exits 0 whenever any
-# other pane lives. Existence is therefore decided only by an exact match
-# against a successful inventory read:
-#   %N                 pane id, matched against `list-panes -a`
-#   session:window[.N] window name, index or id (and optional pane index),
-#                      matched against `list-panes -s -t =session`
-# Exit codes: 0 present, 1 absent (the pane or its session is not there),
-# 2 malformed target (tmux is never asked), 3 unreadable (server unreachable
-# or any other failed read - proves nothing either way).
-fm_backend_tmux_target_exists() {  # <target>
-  local target=${1:-} session window out
-  case "$target" in
-    %[0-9]*)
-      case "${target#%}" in *[!0-9]*) return 2 ;; esac
-      out=$(LC_ALL=C tmux list-panes -a -F '#{pane_id}' 2>&1) || out=$(fm_backend_tmux_inventory_error "$out") || return $?
-      printf '%s\n' "$out" | grep -qxF -- "$target"
-      return $?
-      ;;
-    *:*:*|'':*|*:'') return 2 ;;
-    *:*) ;;
-    *) return 2 ;;
-  esac
-  session=${target%%:*}
-  window=${target#*:}
-  session=${session#=}
-  [ -n "$session" ] || return 2
-  out=$(LC_ALL=C tmux list-panes -s -t "=$session" -F '#{window_name}|#{window_index}|#{window_id}|#{window_name}.#{pane_index}|#{window_index}.#{pane_index}|#{window_id}.#{pane_index}' 2>&1) \
-    || { out=$(fm_backend_tmux_inventory_error "$out") || return $?; }
-  printf '%s\n' "$out" | tr '|' '\n' | grep -qxF -- "$window"
-}
-
-# Classify a failed tmux inventory read: a session that is not there is an
-# absent target (1); an unreachable server or any other failure proves nothing
-# (3).
+# Classify inventory failure without treating an unreadable server as absent.
 fm_backend_tmux_inventory_error() {  # <tmux-stderr>
   case "$1" in
     *"can't find session:"*|*"can't find window:"*) return 1 ;;
   esac
   return 3
+}
+
+# Resolve one exact window selector in one exact session to its stable id.
+# The shared dispatcher header owns the accepted target grammar.
+fm_backend_tmux_window_id() {  # <session-name> <window-name|index|@id>
+  local session=$1 selector=$2 rows window_id window_index window_name
+  rows=$(LC_ALL=C tmux list-windows -t "=$session" \
+    -F '#{window_id}|#{window_index}|#{window_name}' 2>&1) || { fm_backend_tmux_inventory_error "$rows"; return $?; }
+  while IFS='|' read -r window_id window_index window_name; do
+    case "$selector" in
+      @*) [ "$window_id" = "$selector" ] || continue ;;
+      *[!0-9]*) [ "$window_name" = "$selector" ] || continue ;;
+      *) [ "$window_index" = "$selector" ] || continue ;;
+    esac
+    printf '%s\n' "$window_id"
+    return 0
+  done <<EOF
+$rows
+EOF
+  return 1
+}
+
+# Adapter-owned tmux endpoint membership. Every comparison is literal and
+# session-scoped where the target names a session, so tmux never gets a chance
+# to satisfy the predicate through its prefix, pattern, or active-window
+# fallbacks.
+fm_backend_tmux_target_exists() {  # <target>
+  local target=${1:-} session selector windows base pane_index window_id out
+  [ -n "$target" ] || return 2
+  case "$target" in
+    %*)
+      case "${target#%}" in ''|*[!0-9]*) return 2 ;; esac
+      out=$(LC_ALL=C tmux list-panes -a -F '#{pane_id}' 2>&1) || { fm_backend_tmux_inventory_error "$out"; return $?; }
+      printf '%s\n' "$out" | grep -Fqx -- "$target"
+      ;;
+    @*)
+      case "${target#@}" in ''|*[!0-9]*) return 2 ;; esac
+      out=$(LC_ALL=C tmux list-windows -a -F '#{window_id}' 2>&1) || { fm_backend_tmux_inventory_error "$out"; return $?; }
+      printf '%s\n' "$out" | grep -Fqx -- "$target"
+      ;;
+    *:*:*)
+      return 2
+      ;;
+    *:*)
+      session=${target%%:*}
+      selector=${target#*:}
+      case "$session" in =*) session=${session#=} ;; esac
+      case "$selector" in =*) selector=${selector#=} ;; esac
+      [ -n "$session" ] && [ -n "$selector" ] || return 2
+
+      case "$selector" in
+        @*) fm_backend_tmux_window_id "$session" "$selector" >/dev/null ; return ;;
+        *[!0-9]*) ;;
+        *) fm_backend_tmux_window_id "$session" "$selector" >/dev/null ; return ;;
+      esac
+
+      windows=$(LC_ALL=C tmux list-windows -t "=$session" -F '#{window_name}' 2>&1) || { fm_backend_tmux_inventory_error "$windows"; return $?; }
+      if printf '%s\n' "$windows" | grep -Fqx -- "$selector"; then
+        return 0
+      fi
+
+      case "$selector" in
+        *.*)
+          base=${selector%.*}
+          pane_index=${selector##*.}
+          [ -n "$base" ] && [ -n "$pane_index" ] || return 1
+          case "$base" in *[!0-9]*) return 1 ;; esac
+          case "$pane_index" in *[!0-9]*) return 1 ;; esac
+          window_id=$(fm_backend_tmux_window_id "$session" "$base") || return $?
+          tmux list-panes -t "$window_id" -F '#{pane_index}' 2>/dev/null \
+            | grep -Fqx -- "$pane_index"
+          ;;
+        *) return 1 ;;
+      esac
+      ;;
+    *)
+      session=$target
+      case "$session" in =*) session=${session#=} ;; esac
+      [ -n "$session" ] || return 1
+      out=$(LC_ALL=C tmux has-session -t "=$session" 2>&1) || { fm_backend_tmux_inventory_error "$out"; return $?; }
+      ;;
+  esac
 }
 
 # fm_backend_tmux_kill: remove one explicitly named task window.

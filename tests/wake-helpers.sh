@@ -58,6 +58,7 @@ make_case() {
   dir="$TMP_ROOT/$name"
   fakebin="$dir/fakebin"
   mkdir -p "$dir/state" "$fakebin"
+  fm_test_track_watcher_state "$dir/state"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -164,6 +165,7 @@ make_supercase() {
   dir="$TMP_ROOT/$name"
   fakebin="$dir/fakebin"
   mkdir -p "$dir/state" "$fakebin"
+  fm_test_track_watcher_state "$dir/state"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -186,7 +188,15 @@ case "${1:-}" in
     [ "$_print" = 1 ] && printf 'fakepane\n'
     exit 0 ;;
   list-windows)
-    [ -n "${FM_FAKE_TMUX_WINDOW:-}" ] && printf '%s\n' "$FM_FAKE_TMUX_WINDOW"
+    _window=${FM_FAKE_TMUX_WINDOW:-firstmate:supervisor}
+    case "$*" in
+      *'#{session_name}:#{window_name}'*) printf '%s\n' "$_window" ;;
+      *'#{window_id}'*'#{window_index}'*'#{window_name}'*)
+        printf '@0|0|%s\n' "${_window#*:}" ;;
+      *'#{window_id}'*) printf '@0\n' ;;
+      *'#{window_index}'*) printf '0\n' ;;
+      *) printf '%s\n' "${_window#*:}" ;;
+    esac
     exit 0 ;;
   capture-pane)
     # Honor a single-line band capture (-S N -E M, both non-negative) for the
@@ -250,6 +260,7 @@ make_bordered_case() {
   local name=$1 dir fakebin
   dir="$TMP_ROOT/$name"; fakebin="$dir/fakebin"
   mkdir -p "$dir/state" "$fakebin"
+  fm_test_track_watcher_state "$dir/state"
   printf '╭─────╮\n│ >   │\n╰─────╯\n' > "$dir/composer"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
@@ -281,7 +292,13 @@ case "${1:-}" in
     [ "$print" = 1 ] && printf 'fakepane\n'
     exit 0 ;;
   capture-pane) cat "$COMPOSER" 2>/dev/null; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows)
+    case "$*" in
+      *'#{window_id}'*'#{window_index}'*'#{window_name}'*)
+        printf '@0|0|supervisor\n@1|1|win\n' ;;
+      *) printf 'supervisor\nwin\n' ;;
+    esac
+    exit 0 ;;
   send-keys)
     shift
     text=""; is_enter=0; lit=0
@@ -303,6 +320,12 @@ case "${1:-}" in
       fi
     elif [ "$lit" = 1 ]; then
       [ "${FM_FAKE_SEND_FAIL:-0}" = 1 ] && exit 1
+      # FM_FAKE_SEND_MAX_BYTES models a transport ceiling on one literal send.
+      if [ -n "${FM_FAKE_SEND_MAX_BYTES:-}" ] \
+        && [ "$(printf '%s' "$text" | LC_ALL=C wc -c | tr -d ' ')" -gt "$FM_FAKE_SEND_MAX_BYTES" ]; then
+        echo "command too long" >&2
+        exit 1
+      fi
       [ -n "${FM_FAKE_SENT:-}" ] && printf '%s\n' "$text" >> "$FM_FAKE_SENT"
       write_composer "$text"
     fi

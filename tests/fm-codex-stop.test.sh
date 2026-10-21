@@ -44,6 +44,26 @@ test_codex_stop_parks_repeatedly_and_refuses_unowned_locks() {
   assert_absent "$dir/state/.watch.lock/pid" "quiet checkpoint leaked a watcher"
   pass "Codex Stop runs three real bounded foreground cycles across false/true/true stops"
 
+  mkdir -p "$dir/config"
+  : > "$dir/config/supervision-host"
+  # shellcheck disable=SC2016 # The isolated primary expands its own variables.
+  out=$(env -u CLAUDECODE -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID \
+    FM_HOME="$dir" FM_ROOT_OVERRIDE="$dir" FM_CODEX_WATCH_CHECKPOINT=1 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$bin" -c '
+      printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+      for active in false true; do
+        printf "{\"stop_hook_active\":%s}" "$active" | "$FM_HOME/bin/fm-turnend-guard.sh" --codex
+        printf "host-guard-exit=%s\n" "$?"
+      done
+    ' 2>&1)
+  [ "$(printf '%s\n' "$out" | grep -c '^host-guard-exit=2$')" -eq 2 ] \
+    || fail "host broke repeated native Stop continuation: $out"
+  assert_grep $'\tboundary\t' "$dir/state/.supervision-host.log" "native Stop did not run the real host"
+  assert_absent "$dir/state/.watch.lock/pid" "host Stop checkpoint leaked its watcher"
+  rm "$dir/config/supervision-host"
+  pass "Codex Stop repeatedly runs the opted-in real supervision host within its native bound"
+
   cadence_home="$dir/cadence-home"
   mkdir -p "$cadence_home/config" "$cadence_home/state"
   printf 'export FM_CHECK_INTERVAL=1\n' > "$cadence_home/config/x-mode.env"

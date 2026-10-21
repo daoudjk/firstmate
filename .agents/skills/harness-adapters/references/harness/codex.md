@@ -49,4 +49,5 @@ Codex runs the Stop command with process PWD set to the hook-loaded project root
 The tracked hook anchors to `pwd -P`, verifies that root is Firstmate-shaped and hook-bearing, and then invokes the guard with the original payload.
 
 The trusted Stop handler owns normal Codex foreground checkpoints; `../../../docs/supervision-protocols/codex.md` owns the handling instructions and supported limits.
+In a home with `config/supervision-host` and no `config/supervision-host-off` the checkpoint runs the supervision host instead of the watcher, with Claude's print mode as its headless engine, and uses the native Stop bounds there or the longer standalone away bounds; [`supervision-host.md`](../../../../../docs/supervision-host.md) owns the host and that bound.
 Codex's PreToolUse watcher-arm seatbelt blocks directly through its project hook.

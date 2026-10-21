@@ -16,3 +16,7 @@ The Stop handler uses the existing checkpoint and session-lock ownership checks 
 This is synchronous Stop continuation, with a model handling interval between checkpoints.
 It does not provide asynchronous delivery after Codex actually exits or when trusted project hooks do not fire.
 An explicit interrupt ends the wait; it does not authorize a replacement supervisor.
+
+When the home enables the supervision host, the same Stop checkpoint parks that host instead of a plain watcher.
+The checkpoint header owns the native Stop bounds and the longer standalone away bound.
+The host returns its actionable handback to the same Stop continuation.
