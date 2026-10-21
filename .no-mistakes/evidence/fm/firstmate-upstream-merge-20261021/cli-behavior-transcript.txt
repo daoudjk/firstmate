@@ -1,0 +1,106 @@
+Fixture-only demonstration. PR URL and task records are synthetic; no forge mutations or model calls.
+
+$ python3 /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/bin/fm_voice_records.py status --home /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/.test-merge-cli-me_luu2m --scope full
+{
+  "awaiting_captain": 1,
+  "awaiting_captain_detail": [
+    {
+      "id": "review-choice",
+      "title": "Decide the rollout"
+    }
+  ],
+  "basis": "Last recorded event, which is history and not a live check.",
+  "captain_notes_waiting": 0,
+  "detail": "The lists name at most 5 items each; the counts above are the whole picture. Give the captain the counts and a couple of names, not every row.",
+  "in_flight": 1,
+  "in_flight_detail": [
+    {
+      "id": "merge-sync",
+      "state": "working",
+      "title": "Preserve fork behavior"
+    }
+  ],
+  "open_pull_requests": 1,
+  "pull_request_detail": [
+    {
+      "id": "merge-sync",
+      "url": "https://github.com/daoudjk/firstmate/pull/123"
+    }
+  ],
+  "queued": 1,
+  "scope": "full",
+  "withheld_as_confidential": 0,
+  "worker_states": {
+    "working": 1
+  },
+  "workers_on_deck": 1
+}
+[exit 0]
+
+$ python3 /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/bin/fm_voice_records.py status --home /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/.test-merge-cli-me_luu2m --scope counts
+{
+  "awaiting_captain": 1,
+  "basis": "Last recorded event, which is history and not a live check.",
+  "captain_notes_waiting": 0,
+  "detail": "Identifiers, titles and pull request links are withheld at this read scope. Say that the detail is not available by voice rather than guessing at it.",
+  "in_flight": 1,
+  "open_pull_requests": 1,
+  "queued": 1,
+  "scope": "counts",
+  "worker_states": {
+    "working": 1
+  },
+  "workers_on_deck": 1
+}
+[exit 0]
+
+$ bash /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/bin/fm-brief.sh merge-proof renamed-project --mode no-mistakes --delivery-repo daoudjk/firstmate
+scaffolded: /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/.test-merge-cli-me_luu2m/data/merge-proof/brief.md (ship, mode=no-mistakes; replace {TASK} and {FIRSTMATE_SPEC})
+[exit 0]
+
+$ git init -q /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/.test-merge-cli-me_luu2m
+[exit 0]
+
+Real Stop hooks; supervision host enabled=False
+
+$ /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/.test-merge-cli-me_luu2m/codex -c printf '%s\n' "$$" > "$FM_HOME/state/.lock"
+for active in false true true; do
+  printf '{"stop_hook_active":%s}' "$active" | "$FM_HOME/bin/fm-turnend-guard.sh" --codex
+  printf 'Stop active=%s, continuation exit=%s\n' "$active" "$?"
+done
+Stop active=false, continuation exit=2
+Stop active=true, continuation exit=2
+Stop active=true, continuation exit=2
+checkpoint: no actionable wake within 1s
+Codex Stop checkpoint completed. Drain with bin/fm-wake-drain.sh, handle the presented work, then run its exact WAKE_ACK_REQUIRED command. While supervision is needed the next Stop runs another foreground checkpoint automatically. Do not launch another supervisor or background watcher.
+check: rearm-resurface
+Codex Stop checkpoint completed. Drain with bin/fm-wake-drain.sh, handle the presented work, then run its exact WAKE_ACK_REQUIRED command. While supervision is needed the next Stop runs another foreground checkpoint automatically. Do not launch another supervisor or background watcher.
+checkpoint: no actionable wake within 1s
+Codex Stop checkpoint completed. Drain with bin/fm-wake-drain.sh, handle the presented work, then run its exact WAKE_ACK_REQUIRED command. While supervision is needed the next Stop runs another foreground checkpoint automatically. Do not launch another supervisor or background watcher.
+[exit 0]
+
+Real Stop hooks; supervision host enabled=True
+
+$ /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/.test-merge-cli-me_luu2m/codex -c printf '%s\n' "$$" > "$FM_HOME/state/.lock"
+for active in false true true; do
+  printf '{"stop_hook_active":%s}' "$active" | "$FM_HOME/bin/fm-turnend-guard.sh" --codex
+  printf 'Stop active=%s, continuation exit=%s\n' "$active" "$?"
+done
+Stop active=false, continuation exit=2
+Stop active=true, continuation exit=2
+Stop active=true, continuation exit=2
+checkpoint: no actionable wake within 1s
+Codex Stop checkpoint completed. Drain with bin/fm-wake-drain.sh, handle the presented work, then run its exact WAKE_ACK_REQUIRED command. While supervision is needed the next Stop runs another foreground checkpoint automatically. Do not launch another supervisor or background watcher.
+checkpoint: no actionable wake within 1s
+Codex Stop checkpoint completed. Drain with bin/fm-wake-drain.sh, handle the presented work, then run its exact WAKE_ACK_REQUIRED command. While supervision is needed the next Stop runs another foreground checkpoint automatically. Do not launch another supervisor or background watcher.
+checkpoint: no actionable wake within 1s
+Codex Stop checkpoint completed. Drain with bin/fm-wake-drain.sh, handle the presented work, then run its exact WAKE_ACK_REQUIRED command. While supervision is needed the next Stop runs another foreground checkpoint automatically. Do not launch another supervisor or background watcher.
+[exit 0]
+
+Persisted supervision-host event log:
+1792618682	start	gen=host-503172-1792618682	primary=codex
+1792618684	boundary	after 2s
+1792618684	start	gen=host-506428-1792618684	primary=codex
+1792618685	boundary	after 1s
+1792618686	start	gen=host-509372-1792618686	primary=codex
+1792618687	boundary	after 1s

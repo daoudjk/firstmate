@@ -1,0 +1,10 @@
+FM_TEST_BEGIN 2026-10-21T21:41:06Z tests/fm-supervision-host.test.sh family=afk expected_gate_skip=none
+not ok - the host must hand its captain outcome to main
+--- /tmp/fm-supervision-host.A3uuBg/hook-successor-closed-before-return/hook.err ---
+firstmate watcher wake - one supervision event needs a handling turn now.
+signal: /tmp/fm-supervision-host.A3uuBg/hook-successor-closed-before-return/state/demo.status
+Run bin/fm-wake-drain.sh first, handle the wake, then run its exact WAKE_ACK_REQUIRED --ack-through command. Until that post-handling acknowledgement, interruption leaves the wake durable for idempotent re-handling. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.
+FM_TEST_END 2026-10-21T21:41:08Z tests/fm-supervision-host.test.sh exit=1 duration_ms=2948 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=1 skipped_gate=0 duration_ms=2991
+FM_TEST_SUMMARY_FAMILY family=afk count=1 duration_ms=2948 failed=1
+FM_TEST_SLOWEST rank=1 script=tests/fm-supervision-host.test.sh duration_ms=2948

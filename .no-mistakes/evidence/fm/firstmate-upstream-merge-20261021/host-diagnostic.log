@@ -1,0 +1,596 @@
++ set -u
+++ dirname tests/.nm-host-diagnostic.test.sh
++ . tests/wake-helpers.sh
++++ dirname tests/wake-helpers.sh
+++ . tests/lib.sh
++++ '[' -n '' ']'
++++ FM_TEST_LIB_SOURCED=1
++++ umask 022
+++++ dirname tests/lib.sh
++++ . tests/git-config-helpers.sh
+++++ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+++++ GIT_CONFIG_GLOBAL=/dev/null
+++++ GIT_CONFIG_NOSYSTEM=1
+++++ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
++++ export FM_GATE_REFUSE_BYPASS=1
++++ FM_GATE_REFUSE_BYPASS=1
++++ export FM_TEST_SEAM=1
++++ FM_TEST_SEAM=1
++++ unset FM_TASK_ID
++++ unset TASKS_AXI_FILE TASKS_AXI_BACKEND
++++++ dirname tests/lib.sh
+++++ cd tests/..
+++++ pwd
++++ ROOT=/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03
+++++ fm_test_tmpdir
+++++ local base=/tmp physical
+++++ base=/tmp
+++++ '[' -n /tmp ']'
+++++ case "$base" in
++++++ CDPATH=
++++++ cd -- /tmp
++++++ pwd -P
+++++ physical=/tmp
+++++ base=/tmp
+++++ '[' -e /tmp/.git ']'
+++++ printf '%s\n' /tmp
++++ FM_TEST_TMPDIR=/tmp
++++ FM_TEST_CLEANUP_DIRS=()
+++++ mktemp /tmp/.fm-test-cleanup.849921.XXXXXX
++++ FM_TEST_CLEANUP_REGISTRY=/tmp/.fm-test-cleanup.849921.9goUfJ
+++++ fm_test_pid_identity 849921
+++++ local pid=849921
+++++ FM_STATE_OVERRIDE=/tmp
+++++ bash -c '. "$1"; fm_pid_identity "$2"' _ /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/bin/fm-wake-lib.sh 849921
++++ FM_TEST_OWNER_IDENTITY='linux-starttime=64111419 cmdline-hex=62617368002d780074657374732f2e6e6d2d686f73742d646961676e6f737469632e746573742e736800'
+++++ mktemp /tmp/.fm-test-procevent.849921.XXXXXX
++++ FM_TEST_PROCEVENT_REGISTRY=/tmp/.fm-test-procevent.849921.RHVo4V
+++++ mktemp /tmp/.fm-test-watcher.849921.XXXXXX
++++ FM_TEST_WATCHER_REGISTRY=/tmp/.fm-test-watcher.849921.2LwRU6
++++ FM_TEST_STUB_MAX_BLOCK_SECONDS=120
++++ export FM_TEST_STUB_MAX_BLOCK_SECONDS
++++ trap fm_test_cleanup EXIT
++++ trap 'fm_test_cleanup; exit 130' INT
++++ trap 'fm_test_cleanup; exit 143' TERM
++++ trap 'fm_test_cleanup; exit 129' HUP
++++ trap 'fm_test_cleanup; exit 131' QUIT
++++ FM_TEST_ORPHAN_MAX_AGE_SECONDS=3600
++++ '[' 0 '!=' 1 ']'
++++ fm_test_reap_orphans
++++ local marker dir mtime now owner_pid owner_identity current_identity
+++++ date +%s
++++ now=1792618900
++++ for marker in "$FM_TEST_TMPDIR"/fm-*/.fm-test-fixture
++++ '[' -e /tmp/fm-extension-binding.ClHHYd/.fm-test-fixture ']'
+++++ sed -n 1p /tmp/fm-extension-binding.ClHHYd/.fm-test-fixture
++++ owner_pid=2679511
+++++ sed -n '2,$p' /tmp/fm-extension-binding.ClHHYd/.fm-test-fixture
++++ owner_identity='linux-starttime=63901107 cmdline-hex=626173680074657374732f666d2d657874656e73696f6e2d62696e64696e672e746573742e736800'
++++ case "$owner_pid" in
+++++ fm_test_pid_identity 2679511
++++ current_identity=
++++ current_identity=
++++ '[' -n 'linux-starttime=63901107 cmdline-hex=626173680074657374732f666d2d657874656e73696f6e2d62696e64696e672e746573742e736800' ']'
++++ '[' '' = 'linux-starttime=63901107 cmdline-hex=626173680074657374732f666d2d657874656e73696f6e2d62696e64696e672e746573742e736800' ']'
+++++ stat -c %Y /tmp/fm-extension-binding.ClHHYd/.fm-test-fixture
++++ mtime=1792616797
++++ '[' 2103 -ge 3600 ']'
++++ continue
++++ for marker in "$FM_TEST_TMPDIR"/fm-*/.fm-test-fixture
++++ '[' -e /tmp/fm-parent-channel-scan-exclusion-root.yDEFSI/.fm-test-fixture ']'
+++++ sed -n 1p /tmp/fm-parent-channel-scan-exclusion-root.yDEFSI/.fm-test-fixture
++++ owner_pid=3668128
+++++ sed -n '2,$p' /tmp/fm-parent-channel-scan-exclusion-root.yDEFSI/.fm-test-fixture
++++ owner_identity='linux-starttime=63988203 cmdline-hex=626173680074657374732f666d2d706172656e742d6368616e6e656c2d7363616e2d6578636c7573696f6e2e746573742e736800'
++++ case "$owner_pid" in
+++++ fm_test_pid_identity 3668128
++++ current_identity=
++++ current_identity=
++++ '[' -n 'linux-starttime=63988203 cmdline-hex=626173680074657374732f666d2d706172656e742d6368616e6e656c2d7363616e2d6578636c7573696f6e2e746573742e736800' ']'
++++ '[' '' = 'linux-starttime=63988203 cmdline-hex=626173680074657374732f666d2d706172656e742d6368616e6e656c2d7363616e2d6578636c7573696f6e2e746573742e736800' ']'
+++++ stat -c %Y /tmp/fm-parent-channel-scan-exclusion-root.yDEFSI/.fm-test-fixture
++++ mtime=1792617668
++++ '[' 1232 -ge 3600 ']'
++++ continue
++++ for marker in "$FM_TEST_TMPDIR"/fm-*/.fm-test-fixture
++++ '[' -e /tmp/fm-pi-branch-responsiveness.ZbyVjz/.fm-test-fixture ']'
+++++ sed -n 1p /tmp/fm-pi-branch-responsiveness.ZbyVjz/.fm-test-fixture
++++ owner_pid=3900662
+++++ sed -n '2,$p' /tmp/fm-pi-branch-responsiveness.ZbyVjz/.fm-test-fixture
++++ owner_identity='linux-starttime=64002779 cmdline-hex=626173680074657374732f666d2d70692d6272616e63682d726573706f6e736976656e6573732d6c6976652d6532652e746573742e736800'
++++ case "$owner_pid" in
+++++ fm_test_pid_identity 3900662
++++ current_identity=
++++ current_identity=
++++ '[' -n 'linux-starttime=64002779 cmdline-hex=626173680074657374732f666d2d70692d6272616e63682d726573706f6e736976656e6573732d6c6976652d6532652e746573742e736800' ']'
++++ '[' '' = 'linux-starttime=64002779 cmdline-hex=626173680074657374732f666d2d70692d6272616e63682d726573706f6e736976656e6573732d6c6976652d6532652e746573742e736800' ']'
+++++ stat -c %Y /tmp/fm-pi-branch-responsiveness.ZbyVjz/.fm-test-fixture
++++ mtime=1792617814
++++ '[' 1086 -ge 3600 ']'
++++ continue
++++ for marker in "$FM_TEST_TMPDIR"/fm-*/.fm-test-fixture
++++ '[' -e /tmp/fm-pr-merge-tests.vbAeGe/.fm-test-fixture ']'
+++++ sed -n 1p /tmp/fm-pr-merge-tests.vbAeGe/.fm-test-fixture
++++ owner_pid=611752
+++++ sed -n '2,$p' /tmp/fm-pr-merge-tests.vbAeGe/.fm-test-fixture
++++ owner_identity='linux-starttime=64095912 cmdline-hex=626173680074657374732f666d2d70722d6d657267652e746573742e736800'
++++ case "$owner_pid" in
+++++ fm_test_pid_identity 611752
++++ current_identity='linux-starttime=64095912 cmdline-hex=626173680074657374732f666d2d70722d6d657267652e746573742e736800'
++++ '[' -n 'linux-starttime=64095912 cmdline-hex=626173680074657374732f666d2d70722d6d657267652e746573742e736800' ']'
++++ '[' 'linux-starttime=64095912 cmdline-hex=626173680074657374732f666d2d70722d6d657267652e746573742e736800' = 'linux-starttime=64095912 cmdline-hex=626173680074657374732f666d2d70722d6d657267652e746573742e736800' ']'
++++ continue
+++ '[' -z '' ']'
++++ fm_test_tmproot fm-wake-tangle-root
++++ local prefix=fm-wake-tangle-root root tmp_base
+++++ fm_test_tmpdir
+++++ local base=/tmp physical
+++++ base=/tmp
+++++ '[' -n /tmp ']'
+++++ case "$base" in
++++++ CDPATH=
++++++ cd -- /tmp
++++++ pwd -P
+++++ physical=/tmp
+++++ base=/tmp
+++++ '[' -e /tmp/.git ']'
+++++ printf '%s\n' /tmp
++++ tmp_base=/tmp
++++ tmp_base=/tmp
+++++ mktemp -d /tmp/fm-wake-tangle-root.XXXXXX
++++ root=/tmp/fm-wake-tangle-root.8fB2vR
+++++ cd -P -- /tmp/fm-wake-tangle-root.8fB2vR
+++++ pwd -P
++++ root=/tmp/fm-wake-tangle-root.8fB2vR
++++ printf '%s\n%s\n' 849921 'linux-starttime=64111419 cmdline-hex=62617368002d780074657374732f2e6e6d2d686f73742d646961676e6f737469632e746573742e736800'
++++ printf '%s\n' /tmp/fm-wake-tangle-root.8fB2vR
++++ printf '%s\n' /tmp/fm-wake-tangle-root.8fB2vR
+++ FM_ROOT_OVERRIDE=/tmp/fm-wake-tangle-root.8fB2vR
+++ export FM_ROOT_OVERRIDE
++++ fm_test_tmproot fm-wedge-rec
++++ local prefix=fm-wedge-rec root tmp_base
+++++ fm_test_tmpdir
+++++ local base=/tmp physical
+++++ base=/tmp
+++++ '[' -n /tmp ']'
+++++ case "$base" in
++++++ CDPATH=
++++++ cd -- /tmp
++++++ pwd -P
+++++ physical=/tmp
+++++ base=/tmp
+++++ '[' -e /tmp/.git ']'
+++++ printf '%s\n' /tmp
++++ tmp_base=/tmp
++++ tmp_base=/tmp
+++++ mktemp -d /tmp/fm-wedge-rec.XXXXXX
++++ root=/tmp/fm-wedge-rec.wVdkTa
+++++ cd -P -- /tmp/fm-wedge-rec.wVdkTa
+++++ pwd -P
++++ root=/tmp/fm-wedge-rec.wVdkTa
++++ printf '%s\n%s\n' 849921 'linux-starttime=64111419 cmdline-hex=62617368002d780074657374732f2e6e6d2d686f73742d646961676e6f737469632e746573742e736800'
++++ printf '%s\n' /tmp/fm-wedge-rec.wVdkTa
++++ printf '%s\n' /tmp/fm-wedge-rec.wVdkTa
+++ _fm_wedge_rec_dir=/tmp/fm-wedge-rec.wVdkTa
+++ cat
+++ chmod +x /tmp/fm-wedge-rec.wVdkTa/rec
+++ export FM_WEDGE_ALARM_EXEC=/tmp/fm-wedge-rec.wVdkTa/rec
+++ FM_WEDGE_ALARM_EXEC=/tmp/fm-wedge-rec.wVdkTa/rec
++ HOST=/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/bin/fm-supervision-host.sh
++ REPORT=/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/bin/fm-branch-report.sh
++ DISPATCH=/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/bin/fm-branch-dispatch.mjs
++ CONTRACT=/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/bin/fm-afk-contract.sh
++ LEASE=/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/bin/fm-lease.sh
++ command -v node
++ command -v perl
+++ fm_test_tmproot fm-supervision-host
+++ local prefix=fm-supervision-host root tmp_base
++++ fm_test_tmpdir
++++ local base=/tmp physical
++++ base=/tmp
++++ '[' -n /tmp ']'
++++ case "$base" in
+++++ CDPATH=
+++++ cd -- /tmp
+++++ pwd -P
++++ physical=/tmp
++++ base=/tmp
++++ '[' -e /tmp/.git ']'
++++ printf '%s\n' /tmp
+++ tmp_base=/tmp
+++ tmp_base=/tmp
++++ mktemp -d /tmp/fm-supervision-host.XXXXXX
+++ root=/tmp/fm-supervision-host.RlLXbN
++++ cd -P -- /tmp/fm-supervision-host.RlLXbN
++++ pwd -P
+++ root=/tmp/fm-supervision-host.RlLXbN
+++ printf '%s\n%s\n' 849921 'linux-starttime=64111419 cmdline-hex=62617368002d780074657374732f2e6e6d2d686f73742d646961676e6f737469632e746573742e736800'
+++ printf '%s\n' /tmp/fm-supervision-host.RlLXbN
+++ printf '%s\n' /tmp/fm-supervision-host.RlLXbN
++ TMP_ROOT=/tmp/fm-supervision-host.RlLXbN
+++ fm_fakebin /tmp/fm-supervision-host.RlLXbN/fakebin
+++ local dir=/tmp/fm-supervision-host.RlLXbN/fakebin fakebin=/tmp/fm-supervision-host.RlLXbN/fakebin/fakebin
+++ mkdir -p /tmp/fm-supervision-host.RlLXbN/fakebin/fakebin
+++ printf '%s\n' /tmp/fm-supervision-host.RlLXbN/fakebin/fakebin
++ FAKEBIN=/tmp/fm-supervision-host.RlLXbN/fakebin/fakebin
++ ln -s /bin/bash /tmp/fm-supervision-host.RlLXbN/fakebin/fakebin/claude
++ FAKE_CLAUDE=/tmp/fm-supervision-host.RlLXbN/fakebin/fakebin/claude
++ STUB=/tmp/fm-supervision-host.RlLXbN/engine-stub
++ cat
++ chmod +x /tmp/fm-supervision-host.RlLXbN/engine-stub
++ export FM_REPO=/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03
++ FM_REPO=/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03
++ export FM_SUPERVISION_ENGINE_CLAUDE_BIN=/tmp/fm-supervision-host.RlLXbN/engine-stub
++ FM_SUPERVISION_ENGINE_CLAUDE_BIN=/tmp/fm-supervision-host.RlLXbN/engine-stub
++ export FM_SUPERVISION_HOST_PRIMARY=claude
++ FM_SUPERVISION_HOST_PRIMARY=claude
++ export FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999
++ FM_POLL=1
++ FM_SIGNAL_GRACE=0
++ FM_CHECK_INTERVAL=999999
++ FM_HEARTBEAT=999999
++ export FM_SUPERVISION_ENGINE_GRACE=1
++ FM_SUPERVISION_ENGINE_GRACE=1
++ export FM_ARM_CONFIRM_TIMEOUT=30
++ FM_ARM_CONFIRM_TIMEOUT=30
++ unset FM_SUPERVISION_ACTOR FM_BRANCH_REPORT_TURN FM_LEASE_HOLDER_PID PI_CODING_AGENT
++ HOMES_FILE=/tmp/fm-supervision-host.RlLXbN/homes
++ trap suite_cleanup EXIT
++ MIRROR_ROOT=/tmp/fm-supervision-host.RlLXbN/mirror-root
++ mkdir -p /tmp/fm-supervision-host.RlLXbN/mirror-root
++ git init -q /tmp/fm-supervision-host.RlLXbN/mirror-root
++ :
++ ln -s /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/bin /tmp/fm-supervision-host.RlLXbN/mirror-root/bin
++ LEFT_WATCHER=
++ LEFT_ARM=
++ test_claude_stop_hook_restores_handoff_when_successor_closed_before_exit_to_main
++ local home
+++ make_primary_home hook-successor-closed-before-return
+++ local home
++++ make_home hook-successor-closed-before-return attended
++++ local home=/tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++++ mkdir -p /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/config /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/fakebin
++++ printf '#!/usr/bin/env bash\nexit 1\n'
++++ chmod +x /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/fakebin/tmux
++++ make_fake_crew_state /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/fakebin
++++ local fakebin=/tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/fakebin
++++ cat
++++ chmod +x /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/fakebin/fm-crew-state.sh
++++ printf '%s\n' /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/fakebin/fm-crew-state.sh
++++ printf '%s\n' ''
++++ '[' -n '' ']'
++++ :
++++ printf 'project=demo\nwindow=fm-demo\nharness=claude\n'
++++ echo handle
++++ '[' attended = away ']'
++++ printf '{"hook_event_name":"UserPromptSubmit","prompt_id":"p0","prompt":"watch the fleet for me"}'
++++ '[' attended = away ']'
++++ '[' attended = quiet ']'
++++ printf '%s\n' /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++++ printf '%s\n' /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
+++ home=/tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
+++ git init -q /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
+++ :
+++ ln -s /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/bin /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/bin
+++ printf '%s\n' /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ home=/tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ ln -s /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/.agents /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/.agents
++ echo captain-close-before-return
++ start_hook_session /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ local home=/tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ FM_HOME=/tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ turn_end /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ FM_ROOT_OVERRIDE=/tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ FM_CREW_STATE_BIN=/tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/fakebin/fm-crew-state.sh
++ rm -f /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc
++ PATH='/tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/fakebin:/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/.test-tools/node_modules/.bin:/home/joedaoud/.local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-path:/home/joedaoud/.local/bin:/home/joedaoud/.codex/tmp/arg0/codex-arg0fIzgHs:/home/joedaoud/.local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-path:/home/joedaoud/.local/bin:/home/joedaoud/.grok/bin:/home/joedaoud/.opencode/bin:/home/joedaoud/.local/bin:/home/joedaoud/.local/bin:/home/joedaoud/.grok/bin:/home/joedaoud/.opencode/bin:/home/joedaoud/.local/bin:/home/joedaoud/.local/bin:/home/joedaoud/.grok/bin:/home/joedaoud/.opencode/bin:/home/joedaoud/.cargo/bin:/home/joedaoud/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Program Files/Common Files/Oracle/Java/javapath:/mnt/e/bin/:/mnt/c/Program Files (x86)/Razer Chroma SDK/bin:/mnt/c/Program Files/Razer Chroma SDK/bin:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/WINDOWS/System32/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:/mnt/c/WINDOWS/System32/OpenSSH/:/mnt/c/WINDOWS/system32/config/systemprofile/AppData/Local/Microsoft/WindowsApps:/mnt/c/Program Files (x86)/NVIDIA Corporation/PhysX/Common:/mnt/c/Program Files/Microsoft SQL Server/150/Tools/Binn/:/mnt/c/Program Files/NVIDIA Corporation/NVIDIA NvDLISR:/mnt/d/java/apache-maven-3.8.5-bin/apache-maven-3.8.5/bin:/mnt/c/Program Files/apache-ant-1.10.12-bin/apache-ant-1.10.12/bin:/mnt/c/ProgramData/chocolatey/bin:/mnt/c/Program Files/terraform/:/mnt/c/Users/Joseph/miniconda3/condabin/:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/WINDOWS/System32/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:/mnt/c/WINDOWS/System32/OpenSSH/:/mnt/c/Program Files/Common Files/Oracle/Java/javapath:/mnt/e/bin/:/mnt/c/Program Files (x86)/Razer Chroma SDK/bin:/mnt/c/Program Files/Razer Chroma SDK/bin:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/WINDOWS/System32/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:/mnt/c/WINDOWS/System32/OpenSSH/:/mnt/c/WINDOWS/system32/config/systemprofile/AppData/Local/Microsoft/WindowsApps:/mnt/c/Program Files (x86)/NVIDIA Corporation/PhysX/Common:/mnt/c/Program Files/Microsoft SQL Server/150/Tools/Binn/:/mnt/c/Program Files/NVIDIA Corporation/NVIDIA NvDLISR:/mnt/d/java/apache-maven-3.8.5-bin/apache-maven-3.8.5/bin:/mnt/c/Program Files/apache-ant-1.10.12-bin/apache-ant-1.10.12/bin:/mnt/c/ProgramData/chocolatey/bin:/mnt/c/Program Files/terraform/:/mnt/c/Users/Joseph/miniconda3/condabin/:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/WINDOWS/System32/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:/mnt/c/WINDOWS/System32/OpenSSH/:/mnt/c/users/joseph/appdata/local/packages/pythonsoftwarefoundation.python.3.9_qbz5n2kfra8p0/localcache/local-packages/python39/site-packages:/mnt/c/Users/Joseph/AppData/Local/Programs/Microsoft VS Code/bin:/mnt/c/Users/Joseph/AppData/Local/Programs/cursor/resources/app/bin:/mnt/c/Users/Joseph/AppData/Local/Microsoft/WindowsApps:/snap/bin:/home/joedaoud/go/bin:/home/joedaoud/bin:/opt/homebrew/bin:/opt/homebrew/sbin'
++ /tmp/fm-supervision-host.RlLXbN/fakebin/fakebin/claude -c '
+      printf "%s\n" "$$" > "$FM_HOME/state/.lock"
+      printf "%s\n" "$$" >> "$FM_HOME/claude-pids"
+      for seed in "$FM_HOME"/mirror-seed.*; do
+        [ -f "$seed" ] || continue
+        "$FM_HOME/bin/fm-host-mirror.sh" hook claude < "$seed"
+      done
+      while [ ! -e "$FM_HOME/session.stop" ]; do
+        if [ -e "$FM_HOME/stop.go" ]; then
+          rm -f "$FM_HOME/stop.go"
+          if [ -e "$FM_HOME/hook.own-group" ]; then
+            # Claude owns the hook as a process group of its own and tears the
+            # whole group down once the hook has exited.
+            printf "{\"session_id\":\"sess-host-hook\",\"stop_hook_active\":false}\n" > "$FM_HOME/hook.stdin"
+            set -m
+            "$FM_HOME/bin/fm-claude-stop-autoarm.sh" < "$FM_HOME/hook.stdin" > "$FM_HOME/hook.out" 2> "$FM_HOME/hook.err" &
+            printf "%s\n" "$!" > "$FM_HOME/hook.pgid"
+            wait "$!"
+            printf "%s\n" "$?" > "$FM_HOME/hook.rc"
+            set +m
+          else
+            printf "{\"session_id\":\"sess-host-hook\",\"stop_hook_active\":false}\n" \
+              | "$FM_HOME/bin/fm-claude-stop-autoarm.sh" > "$FM_HOME/hook.out" 2> "$FM_HOME/hook.err"
+            printf "%s\n" "$?" > "$FM_HOME/hook.rc"
+          fi
+        fi
+        sleep 0.1
+      done
+    '
++ :
++ wait_until 150 watcher_live /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ local limit=150 i=0
++ shift
++ '[' 0 -lt 150 ']'
++ watcher_live /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ local pid
+++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.watch.lock/pid
++ pid=
++ return 1
++ sleep 0.1
++ i=1
++ '[' 1 -lt 150 ']'
++ watcher_live /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ local pid
+++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.watch.lock/pid
++ pid=
++ return 1
++ sleep 0.1
++ i=2
++ '[' 2 -lt 150 ']'
++ watcher_live /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ local pid
+++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.watch.lock/pid
++ pid=
++ return 1
++ sleep 0.1
++ i=3
++ '[' 3 -lt 150 ']'
++ watcher_live /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ local pid
+++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.watch.lock/pid
++ pid=
++ return 1
++ sleep 0.1
++ i=4
++ '[' 4 -lt 150 ']'
++ watcher_live /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ local pid
+++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.watch.lock/pid
++ pid=
++ return 1
++ sleep 0.1
++ i=5
++ '[' 5 -lt 150 ']'
++ watcher_live /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ local pid
+++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.watch.lock/pid
++ pid=
++ return 1
++ sleep 0.1
++ i=6
++ '[' 6 -lt 150 ']'
++ watcher_live /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ local pid
+++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.watch.lock/pid
++ pid=
++ return 1
++ sleep 0.1
++ i=7
++ '[' 7 -lt 150 ']'
++ watcher_live /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ local pid
+++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.watch.lock/pid
++ pid=
++ return 1
++ sleep 0.1
++ i=8
++ '[' 8 -lt 150 ']'
++ watcher_live /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ local pid
+++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.watch.lock/pid
++ pid=
++ return 1
++ sleep 0.1
++ i=9
++ '[' 9 -lt 150 ']'
++ watcher_live /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ local pid
+++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.watch.lock/pid
++ pid=851341
++ '[' -n 851341 ']'
++ kill -0 851341
++ return 0
++ append_status /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return 'first actionable wake'
+++ date +%s
++ printf '%s [at=%s]: %s\n' working 1792618901 'first actionable wake'
++ wait_until 250 hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ local limit=250 i=0
++ shift
++ '[' 0 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=1
++ '[' 1 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=2
++ '[' 2 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=3
++ '[' 3 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=4
++ '[' 4 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=5
++ '[' 5 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=6
++ '[' 6 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=7
++ '[' 7 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=8
++ '[' 8 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=9
++ '[' 9 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=10
++ '[' 10 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=11
++ '[' 11 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=12
++ '[' 12 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=13
++ '[' 13 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=14
++ '[' 14 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=15
++ '[' 15 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ sleep 0.1
++ i=16
++ '[' 16 -lt 250 ']'
++ hook_exited /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ '[' -s /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.rc ']'
++ return 0
++ for proof in "$home"/host.out "$home"/engine-*.log "$home"/state/.supervision-host* "$home"/state/host-mirror/*
++ '[' '!' -f /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/host.out ']'
++ for proof in "$home"/host.out "$home"/engine-*.log "$home"/state/.supervision-host* "$home"/state/host-mirror/*
++ '[' '!' -f '/tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/engine-*.log' ']'
++ for proof in "$home"/host.out "$home"/engine-*.log "$home"/state/.supervision-host* "$home"/state/host-mirror/*
++ '[' '!' -f /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.supervision-host.log ']'
++ printf '\n--- %s ---\n' /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.supervision-host.log
+
+--- /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.supervision-host.log ---
++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.supervision-host.log
+1792618901	start	gen=host-851004-1792618901	primary=claude
+1792618903	pass-through	attended	branch eligibility could not be computed	signal: /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/demo.status
++ for proof in "$home"/host.out "$home"/engine-*.log "$home"/state/.supervision-host* "$home"/state/host-mirror/*
++ '[' '!' -f '/tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/host-mirror/*' ']'
++ assert_re '^supervision-host: branch-outcome: ' /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.err 'the host must hand its captain outcome to main'
++ grep -E -- '^supervision-host: branch-outcome: ' /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.err
+++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.err
++ fail 'the host must hand its captain outcome to main
+--- /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.err ---
+firstmate watcher wake - one supervision event needs a handling turn now.
+signal: /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/demo.status
+Run bin/fm-wake-drain.sh first, handle the wake, then run its exact WAKE_ACK_REQUIRED --ack-through command. Until that post-handling acknowledgement, interruption leaves the wake durable for idempotent re-handling. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.'
++ printf 'not ok - %s\n' 'the host must hand its captain outcome to main
+--- /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.err ---
+firstmate watcher wake - one supervision event needs a handling turn now.
+signal: /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/demo.status
+Run bin/fm-wake-drain.sh first, handle the wake, then run its exact WAKE_ACK_REQUIRED --ack-through command. Until that post-handling acknowledgement, interruption leaves the wake durable for idempotent re-handling. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.'
+not ok - the host must hand its captain outcome to main
+--- /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/hook.err ---
+firstmate watcher wake - one supervision event needs a handling turn now.
+signal: /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/demo.status
+Run bin/fm-wake-drain.sh first, handle the wake, then run its exact WAKE_ACK_REQUIRED --ack-through command. Until that post-handling acknowledgement, interruption leaves the wake durable for idempotent re-handling. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.
++ exit 1
++ suite_cleanup
++ local home
++ IFS=
++ read -r home
+++ cat /tmp/fm-supervision-host.RlLXbN/homes
++ '[' -n /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return ']'
++ stop_home_processes /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return
++ local home=/tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return pid arms= i=0
++ '[' -f /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.supervision-host ']'
+++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/state/.watch.lock/pid
+++ true
++ pid=
++ '[' -z '' ']'
++ IFS=
++ read -r pid
+++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/claude-pids
++ '[' -e /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/session.stop ']'
++ kill -TERM 850236
++ IFS=
++ read -r pid
++ IFS=
++ read -r pid
+++ cat /tmp/fm-supervision-host.RlLXbN/hook-successor-closed-before-return/orphan-pid
++ IFS=
++ read -r home
++ fm_test_cleanup
++ local d
++ fm_test_reap_watchers
++ local state lock_home 'seen=
+'
++ '[' -f /tmp/.fm-test-watcher.849921.2LwRU6 ']'
++ IFS=
++ read -r state
++ rm -f /tmp/.fm-test-watcher.849921.2LwRU6
++ fm_test_reap_procevent_homes
++ local home claim_root 'seen=
+'
++ '[' -f /tmp/.fm-test-procevent.849921.RHVo4V ']'
++ IFS='	'
++ read -r home claim_root
++ rm -f /tmp/.fm-test-procevent.849921.RHVo4V
++ for d in "${FM_TEST_CLEANUP_DIRS[@]:-}"
++ '[' -n '' ']'
++ '[' -f /tmp/.fm-test-cleanup.849921.9goUfJ ']'
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-wake-tangle-root.8fB2vR ']'
++ fm_test_remove_tree /tmp/fm-wake-tangle-root.8fB2vR
++ local dir=/tmp/fm-wake-tangle-root.8fB2vR
++ '[' -d /tmp/fm-wake-tangle-root.8fB2vR ']'
++ '[' '!' -L /tmp/fm-wake-tangle-root.8fB2vR ']'
++ find /tmp/fm-wake-tangle-root.8fB2vR -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-wake-tangle-root.8fB2vR
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-wedge-rec.wVdkTa ']'
++ fm_test_remove_tree /tmp/fm-wedge-rec.wVdkTa
++ local dir=/tmp/fm-wedge-rec.wVdkTa
++ '[' -d /tmp/fm-wedge-rec.wVdkTa ']'
++ '[' '!' -L /tmp/fm-wedge-rec.wVdkTa ']'
++ find /tmp/fm-wedge-rec.wVdkTa -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-wedge-rec.wVdkTa
++ IFS=
++ read -r d
++ '[' -n /tmp/fm-supervision-host.RlLXbN ']'
++ fm_test_remove_tree /tmp/fm-supervision-host.RlLXbN
++ local dir=/tmp/fm-supervision-host.RlLXbN
++ '[' -d /tmp/fm-supervision-host.RlLXbN ']'
++ '[' '!' -L /tmp/fm-supervision-host.RlLXbN ']'
++ find /tmp/fm-supervision-host.RlLXbN -type d -exec chmod u+rwx '{}' +
++ rm -rf /tmp/fm-supervision-host.RlLXbN
++ IFS=
++ read -r d
++ rm -f /tmp/.fm-test-cleanup.849921.9goUfJ

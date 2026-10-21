@@ -1,0 +1,118 @@
+Non-markdown adapter regression: the external tasks-axi listing is a deterministic protocol fixture. The actual voice CLI, backend addressing, and wrapper execute unchanged. A stale markdown file is deliberately present. No model or forge calls.
+
+Adapter listing:
+tasks[2]{id,state,kind,repo,title,hold_kind,hold_reason,hold_until,priority,links}:
+  live,in_flight,ship,firstmate,Current backend task,captain,Decide rollout,none,1,none
+  queued,queued,captain,firstmate,Choose release window,none,none,none,2,none
+
+Before review fix (executed parent implementation):
+{
+  "awaiting_captain": 1,
+  "awaiting_captain_detail": [
+    {
+      "id": "obsolete",
+      "title": "STALE_MARKDOWN_TASK"
+    }
+  ],
+  "basis": "Last recorded event, which is history and not a live check.",
+  "captain_notes_waiting": 0,
+  "detail": "The lists name at most 5 items each; the counts above are the whole picture. Give the captain the counts and a couple of names, not every row.",
+  "in_flight": 1,
+  "in_flight_detail": [
+    {
+      "id": "obsolete",
+      "state": "not started",
+      "title": "STALE_MARKDOWN_TASK"
+    }
+  ],
+  "open_pull_requests": 0,
+  "pull_request_detail": [],
+  "queued": 0,
+  "scope": "full",
+  "withheld_as_confidential": 0,
+  "worker_states": {
+    "no events yet": 1
+  },
+  "workers_on_deck": 1
+}
+
+$ python3 /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/bin/fm_voice_records.py status --home /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/.test-voice-backend-e35mgnuq --scope full
+{
+  "awaiting_captain": 2,
+  "awaiting_captain_detail": [
+    {
+      "id": "live",
+      "title": "Current backend task"
+    },
+    {
+      "id": "queued",
+      "title": "Choose release window"
+    }
+  ],
+  "basis": "Last recorded event, which is history and not a live check.",
+  "captain_notes_waiting": 0,
+  "detail": "The lists name at most 5 items each; the counts above are the whole picture. Give the captain the counts and a couple of names, not every row.",
+  "in_flight": 1,
+  "in_flight_detail": [
+    {
+      "id": "live",
+      "state": "no events yet",
+      "title": "Current backend task"
+    }
+  ],
+  "open_pull_requests": 1,
+  "pull_request_detail": [
+    {
+      "id": "live",
+      "url": "https://github.com/daoudjk/firstmate/pull/123"
+    }
+  ],
+  "queued": 1,
+  "scope": "full",
+  "withheld_as_confidential": 0,
+  "worker_states": {
+    "no events yet": 1
+  },
+  "workers_on_deck": 1
+}
+
+$ python3 /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/bin/fm_voice_records.py status --home /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5G5QYZD2962C559M3HH8T03/.test-voice-backend-e35mgnuq --scope counts
+{
+  "awaiting_captain": 2,
+  "basis": "Last recorded event, which is history and not a live check.",
+  "captain_notes_waiting": 0,
+  "detail": "Identifiers, titles and pull request links are withheld at this read scope. Say that the detail is not available by voice rather than guessing at it.",
+  "in_flight": 1,
+  "open_pull_requests": 1,
+  "queued": 1,
+  "scope": "counts",
+  "worker_states": {
+    "no events yet": 1
+  },
+  "workers_on_deck": 1
+}
+
+After denying hold text "Decide rollout":
+{
+  "awaiting_captain": 2,
+  "awaiting_captain_detail": [
+    {
+      "id": "queued",
+      "title": "Choose release window"
+    }
+  ],
+  "basis": "Last recorded event, which is history and not a live check.",
+  "captain_notes_waiting": 0,
+  "detail": "The lists name at most 5 items each; the counts above are the whole picture. Give the captain the counts and a couple of names, not every row.",
+  "in_flight": 1,
+  "in_flight_detail": [],
+  "open_pull_requests": 1,
+  "pull_request_detail": [],
+  "queued": 1,
+  "scope": "full",
+  "withheld_as_confidential": 1,
+  "worker_states": {
+    "no events yet": 1
+  },
+  "workers_on_deck": 1
+}

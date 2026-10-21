@@ -1,0 +1,44 @@
+FM_TEST_BEGIN 2026-10-21T21:42:40Z tests/fm-watch-checkpoint.test.sh family=watcher-wake-lock expected_gate_skip=none
+ok - native timer leaves no live watcher after hard native hook-group cancellation
+ok - perl timer leaves no live watcher after hard native hook-group cancellation
+ok - timeout backend deadline: reader reaped, owned state cleaned, session and detached processes preserved
+ok - timeout backend interrupt: reader reaped, owned state cleaned, session and detached processes preserved
+ok - timeout backend subscribe-interrupt: reader reaped, owned state cleaned, session and detached processes preserved
+ok - timeout backend interrupt-resistant: reader reaped, owned state cleaned, session and detached processes preserved
+ok - timeout backend blocked: reader reaped, owned state cleaned, session and detached processes preserved
+ok - timeout backend quiet: reader reaped, owned state cleaned, session and detached processes preserved
+ok - timeout backend error: reader reaped, owned state cleaned, session and detached processes preserved
+ok - perl backend deadline: reader reaped, owned state cleaned, session and detached processes preserved
+ok - perl backend interrupt: reader reaped, owned state cleaned, session and detached processes preserved
+ok - perl backend subscribe-interrupt: reader reaped, owned state cleaned, session and detached processes preserved
+ok - perl backend interrupt-resistant: reader reaped, owned state cleaned, session and detached processes preserved
+ok - perl backend blocked: reader reaped, owned state cleaned, session and detached processes preserved
+ok - perl backend quiet: reader reaped, owned state cleaned, session and detached processes preserved
+ok - perl backend error: reader reaped, owned state cleaned, session and detached processes preserved
+native Herdr qualification unavailable: isolated executable fixtures only
+timeout: poll=300 interruption=False bounded and reaped
+timeout: poll=300 interruption=True bounded and reaped
+perl: poll=300 interruption=False bounded and reaped
+perl: poll=300 interruption=True bounded and reaped
+ok - both checkpoint timers cancel and reap long polling sleeps
+ok - 1600 settled replies stay durable while an active report resolves and its task wake is delivered
+ok - explicit startup recovery-state failure keeps its dead lock and prior receipt
+ok - timeout checkpoint cancellation reaps its own watcher and releases the singleton
+ok - perl checkpoint cancellation reaps its own watcher and releases the singleton
+ok - quiet checkpoint exits 124 with a clean checkpoint line and no live lock
+ok - Perl fallback honors the cleanup bound before escalating an INT-ignoring direct watcher
+ok - an announced recovery is not reannounced by the next foreground checkpoint
+ok - a never-announced recovery still surfaces once from a foreground checkpoint
+ok - a queue append during a foreground checkpoint still resurfaces
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 2 --recovery-generation 1086368.1792619025.qRiXFk
+ok - checkpoint passes through a real watcher wake and leaves the queue for drain
+ok - checkpoint preserves watcher environment for registered custom checks
+ok - checkpoint rejects an existing watcher singleton as unowned
+ok - checkpoint: an opted-in home runs the host for the checkpoint's bound, raised only while away
+ok - checkpoint: a handed-back wake passes through, and a host stand-down is a failure
+ok - checkpoint: a Codex home without config/supervision-host, or with an off file, never runs the host
+ok - checkpoint: the real host ends its park at the checkpoint bound as a quiet checkpoint
+FM_TEST_END 2026-10-21T21:43:52Z tests/fm-watch-checkpoint.test.sh exit=0 duration_ms=72461 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=72514
+FM_TEST_SUMMARY_FAMILY family=watcher-wake-lock count=1 duration_ms=72461 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-watch-checkpoint.test.sh duration_ms=72461

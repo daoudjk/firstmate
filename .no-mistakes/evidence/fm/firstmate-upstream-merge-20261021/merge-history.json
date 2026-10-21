@@ -1,0 +1,28 @@
+{
+  "fork_side_commits_preserved": 14,
+  "commits": [
+    "0a136f6 no-mistakes(document): Clarify guarded secondmate upgrade documentation",
+    "db9a1d5 no-mistakes(review): Remove source-structure assertion while retaining behavioral brief coverage",
+    "d6da1d3 Merge retained fork changes into the current supervision baseline",
+    "e293a97 Log bounded provenance for busy injection deferrals",
+    "9f4e553 fix: document indirect ShellCheck function registrations",
+    "470fe06 no-mistakes(document): Align supervision documentation with Stop-owned checkpoints",
+    "de6f10e no-mistakes(review): Bound backend event waits and reap owned readers",
+    "3b5f0e2 no-mistakes(review): Bound watcher sleep cancellation and load Stop Relay cadence",
+    "582105a fix: preserve Codex supervision across Stop continuations",
+    "908b446 fix(bin): report agent-absent endpoints as stopped in crew state and fleet snapshots (#4)",
+    "98ca895 fix(bin): surface retained, unavailable and missing-endpoint state in fleet snapshots (#3)",
+    "8855099 feat(bin): add --delivery-repo restriction to fm-brief (#2)",
+    "e380ba2 Describe authorized work faithfully and preserve isolated launches (#1)",
+    "684e339 fix(bin): let fm-pr-merge --allow-red repeat to waive several checks"
+  ],
+  "integration_merge": "a0f8bc8ef8043775947c8d2d57f938b79524bc7f",
+  "parents": [
+    "0a136f66450e7418294a5be8c9a69c1cca9e0ca1",
+    "83b70ef49e33eff529f574618415997c8ef67518"
+  ],
+  "target": "0b34f6611ef97d3ffe82e701f4b118a55a0eae51",
+  "remotes": "origin\thttps://github.com/daoudjk/firstmate (fetch)\norigin\thttps://github.com/daoudjk/firstmate (push)",
+  "upstream_tip_is_ancestor": true,
+  "note": "Read-only local Git verification; no push or PR attempted. Only origin is configured in this isolated worktree; it targets daoudjk/firstmate."
+}

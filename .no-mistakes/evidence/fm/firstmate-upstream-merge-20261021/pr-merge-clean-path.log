@@ -1,0 +1,15 @@
+FM_TEST_BEGIN 2026-10-21T21:44:05Z tests/fm-pr-merge.test.sh family=pr-forge expected_gate_skip=none
+not ok - github-zero-exit-queue-required: refusal did not name the concrete observed state
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  inspect the trusted Codex Stop checkpoint registration and its failure; do not start a second watcher.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+fm-captain-hold: compatible tasks-axi is required
+error: could not determine whether task task-x1 is still held for the captain; refusing to merge
+FM_TEST_END 2026-10-21T21:44:07Z tests/fm-pr-merge.test.sh exit=1 duration_ms=1814 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=1 skipped_gate=0 duration_ms=1855
+FM_TEST_SUMMARY_FAMILY family=pr-forge count=1 duration_ms=1814 failed=1
+FM_TEST_SLOWEST rank=1 script=tests/fm-pr-merge.test.sh duration_ms=1814

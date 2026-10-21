@@ -1,0 +1,26 @@
+[759424:760140:1021/174014.203744:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/user/1000/bus: No such file or directory
+[759424:760140:1021/174014.204683:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/user/1000/bus: No such file or directory
+[759424:760140:1021/174014.218227:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/user/1000/bus: No such file or directory
+[759424:760140:1021/174014.249683:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/user/1000/bus: No such file or directory
+
+(process:759424): dconf-CRITICAL **: 17:40:14.293: unable to create directory '/run/user/1000/dconf': Permission denied.  dconf will not work properly.
+
+(process:759424): dconf-CRITICAL **: 17:40:14.293: unable to create directory '/run/user/1000/dconf': Permission denied.  dconf will not work properly.
+
+(process:759424): dconf-CRITICAL **: 17:40:14.293: unable to create directory '/run/user/1000/dconf': Permission denied.  dconf will not work properly.
+[759424:759424:1021/174014.359189:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: 
+[759424:759424:1021/174014.359327:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: 
+[759424:760140:1021/174014.359348:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/user/1000/bus: No such file or directory
+[759424:760140:1021/174014.359432:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/user/1000/bus: No such file or directory
+[759424:759424:1021/174014.359913:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: 
+[759424:759424:1021/174014.361670:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: 
+[759424:759424:1021/174014.380759:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: 
+[759424:759424:1021/174014.381015:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: 
+[759424:760140:1021/174014.381430:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/user/1000/bus: No such file or directory
+[759424:759424:1021/174014.392936:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: 
+[759424:759424:1021/174014.393013:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.Properties.GetAll: object_path= /org/freedesktop/UPower/devices/DisplayDevice: org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.UPower was not provided by any .service files
+[759424:760140:1021/174014.393065:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/user/1000/bus: No such file or directory
+[759424:759424:1021/174014.400028:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: 
+[759424:760140:1021/174014.400194:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Failed to connect to socket /run/user/1000/bus: No such file or directory
+[759424:759424:1021/174014.404147:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: 
+216778 bytes written to file /home/joedaoud/.no-mistakes/evidence/01M5G5QYZD2962C559M3HH8T03/bearings-board.png

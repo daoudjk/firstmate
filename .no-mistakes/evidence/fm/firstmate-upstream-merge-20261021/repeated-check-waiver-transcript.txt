@@ -1,0 +1,42 @@
+ok - fm-pr-merge lets --allow-red repeat to waive several exactly-named checks
+
+Scenario: github-allow-red-repeat-uncovered
+Real fm-pr-merge CLI stdout:
+armed: state/task-x1.check.sh
+Real fm-pr-merge CLI stderr:
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  inspect the trusted Codex Stop checkpoint registration and its failure; do not start a second watcher.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+error: refusing to merge https://github.com/example/repo/pull/88
+  - check 'readiness' is not green
+error: these checks are not green: readiness
+Recorded calls to fixture forge:
+pr view https://github.com/example/repo/pull/88 --json headRefOid -q .headRefOid
+pr view https://github.com/example/repo/pull/88 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup
+api repos/example/repo/branches/main
+api --paginate repos/example/repo/rules/branches/main
+
+Scenario: github-allow-red-repeat-covered
+Real fm-pr-merge CLI stdout:
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/89 is merged (state=MERGED, merged=true, isInMergeQueue=false)
+Real fm-pr-merge CLI stderr:
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  inspect the trusted Codex Stop checkpoint registration and its failure; do not start a second watcher.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+verified: https://github.com/example/repo/pull/89 is open and mergeable, with every unwaived required check reported and every unwaived check green at head b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0
+Recorded calls to fixture forge:
+pr view https://github.com/example/repo/pull/89 --json headRefOid -q .headRefOid
+pr view https://github.com/example/repo/pull/89 --json state,isDraft,mergeable,mergeStateStatus,headRefOid,baseRefName,statusCheckRollup
+api repos/example/repo/branches/main
+api --paginate repos/example/repo/rules/branches/main
+pr merge 89 --repo example/repo --match-head-commit b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0 --squash
+api graphql -f query=query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){state merged isInMergeQueue baseRefName}}} -F owner=example -F repo=repo -F number=89 --jq .data.repository.pullRequest | "state=" + (.state // ""), "merged=" + (.merged | tostring), "queued=" + (.isInMergeQueue | tostring), "base=" + (.baseRefName // "")
