@@ -168,6 +168,10 @@ If it fails before any audio, add `--verbose` and look for the handshake: a chat
 
 ## What it may read
 
+Status reads follow this home's [configured backlog backend](configuration.md#backlog-backend-taskstoml--configbacklog-backend).
+The reader resolves the markdown backlog through the shared addressing interface; other adapters are read through `bin/fm-tasks-axi.sh`, so a leftover `data/backlog.md` does not replace a selected Beads or other non-markdown backend.
+An addressing or adapter-read failure refuses the status answer rather than reporting an empty backlog.
+
 An unconfigured home gets the narrow scope: counts of what is in flight, what is waiting on the captain and what is open for review, with no identifier, title or link assembled at all.
 Widening that is one line the captain of those records writes into `config/voice-read-scope` themselves.
 Two whole classes of record are excluded at every scope, and excluded by construction rather than filtered on the way out:
