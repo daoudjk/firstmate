@@ -120,8 +120,9 @@
 # copy, even when project= names a different clone: no OTHER task record in
 # this home or any locally registered Firstmate home may name the same live path
 # in its worktree= or home=. One live path with two task records is the reuse
-# collision itself, whichever record is stale. The one exception is a slot whose
-# owner claim (below) names another task: this teardown is then records-only and
+# collision itself, whichever record is stale. The one exception is a pool slot
+# recognized against the record's project= whose owner claim (below) names
+# another task: this teardown is then records-only and
 # touches nothing under the slot, so the scan is skipped rather than stranding
 # the stale record and, with it, the claimant's own teardown.
 # That scan alone cannot prove THIS record is the current owner, because the task
