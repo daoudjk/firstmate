@@ -556,6 +556,119 @@ test_reused_pool_slot_refuses_before_touching_the_other_task() {
   pass "fm-teardown: a pool slot named by a second task record is never returned, killed, or reset"
 }
 
+# Exercise the legacy-record path with a real backlog and a copy allocated from
+# either the recorded project or a separate clone. Only the conflicting record
+# varies between the refusal and legitimate single-owner control.
+test_legacy_copy_collision_across_project_clones() {
+  local dir id=legacy-task other=other-task context ownership state_mode project state rc
+  local code="$TMP_ROOT/legacy-collision-code" helper tool before_branch before_head
+  mkdir -p "$code"
+  cp -R "$ROOT/bin" "$code/bin"
+  # These global/best-effort hooks must be inert even if the regression returns
+  # the fixture unexpectedly. The executable and ownership libraries stay real.
+  for helper in fm-guard.sh fm-home-summary-refresh.sh fm-fleet-sync.sh; do
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$code/bin/$helper"
+  done
+  cat > "$code/bin/fm-remote-job-reap-orphans.sh" <<'HOOK'
+#!/usr/bin/env bash
+printf 'orphan-sweep\n' >> "$FM_RUNTIME_LOG"
+HOOK
+
+  for context in same foreign; do
+    for state_mode in home override; do
+      for ownership in single duplicate; do
+        dir=$(make_case "legacy-copy-$context-$state_mode-$ownership")
+        mark_case_as_treehouse_pool "$dir"
+        rm "$dir/worktree/sentinel"
+        git -C "$dir/worktree" checkout -qb fm/legacy-collision
+        git clone -q "$dir/project" "$dir/foreign-project"
+        project="$dir/project"
+        [ "$context" != foreign ] || project="$dir/foreign-project"
+        state="$dir/home/state"
+        if [ "$state_mode" = override ]; then
+          state="$dir/relocated-state"
+          mkdir -p "$state"
+        fi
+        mkdir -p "$dir/worktree/.claude"
+        printf '/.claude/\n' >> "$dir/project/.git/info/exclude"
+        printf 'retained ignored hook\n' > "$dir/worktree/.claude/settings.local.json"
+        cp "$dir/worktree/.claude/settings.local.json" "$dir/hook.before"
+        before_head=$(git -C "$dir/worktree" rev-parse HEAD)
+        before_branch=$(git -C "$dir/worktree" symbolic-ref HEAD)
+        fm_write_meta "$state/$id.meta" \
+          "window=firstmate:fm-$id" "worktree=$dir/worktree" \
+          "project=$project" "harness=codex" "kind=ship" "mode=no-mistakes"
+        cp "$state/$id.meta" "$dir/meta.before"
+        if [ "$ownership" = duplicate ]; then
+          fm_write_meta "$state/$other.meta" \
+            "window=default:wJ:pF" "endpoint_task_id=$other" \
+            "worktree=$dir/pool/1/project" "project=$project" \
+            "harness=codex" "kind=ship" "mode=no-mistakes" "spawn_gen=other-gen" \
+            "backend=herdr" "herdr_session=default" "herdr_workspace_id=wJ" \
+            "herdr_tab_id=wJ:tF" "herdr_pane_id=wJ:pF"
+          cp "$state/$other.meta" "$dir/other.before"
+        fi
+        fm_test_tasks_toml "$dir/home/.tasks.toml"
+        printf '# Backlog\n\n## In flight\n\n## Queued\n\n## Done\n' > "$dir/home/data/backlog.md"
+        tasks-axi add "$id" fixture --kind ship --file "$dir/home/data/backlog.md" >/dev/null
+        tasks-axi start "$id" --file "$dir/home/data/backlog.md" >/dev/null
+        cp "$dir/home/data/backlog.md" "$dir/backlog.before"
+        for tool in tmux treehouse lsof no-mistakes herdr gh-axi; do
+          cat > "$dir/fakebin/$tool" <<'HOOK'
+#!/usr/bin/env bash
+case "${0##*/}" in
+  tmux)
+    # Empty authoritative inventory means the legacy endpoint is missing.
+    case "${1:-}" in
+      kill-*) ;;
+      *) printf '%s\n' "$*" >> "$FM_QUERY_LOG"; exit 0 ;;
+    esac ;;
+  gh-axi) exit 1 ;;
+esac
+printf '%s' "${0##*/}" >> "$FM_RUNTIME_LOG"
+printf ' <%s>' "$@" >> "$FM_RUNTIME_LOG"
+printf '\n' >> "$FM_RUNTIME_LOG"
+# Never discover real processes or call a backend, daemon, or pool service.
+exit 0
+HOOK
+          chmod +x "$dir/fakebin/$tool"
+        done
+        set +e
+        (
+          unset FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE
+          [ "$state_mode" != override ] || export FM_STATE_OVERRIDE="$state"
+          FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$code" \
+          FM_RUNTIME_LOG="$dir/runtime.log" FM_QUERY_LOG="$dir/query.log" \
+          PATH="$dir/fakebin:$PATH" "$code/bin/fm-teardown.sh" "$id" --legacy-record
+        ) > "$dir/stdout" 2> "$dir/stderr"
+        rc=$?
+        set -e
+        if [ "$ownership" = duplicate ]; then
+          [ "$rc" -eq 1 ] || fail "$context/$state_mode: duplicate legacy copy cleanup did not refuse: $(cat "$dir/stderr")"
+          assert_contains "$(cat "$dir/stderr")" "also task $other" \
+            "$context/$state_mode: refusal did not identify the conflicting record"
+          cmp -s "$state/$id.meta" "$dir/meta.before" || fail "collision stamped or removed legacy metadata"
+          cmp -s "$state/$other.meta" "$dir/other.before" || fail "collision changed the other task metadata"
+          cmp -s "$dir/home/data/backlog.md" "$dir/backlog.before" || fail "collision mutated the backlog"
+          cmp -s "$dir/worktree/.claude/settings.local.json" "$dir/hook.before" || fail "collision removed copy wiring"
+          [ "$(git -C "$dir/worktree" rev-parse HEAD)" = "$before_head" ] || fail "collision reset the copy"
+          [ "$(git -C "$dir/worktree" symbolic-ref HEAD)" = "$before_branch" ] || fail "collision detached or removed its branch"
+          [ ! -s "$dir/runtime.log" ] || fail "collision reached a cleanup effect hook: $(cat "$dir/runtime.log")"
+          assert_absent "$state/$id.backlog-close" "collision published a pending backlog mutation"
+        else
+          [ "$rc" -eq 0 ] || fail "$context/$state_mode: sole legacy owner cleanup failed: $(cat "$dir/stderr")"
+          assert_absent "$state/$id.meta" "single-owner control did not retire its metadata"
+          assert_grep 'treehouse <return>' "$dir/runtime.log" "single-owner control never returned its copy"
+          assert_grep 'lsof' "$dir/runtime.log" "single-owner control never reached the inert process hook"
+          assert_contains "$(cat "$dir/stdout")" 'legacy record accepted' "control missed the legacy-incarnation path"
+        fi
+        assert_absent "$dir/pool/1/.fm-slot-owner" "legacy case created a previously absent slot marker"
+      done
+    done
+  done
+  pass "fm-teardown: legacy duplicate-copy cleanup refuses before effects across project clones and state overrides; sole owners still clean up"
+}
+
 test_cross_home_pool_slot_collision_refuses() {
   local dir id=stale-task other=secondmate-task second_home second_project rc
   dir=$(make_case slot-reuse-cross-home)
@@ -1443,6 +1556,7 @@ test_orca_close_failure_refuses_even_under_force
 test_already_gone_endpoint_still_completes_without_a_refusal
 test_bare_relative_origin_shares_project_lock_with_clone
 test_reused_pool_slot_refuses_before_touching_the_other_task
+test_legacy_copy_collision_across_project_clones
 test_cross_home_pool_slot_collision_refuses
 test_sole_slot_record_still_tears_down
 test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot
