@@ -1,0 +1,99 @@
+ok - fm-teardown: legacy duplicate-copy cleanup refuses before effects across project clones and state overrides; sole owners still clean up
+
+=== legacy-copy-foreign-home-duplicate ===
+Command: fm-teardown.sh legacy-task --legacy-record (no --force)
+REFUSED: task legacy-task's recorded worktree /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-foreign-home-duplicate/pool/1/project is also task other-task's recorded worktree.
+Returning that pool slot would kill other-task's processes and reset its copy, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh legacy-task; bin/fm-crew-state.sh other-task), then re-run teardown.
+Cleanup service calls:
+Remaining task records:
+/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-foreign-home-duplicate/home/state/legacy-task.meta
+/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-foreign-home-duplicate/home/state/other-task.meta
+Ignored copy wiring: retained ignored hook
+
+=== legacy-copy-foreign-home-single ===
+Command: fm-teardown.sh legacy-task --legacy-record (no --force)
+teardown legacy-task complete (window firstmate:fm-legacy-task, worktree /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-foreign-home-single/worktree, legacy record accepted without spawn_gen: endpoint missing, incarnation legacy-20261025T024209Z-2704074)
+Backlog: legacy-task is closed in /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-foreign-home-single/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+Cleanup service calls:
+no-mistakes <axi> <status>
+lsof <-a> <-d> <cwd> <-Fpn>
+orphan-sweep
+treehouse <return> <--force> </home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-foreign-home-single/worktree>
+tmux <kill-window> <-t> <=firstmate:=fm-legacy-task>
+Remaining task records:
+Ignored copy wiring: 
+=== legacy-copy-foreign-override-duplicate ===
+Command: fm-teardown.sh legacy-task --legacy-record (no --force)
+REFUSED: task legacy-task's recorded worktree /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-foreign-override-duplicate/pool/1/project is also task other-task's recorded worktree.
+Returning that pool slot would kill other-task's processes and reset its copy, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh legacy-task; bin/fm-crew-state.sh other-task), then re-run teardown.
+Cleanup service calls:
+Remaining task records:
+/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-foreign-override-duplicate/relocated-state/legacy-task.meta
+/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-foreign-override-duplicate/relocated-state/other-task.meta
+Ignored copy wiring: retained ignored hook
+
+=== legacy-copy-foreign-override-single ===
+Command: fm-teardown.sh legacy-task --legacy-record (no --force)
+teardown legacy-task complete (window firstmate:fm-legacy-task, worktree /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-foreign-override-single/worktree, legacy record accepted without spawn_gen: endpoint missing, incarnation legacy-20261025T024213Z-2707984)
+Backlog: legacy-task is closed in /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-foreign-override-single/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+Cleanup service calls:
+no-mistakes <axi> <status>
+lsof <-a> <-d> <cwd> <-Fpn>
+orphan-sweep
+treehouse <return> <--force> </home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-foreign-override-single/worktree>
+tmux <kill-window> <-t> <=firstmate:=fm-legacy-task>
+Remaining task records:
+Ignored copy wiring: 
+=== legacy-copy-same-home-duplicate ===
+Command: fm-teardown.sh legacy-task --legacy-record (no --force)
+REFUSED: task legacy-task's recorded worktree /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-same-home-duplicate/pool/1/project is also task other-task's recorded worktree.
+Returning that pool slot would kill other-task's processes and reset its copy, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh legacy-task; bin/fm-crew-state.sh other-task), then re-run teardown.
+Cleanup service calls:
+Remaining task records:
+/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-same-home-duplicate/home/state/legacy-task.meta
+/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-same-home-duplicate/home/state/other-task.meta
+Ignored copy wiring: retained ignored hook
+
+=== legacy-copy-same-home-single ===
+Command: fm-teardown.sh legacy-task --legacy-record (no --force)
+teardown legacy-task complete (window firstmate:fm-legacy-task, worktree /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-same-home-single/worktree, legacy record accepted without spawn_gen: endpoint missing, incarnation legacy-20261025T024202Z-2692717)
+Backlog: legacy-task is closed in /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-same-home-single/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+Cleanup service calls:
+no-mistakes <axi> <status>
+lsof <-a> <-d> <cwd> <-Fpn>
+orphan-sweep
+treehouse <return> <--force> </home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-same-home-single/worktree>
+tmux <kill-window> <-t> <=firstmate:=fm-legacy-task>
+Remaining task records:
+Ignored copy wiring: 
+=== legacy-copy-same-override-duplicate ===
+Command: fm-teardown.sh legacy-task --legacy-record (no --force)
+REFUSED: task legacy-task's recorded worktree /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-same-override-duplicate/pool/1/project is also task other-task's recorded worktree.
+Returning that pool slot would kill other-task's processes and reset its copy, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh legacy-task; bin/fm-crew-state.sh other-task), then re-run teardown.
+Cleanup service calls:
+Remaining task records:
+/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-same-override-duplicate/relocated-state/legacy-task.meta
+/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-same-override-duplicate/relocated-state/other-task.meta
+Ignored copy wiring: retained ignored hook
+
+=== legacy-copy-same-override-single ===
+Command: fm-teardown.sh legacy-task --legacy-record (no --force)
+teardown legacy-task complete (window firstmate:fm-legacy-task, worktree /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-same-override-single/worktree, legacy record accepted without spawn_gen: endpoint missing, incarnation legacy-20261025T024205Z-2697625)
+Backlog: legacy-task is closed in /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-same-override-single/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+Cleanup service calls:
+no-mistakes <axi> <status>
+lsof <-a> <-d> <cwd> <-Fpn>
+orphan-sweep
+treehouse <return> <--force> </home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.xnOvBy/legacy-copy-same-override-single/worktree>
+tmux <kill-window> <-t> <=firstmate:=fm-legacy-task>
+Remaining task records:
+Ignored copy wiring: ok - fm-teardown: a pool slot named by a second task record is never returned, killed, or reset
+ok - fm-teardown: a pool slot held by another firstmate home is never returned
+ok - fm-teardown: a task that solely holds its slot still returns it
+ok - fm-teardown: a pool slot claimed by another task is left alone while the task's own cleanup finishes
+ok - fm-teardown: a stale record on a claimed slot retires, then the claimant tears down
+ok - fm-teardown: a task's own slot claim, and an unclaimed slot, both still tear down

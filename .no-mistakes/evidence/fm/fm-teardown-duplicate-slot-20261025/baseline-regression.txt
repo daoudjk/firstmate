@@ -1,0 +1,12 @@
+not ok - foreign/home: duplicate legacy copy cleanup did not refuse: 
+
+Baseline CLI (no --force), exit before assertion: 
+teardown legacy-task complete (window firstmate:fm-legacy-task, worktree /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.h8EEA9/legacy-copy-foreign-home-duplicate/worktree, legacy record accepted without spawn_gen: endpoint missing, incarnation legacy-20261025T024304Z-2768643)
+Backlog: legacy-task is closed in /home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.h8EEA9/legacy-copy-foreign-home-duplicate/home/data/backlog.md. Run bin/fm-tasks-axi.sh ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+no-mistakes <axi> <status>
+lsof <-a> <-d> <cwd> <-Fpn>
+orphan-sweep
+treehouse <return> <--force> </home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.h8EEA9/legacy-copy-foreign-home-duplicate/worktree>
+tmux <kill-window> <-t> <=firstmate:=fm-legacy-task>
+Remaining task records:
+/home/joedaoud/.no-mistakes/worktrees/110debb165d0/01M5REWX4V5NDWQ8P9KZBYBG2H/.phase-test-tmp/fm-teardown-endpoint-safety.h8EEA9/legacy-copy-foreign-home-duplicate/home/state/other-task.meta
