@@ -243,6 +243,62 @@ PY
   pass "binding identity gates current and historical observations"
 }
 
+test_resource_identity_qualifies_proof() {
+  local home future out rc=0
+  home=$(new_home resource-proof)
+  map "$home" bind task-resource --subject worker-host >/dev/null || fail "binding failed"
+  map "$home" complete task-resource --kind ship >/dev/null || fail "completion failed"
+  map "$home" collect >/dev/null || fail "initial collection failed"
+  future=$(date -u +%Y-%m-%dT%H:%M:%SZ -d '+1 minute' 2>/dev/null || date -u -v+1M +%Y-%m-%dT%H:%M:%SZ)
+  write_evidence "$home" original-run ami-0123456789abcdef0 pass false "$future"
+  view_json "$home"
+  assert_equals "proven" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "the original resource has matching proof"
+  python3 - "$home/data/system-map/example/bindings.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle: bindings = json.load(handle)
+bindings["bindings"]["worker_host"]["instance_id"] = "i-0replacement00001"
+with open(path, "w") as handle: json.dump(bindings, handle)
+PY
+  map "$home" collect >/dev/null || fail "replacement collection failed"
+  view_json "$home"
+  assert_equals "ami-0123456789abcdef0" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["version"]')" "replacement has the same observed version"
+  assert_not_equals "$(py "$home/view.json" 'd["subjects"]["worker-host"]["resource_identity"]')" "$(py "$home/data/system-map/example/evidence/original-run.json" 'd["resource_identities"]["worker-host"]')" "replacement has a distinct identity"
+  assert_equals "stale" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "old resource proof does not qualify"
+  assert_equals "stale" "$(py "$home/view.json" '[a["status"] for a in d["acceptance"] if a["id"] == "mvp-run"][0]')" "acceptance also rejects old resource proof"
+  rc=0; out=$(map "$home" verify task-resource) || rc=$?
+  expect_code 3 "$rc" "old resource proof does not verify the replacement"
+  write_evidence "$home" identity-omitted ami-0123456789abcdef0 pass false "$future" without-identity
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "an unstamped receipt cannot qualify"
+  assert_contains "$(py "$home/view.json" '[r["id"] for r in d["subjects"]["worker-host"]["evidence"]]')" "identity-omitted" "the unstamped receipt remains visible"
+  write_evidence "$home" replacement-run ami-0123456789abcdef0 pass false "$future"
+  view_json "$home"
+  assert_equals "proven" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "matching replacement proof qualifies"
+  assert_equals "passed" "$(py "$home/view.json" '[a["status"] for a in d["acceptance"] if a["id"] == "mvp-run"][0]')" "matching replacement proof passes acceptance"
+  rc=0; out=$(map "$home" verify task-resource) || rc=$?
+  expect_code 0 "$rc" "matching replacement proof verifies the task"
+  pass "proof and acceptance bind to the observed resource identity"
+}
+
+test_removed_bound_subject_is_unverified() {
+  local home out rc=0
+  home=$(new_home removed-bound-subject)
+  map "$home" bind task-removed --subject worker-writes-results >/dev/null || fail "binding failed"
+  map "$home" complete task-removed --kind ship >/dev/null || fail "completion failed"
+  python3 - "$home/data/system-map/example/manifest.json" "$home/new-manifest.json" <<'PY'
+import json, sys
+with open(sys.argv[1]) as handle: manifest = json.load(handle)
+manifest["connections"] = [connection for connection in manifest["connections"] if connection["id"] != "worker-writes-results"]
+with open(sys.argv[2], "w") as handle: json.dump(manifest, handle)
+PY
+  map "$home" intent replace example "$home/new-manifest.json" --reason "remove connection" >/dev/null || fail "intent replacement failed"
+  out=$(map "$home" verify task-removed) || rc=$?
+  expect_code 3 "$rc" "a removed bound subject is unverified"
+  assert_contains "$out" "worker-writes-results: no longer in the manifest" "the missing subject is identified"
+  pass "verification fails when a bound subject was removed"
+}
+
 test_missing_and_invalid_bindings() {
   local home out rc=0
   home=$(new_home bindings)
@@ -291,11 +347,21 @@ EOF
 
 write_evidence() {  # <home> <id> <version> <result> [historical] [recorded_at]
   local hist=${5:-false} at=${6:-2026-01-01T00:00:00Z}
-  cat > "$1/ev-$2.json" <<EOF
-{"schema": "fm-system-map.evidence.v1", "id": "$2", "subjects": ["worker-host"], "criterion": "mvp-run",
- "versions": {"worker-host": "$3"}, "result": "$4", "historical": $hist, "summary": "run on $3",
- "recorded_at": "$at", "provenance": {"source": "test receipt", "kind": "receipt"}}
-EOF
+  python3 - "$1" "$2" "$3" "$4" "$hist" "$at" "${7:-with-identity}" <<'PY'
+import json, os, sys
+home, receipt_id, version, result, historical, recorded_at, identity_mode = sys.argv[1:]
+receipt = {"schema": "fm-system-map.evidence.v1", "id": receipt_id, "subjects": ["worker-host"],
+           "criterion": "mvp-run", "versions": {"worker-host": version}, "result": result,
+           "historical": historical == "true", "summary": "run on " + version,
+           "recorded_at": recorded_at, "provenance": {"source": "test receipt", "kind": "receipt"}}
+snapshot = os.path.join(home, "state/system-map/example/snapshot.json")
+if identity_mode == "with-identity" and os.path.exists(snapshot):
+    with open(snapshot) as handle:
+        observation = json.load(handle)["observations"]["worker-ec2"]
+    receipt["resource_identities"] = {"worker-host": observation["binding_digest"]}
+with open(os.path.join(home, "ev-" + receipt_id + ".json"), "w") as handle:
+    json.dump(receipt, handle)
+PY
   map "$1" evidence add example "$1/ev-$2.json" >/dev/null || fail "evidence $2 not recorded"
 }
 
@@ -791,6 +857,8 @@ test_absent_response_matches_absent_intent
 test_failed_collection_preserves_success_time
 test_intent_revision_invalidates_observations
 test_binding_change_invalidates_observations_and_history
+test_resource_identity_qualifies_proof
+test_removed_bound_subject_is_unverified
 test_missing_and_invalid_bindings
 test_credential_material_is_refused
 test_evidence_is_version_bound

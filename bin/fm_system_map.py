@@ -609,6 +609,16 @@ def bindings_digest(bindings):
     return hashlib.sha256(json.dumps(bindings, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def observation_binding_digest(observation, bindings):
+    identity = {
+        "adapter": observation["adapter"],
+        "binding": observation["binding"],
+        "entry": bindings.get("bindings", {}).get(observation["binding"]),
+        "scope": bindings.get("scope", {}),
+    }
+    return bindings_digest(identity)
+
+
 def subjects_of(manifest):
     out = {}
     for comp in manifest["components"]:
@@ -646,7 +656,7 @@ def validate_evidence(record, subject_ids=None):
     _scan_forbidden(record, "evidence")
     _check_keys(record, {
         "schema", "id", "subjects", "criterion", "phase", "run_id", "versions", "result",
-        "recorded_at", "observed_at", "received_at", "summary", "historical", "provenance",
+        "recorded_at", "observed_at", "received_at", "summary", "historical", "provenance", "resource_identities",
     }, "evidence")
     if record.get("schema") != EVIDENCE_SCHEMA:
         raise MapError("evidence.schema must be %s" % EVIDENCE_SCHEMA)
@@ -665,6 +675,9 @@ def validate_evidence(record, subject_ids=None):
     versions = record.get("versions", {})
     if not isinstance(versions, dict) or not all(isinstance(v, str) for v in versions.values()):
         raise MapError("evidence.versions must map subject ids to version strings")
+    identities = record.get("resource_identities", {})
+    if not isinstance(identities, dict) or not all(isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v) for v in identities.values()):
+        raise MapError("evidence.resource_identities must map subject ids to binding digests")
     _req(record, "summary", "str", "evidence")
     prov = _req(record, "provenance", "dict", "evidence")
     _check_keys(prov, {"source", "kind", "path", "url", "by"}, "evidence.provenance")
@@ -674,7 +687,7 @@ def validate_evidence(record, subject_ids=None):
     if "url" in prov and not str(prov["url"]).startswith("https://"):
         raise MapError("evidence.provenance.url must be an https URL")
     if subject_ids is not None:
-        for sid in list(subjects) + list(versions):
+        for sid in list(subjects) + list(versions) + list(identities):
             if sid not in subject_ids:
                 raise MapError("evidence names unknown subject %r" % sid)
     if "run_id" in record and not TASK_RE.match(str(record["run_id"])):
@@ -1109,6 +1122,7 @@ def _collect_locked(home, cfg, project, started):
             result.update({
                 "id": obs["id"], "subject": sid, "subject_type": kind, "adapter": adapter,
                 "role": obs.get("role", "runtime"), "binding": obs["binding"],
+                "binding_digest": observation_binding_digest(obs, bindings),
                 "checked_at": iso(), "duration_ms": int((time.monotonic() - t0) * 1000),
                 "scope": public_scope if adapter.startswith("aws.") else {"kind": "local"},
             })
@@ -1170,7 +1184,7 @@ def _pin_value(subject, bindings):
     return value if isinstance(value, str) else None
 
 
-def evidence_qualifies(record, subject_id, current_version, tracked):
+def evidence_qualifies(record, subject_id, current_version, tracked, resource_identity=None):
     """Return (qualifies, reason)."""
     if record.get("historical"):
         return False, "historical"
@@ -1183,6 +1197,8 @@ def evidence_qualifies(record, subject_id, current_version, tracked):
         return False, "record names no version"
     if rv != current_version:
         return False, "older or different version"
+    if not resource_identity or record.get("resource_identities", {}).get(subject_id) != resource_identity:
+        return False, "different or unspecified resource identity"
     return True, "applies to the current version"
 
 
@@ -1212,10 +1228,10 @@ def _runtime_status(subject, observations, expected_mode):
     return {"status": status, "observed": observed, "intended": intended}
 
 
-def live_verification(evidence, sid, version, vstate, completed_at):
+def live_verification(evidence, sid, version, vstate, completed_at, resource_identity=None):
     qualifying = [r for r in evidence if not r.get("invalid") and r["result"] in ("pass", "fail")
                   and (sid in r.get("subjects", []) or sid in r.get("versions", {}))
-                  and evidence_qualifies(r, sid, version, vstate)[0]
+                  and evidence_qualifies(r, sid, version, vstate, resource_identity)[0]
                   and (parse_iso(r["recorded_at"]) or 0) > completed_at
                   and (parse_iso(r.get("received_at")) or 0) > completed_at]
     if not qualifying:
@@ -1247,6 +1263,8 @@ def build_view(home, cfg, project):
     subjects = {}
     for sid, (kind, subject) in subjects_of(manifest).items():
         version, vstate = _subject_version(subject, observations)
+        version_observation = observations.get(subject.get("version_from"))
+        resource_identity = version_observation.get("binding_digest") if version_observation else None
         pin = _pin_value(subject, bindings)
         # Implementation layer
         comps = [c for c in completions if sid in c.get("subjects", [])]
@@ -1278,7 +1296,7 @@ def build_view(home, cfg, project):
         recs = [r for r in evidence if not r.get("invalid") and (sid in r.get("subjects", []) or sid in r.get("versions", {}))]
         qualifying, stale = [], []
         for rec in recs:
-            ok, why = evidence_qualifies(rec, sid, version, vstate)
+            ok, why = evidence_qualifies(rec, sid, version, vstate, resource_identity)
             (qualifying if ok else stale).append(dict(rec, qualification=why))
         # On a timestamp tie the failure wins, so a simultaneous pass never hides it.
         qualifying.sort(key=lambda r: (parse_iso(r["recorded_at"]) or 0, r["result"] == "fail"))
@@ -1305,7 +1323,7 @@ def build_view(home, cfg, project):
         live_verified = None
         if comps:
             completed_at = max(parse_iso(c["completed_at"]) or 0 for c in comps)
-            live_verified = live_verification(evidence, sid, version, vstate, completed_at)
+            live_verified = live_verification(evidence, sid, version, vstate, completed_at, resource_identity)
         obs_list = []
         for ob in subject.get("observe", []):
             cur = observations.get(ob["id"])
@@ -1319,7 +1337,7 @@ def build_view(home, cfg, project):
             "owners": subject.get("owners", []), "intended": subject.get("intended", {}),
             "exception": subject.get("exception"), "from": subject.get("from"), "to": subject.get("to"),
             "x": subject.get("x"), "y": subject.get("y"), "notes": subject.get("notes"),
-            "version": version, "version_state": vstate,
+            "version": version, "version_state": vstate, "resource_identity": resource_identity,
             "layers": {"implementation": impl, "deployment": deploy, "runtime": runtime, "proof": proof},
             "live_verified": live_verified,
             "observations": obs_list,
@@ -1338,13 +1356,14 @@ def build_view(home, cfg, project):
             why = "applies to the current version"
             for sid in crit.get("subjects", []):
                 s = subjects.get(sid)
-                if s and s["version_state"] != "untracked":
-                    if s["version"] is None:
-                        ok, why = False, "version of %s unobserved" % sid
-                        break
-                    if rec.get("versions", {}).get(sid) != s["version"]:
-                        ok, why = False, "older or different version of %s" % sid
-                        break
+                if not s:
+                    ok, why = False, "subject %s missing" % sid
+                    break
+                subject_ok, why = evidence_qualifies(rec, sid, s["version"], s["version_state"], s["resource_identity"])
+                if not subject_ok:
+                    ok = False
+                    why = "%s: %s" % (sid, why)
+                    break
             if rec.get("historical"):
                 why = "historical"
             (quals if ok else olds).append(dict(rec, qualification=why))
@@ -1958,8 +1977,9 @@ def cmd_verify(home, cfg, args):
         s = view["subjects"].get(sid)
         if not s:
             print("  %s: no longer in the manifest" % sid)
+            unverified += 1
             continue
-        live = live_verification(evidence, sid, s["version"], s["version_state"], parse_iso(completion["completed_at"]) or 0) if completed else None
+        live = live_verification(evidence, sid, s["version"], s["version_state"], parse_iso(completion["completed_at"]) or 0, s["resource_identity"]) if completed else None
         if live is not True:
             unverified += 1
         print("  %s: deployment %s, runtime %s, proof %s, live-verified %s" % (
