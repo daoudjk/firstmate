@@ -589,6 +589,22 @@ PY
   pass "only ship and scout records select the active cadence"
 }
 
+test_task_state_ignores_last_wake_event() {
+  local home
+  home=$(new_home task-events)
+  fm_write_meta "$home/state/example-owner.meta" "kind=ship" "project=$home/projects/example-project"
+  printf 'done [at=1]: earlier wake\n' > "$home/state/example-owner.status"
+  map "$home" collect >/dev/null || fail "live task collection failed"
+  assert_equals "live" "$(py "$home/state/system-map/example/snapshot.json" 'd["observations"]["owner-task"]["state"]')" "an old done event does not end a live task"
+  assert_equals "done [at=1]: earlier wake" "$(py "$home/state/system-map/example/snapshot.json" 'd["observations"]["owner-task"]["facts"]["last_event"]')" "the wake line is labelled as an event"
+  rm "$home/state/example-owner.meta"
+  printf 'blocked [at=2]: earlier wake\n' > "$home/state/example-owner.status"
+  map "$home" collect >/dev/null || fail "ended task collection failed"
+  assert_equals "ended" "$(py "$home/state/system-map/example/snapshot.json" 'd["observations"]["owner-task"]["state"]')" "an old blocked event does not define ended state"
+  assert_equals "blocked [at=2]: earlier wake" "$(py "$home/state/system-map/example/snapshot.json" 'd["observations"]["owner-task"]["facts"]["last_event"]')" "the last event remains visible after ending"
+  pass "task state follows the task record, not wake events"
+}
+
 test_scheduler_install_is_idempotent_and_removable() {
   local home out rc=0
   home=$(new_home units)
@@ -895,6 +911,7 @@ test_prelanding_receipt_never_verifies
 test_collect_lock_is_single_owner
 test_requests_dedupe_and_review_cadence
 test_active_cadence_ignores_secondmates
+test_task_state_ignores_last_wake_event
 test_scheduler_install_is_idempotent_and_removable
 test_scheduler_preserves_unmanaged_artifacts
 test_binding_completion_and_live_verification

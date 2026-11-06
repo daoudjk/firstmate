@@ -980,14 +980,13 @@ def adapt_firstmate_task(runner, b):
             last = lines[-1] if lines else None
     except FileNotFoundError:
         pass
-    if not live and last is None:
-        return _result("absent", state="absent")
-    word = (last or "").split(" ", 1)[0].split("[", 1)[0] or "unknown"
     stamp = re.search(r"\[at=(\d+)\]", last or "")
-    facts = {"live": live, "last_status": (last or "")[:240]}
+    facts = {"live": live}
+    if last:
+        facts["last_event"] = last[:240]
     if stamp:
-        facts["status_at"] = iso(int(stamp.group(1)))
-    return _result("ok", state=("%s" % word) if live else "ended:%s" % word, facts=facts)
+        facts["last_event_at"] = iso(int(stamp.group(1)))
+    return _result("ok", state="live" if live else "ended", facts=facts)
 
 
 ADAPTERS = {

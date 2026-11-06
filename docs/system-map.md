@@ -74,7 +74,7 @@ Nothing observed is ever written into `data/`'s intended design, and intent edit
 ## Data contracts
 
 The manifest (`fm-system-map.manifest.v1`) declares observations by naming a built-in adapter and a binding key; it never carries a command.
-Adapters are a fixed, read-only set: `aws.ec2_instance`, `aws.ec2_tagged_instances`, `aws.ec2_image`, `aws.ecs_service`, `aws.sqs_queue`, `aws.dynamodb_table`, `aws.dynamodb_item` (named attributes only), `aws.s3_bucket` (metadata only), `aws.ecr_image`, `git.revision` (a local clone, no fetch), and `firstmate.task` (local status and record).
+Adapters are a fixed, read-only set: `aws.ec2_instance`, `aws.ec2_tagged_instances`, `aws.ec2_image`, `aws.ecs_service`, `aws.sqs_queue`, `aws.dynamodb_table`, `aws.dynamodb_item` (named attributes only), `aws.s3_bucket` (metadata only), `aws.ecr_image`, `git.revision` (a local clone, no fetch), and `firstmate.task` (local task record for live or ended state; the status line is a last-event fact).
 Each AWS call is a describe, get, list, or head operation with connect, read, and process timeouts, and provider text is stored with account numbers and ARNs redacted.
 When `bindings.json` pins `expected_account`, the collector first checks the caller identity and skips every AWS read under any other account.
 A subject's `version_from` names the observation whose version identifies what is deployed, and `pin` names the binding field holding the intended version.
