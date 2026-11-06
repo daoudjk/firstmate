@@ -373,7 +373,7 @@ test_evidence_is_version_bound() {
   map "$home" collect >/dev/null || fail "collect failed"
   view_json "$home"
   assert_equals "stale" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "old-version proof does not qualify the new version"
-  assert_equals "stale" "$(py "$home/view.json" '[a["status"] for a in d["acceptance"] if a["id"] == "mvp-run"][0]')" "the criterion is stale, not passed"
+  assert_equals "failed" "$(py "$home/view.json" '[a["status"] for a in d["acceptance"] if a["id"] == "mvp-run"][0]')" "the criterion fails when deployment differs from its pin"
   assert_equals "mismatch" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["deployment"]["status"]')" "a non-pinned image is a deployment mismatch"
   write_evidence "$home" hist-pass ami-0newnewnewnewnew0 pass true
   view_json "$home"
@@ -381,7 +381,8 @@ test_evidence_is_version_bound() {
   write_evidence "$home" new-pass ami-0newnewnewnewnew0 pass false 2026-01-02T00:00:00Z
   view_json "$home"
   assert_equals "proven" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "current-version evidence qualifies"
-  assert_equals "passed" "$(py "$home/view.json" '[a["status"] for a in d["acceptance"] if a["id"] == "mvp-run"][0]')" "the criterion passes on current-version evidence"
+  assert_equals "failed" "$(py "$home/view.json" '[a["status"] for a in d["acceptance"] if a["id"] == "mvp-run"][0]')" "current-version proof cannot pass a mismatched deployment"
+  assert_equals "['worker-host']" "$(py "$home/view.json" '[a["deployment_mismatches"] for a in d["acceptance"] if a["id"] == "mvp-run"][0]')" "the mismatched subject is identified"
   aws_state "$home" '{"ami": "ami-0nextnextnextnex0"}'
   map "$home" collect >/dev/null || fail "collect failed"
   view_json "$home"
@@ -417,6 +418,23 @@ PY
   view_json "$home"
   assert_equals "running" "$(py "$home/view.json" 'd["subjects"]["console"]["observations"][0]["current"]["state"]')" "a running tagged instance is reported running"
   pass "tagged instance state follows observed instances"
+}
+
+test_terminated_instance_has_no_current_version() {
+  local home
+  home=$(new_home terminated-instance)
+  map "$home" collect >/dev/null || fail "initial collection failed"
+  write_evidence "$home" before-termination ami-0123456789abcdef0 pass
+  view_json "$home"
+  assert_equals "proven" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "the original instance has current proof"
+  aws_state "$home" '{"instance_state": "terminated"}'
+  map "$home" collect >/dev/null || fail "terminated instance collection failed"
+  view_json "$home"
+  assert_equals "absent" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["observations"][0]["current"]["outcome"]')" "terminated instances are absent observations"
+  assert_equals "None" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["observations"][0]["current"]["version"]')" "a terminated instance has no current image version"
+  assert_equals "absent" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["deployment"]["status"]')" "a terminated instance is not deployed"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "old proof is not current after termination"
+  pass "termination removes the current deployment and version"
 }
 
 test_evidence_ids_are_create_only() {
@@ -904,6 +922,7 @@ test_missing_and_invalid_bindings
 test_credential_material_is_refused
 test_evidence_is_version_bound
 test_tagged_instances_report_observed_state
+test_terminated_instance_has_no_current_version
 test_evidence_ids_are_create_only
 test_timeline_orders_offset_timestamps
 test_completion_retry_preserves_first_receipt

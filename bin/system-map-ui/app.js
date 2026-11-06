@@ -658,6 +658,7 @@
       ol.appendChild(h("li", null,
         h("div", { class: "item__head" }, chip("acceptance", a.status), h("h3", { text: a.title })),
         a.description ? h("p", { text: a.description }) : null,
+        a.deployment_mismatches && a.deployment_mismatches.length ? h("p", { class: "callout", text: "Deployment differs from the intended pin: " + a.deployment_mismatches.map(function (sid) { return (v.subjects[sid] || {}).title || sid; }).join(", ") + "." }) : null,
         a.unversioned_subjects && a.unversioned_subjects.length ? h("p", { class: "callout", text: "Not version-bound: " + a.unversioned_subjects.map(function (sid) { return (v.subjects[sid] || {}).title || sid; }).join(", ") + " declare no version source, so this criterion cannot pass as current-version proof." }) : null,
         h("p", { class: "muted", text: "Depends on: " + (a.subjects || []).map(function (sid) { return (v.subjects[sid] || {}).title || sid; }).join(", ") }),
         a.evidence.length ? h("ul", { class: "list" }, a.evidence.map(function (r) {

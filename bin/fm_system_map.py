@@ -791,8 +791,10 @@ def adapt_ec2_instance(runner, b):
         return _result("absent", state="absent")
     inst = instances[0]
     state = inst.get("State", {}).get("Name", "unknown")
-    norm = {"terminated": "absent", "shutting-down": "stopping"}.get(state, state)
     facts = {"state": state, "type": inst.get("InstanceType"), "launched": inst.get("LaunchTime")}
+    if state == "terminated":
+        return _result("absent", facts=facts)
+    norm = {"shutting-down": "stopping"}.get(state, state)
     return _result("ok", state=norm, facts=facts, version=inst.get("ImageId"))
 
 
@@ -1376,7 +1378,10 @@ def build_view(home, cfg, project):
             status = "stale"
         else:
             status = "not-demonstrated"
-        acceptance.append(dict(crit, status=status, evidence=quals + olds, unversioned_subjects=untracked))
+        mismatched = [sid for sid in crit.get("subjects", []) if subjects.get(sid, {}).get("layers", {}).get("deployment", {}).get("status") == "mismatch"]
+        if mismatched:
+            status = "failed"
+        acceptance.append(dict(crit, status=status, evidence=quals + olds, unversioned_subjects=untracked, deployment_mismatches=mismatched))
     timeline = build_timeline(manifest, evidence)
     stale_after = 2 * cfg["active_interval"]
     last_ok = parse_iso(health.get("last_success_at"))
