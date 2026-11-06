@@ -3,7 +3,6 @@
 (function () {
   "use strict";
 
-  var TOKEN = new URLSearchParams(location.hash.slice(1)).get("key") || "";
   var AUTO_MS = 30000;
   var COLLECT_POLL_MS = 4000;
   var SVGNS = "http://www.w3.org/2000/svg";
@@ -95,7 +94,6 @@
       init.headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(opts.body);
     }
-    init.headers["X-FM-Map-Token"] = TOKEN;
     return fetch(path, init).then(function (res) {
       return res.json().catch(function () { return {}; }).then(function (data) {
         if (!res.ok) { var err = new Error(data.error || ("HTTP " + res.status)); err.status = res.status; throw err; }
@@ -114,7 +112,6 @@
   }
   function writeHash() {
     var params = new URLSearchParams();
-    if (TOKEN) params.set("key", TOKEN);
     if (state.project) params.set("project", state.project);
     params.set("tab", state.tab);
     params.set("lens", state.lens);

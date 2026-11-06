@@ -797,6 +797,7 @@ Malformed, multi-line, symlinked, hardlinked, special, or otherwise unsafe value
 ### Accounting and curation
 
 Use `bin/fm-startup-memory-budget.sh read` to validate and print the effective value, or `bin/fm-startup-memory-budget.sh report` to account for the three files.
+That total covers only those three memory files; it does not measure the rest of the startup context, such as `AGENTS.md`, the skill catalog, the fleet-state digest, or the harness's own instructions, so measure the complete rendered startup payload separately when the whole context cost matters.
 The stable local estimate is `ceil(UTF-8 bytes / 3)` per file, a conservative portable approximation rather than a provider-exact tokenizer.
 
 An inherited `data/captain-shared.md` counts in a secondmate's total but remains primary-owned and read-only there.
@@ -1621,6 +1622,7 @@ It uses the same live secondmate discovery and propagation helper as bootstrap; 
 - The [`secondmate-provisioning` skill](../.agents/skills/secondmate-provisioning/SKILL.md#charter-and-seed) owns the local and remote re-read behavior shared with locked bootstrap inheritance, including unchanged retries and interrupted transfers.
 - That live discovery starts from `state/*.meta` records with `kind=secondmate`; `data/secondmates.md` only backfills `home=` for older or incomplete meta records.
 - Skipped items, such as a destination checkout that does not yet gitignore the item, are visible warnings but not hard failures.
+- A `data/captain-shared.md` change in a local home is reported as applied, delivered, or acknowledged by the mate, never one standing in for another; `bin/fm-shared-prefs.sh status` prints each live mate's state, and [`bin/fm-shared-prefs-lib.sh`](../bin/fm-shared-prefs-lib.sh) owns what an acknowledgement attests.
 
 ## Forge selection (data/projects.md forge= token)
 
@@ -2607,7 +2609,8 @@ FM_BACKEND_HERDR_SUBMIT_MIN_SLEEP=0.6  # herdr-only: minimum per-Enter confirmat
 FM_ZELLIJ_SESSION=firstmate  # zellij-only: named session for normal backend ops and test isolation (docs/zellij-backend.md)
 CMUX_SOCKET_PASSWORD=   # cmux-only: socket password fallback when config/cmux-socket-password is absent (docs/cmux-backend.md)
 FM_SESSION_START_STATUS_TAIL=5   # state/*.status lines printed per task in the session-start digest; each line is capped by bin/fm-line-cap-lib.sh
-FM_SESSION_START_QUEUED_LIMIT=20   # plain queued backlog rows in the session-start digest; in-flight, held, and blocked rows are never bounded and done rows are never listed
+FM_SESSION_START_QUEUED_LIMIT=20   # plain queued backlog rows in the session-start digest; every in-flight, held, and blocked row remains listed, and done rows are never listed
+FM_SESSION_START_HOLD_REASON_LIMIT=220   # Unicode grapheme clusters of each hold reason the session-start digest displays before an explicit truncation marker naming the full-record command; 0 shows reasons in full; the stored reason is never changed (bin/fm-session-start.sh)
 FM_SESSION_START_ENDPOINT_TIMEOUT=10   # seconds bounding each per-task endpoint liveness read in the session-start digest (bin/fm-session-start.sh); nonpositive or invalid values fall back to 10; a read that hits the bound or dies becomes that task's own `endpoint: error` line and the digest continues
 FM_BACKLOG_ROW_TIMEOUT_SECS=10   # seconds bounding each backlog row read (bin/fm-backlog-transition-lib.sh); nonpositive or invalid values fall back to 10; the first bound hit latches the sweep so later reads return immediately, each still naming its own item
 FM_BOOTSTRAP_DETECT_ONLY=0   # internal/read-only session-start mode: skip bootstrap's mutating sweeps and print advisory TANGLE wording

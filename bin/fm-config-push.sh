@@ -13,8 +13,12 @@
 # fm-config-inherit-lib.sh. Remote routes receive one durable marked reread nudge
 # through their SSH route when the transfer changed the home, and keep that
 # obligation across a partial, unknown, or killed completion. Unchanged homes send no
-# reread unless a previous reread is still owed. For local routes only,
-# data/captain-shared.md-only updates send no new reread pointer.
+# reread unless a previous reread is still owed. For local routes,
+# data/captain-shared.md never rides that config pointer; instead
+# bin/fm-shared-prefs-lib.sh records its applied content generation and sends one
+# exact-generation re-read request the mate acknowledges itself, so a
+# shared-preferences-only change is delivered too and is reported as applied,
+# delivered, or acknowledged, never one standing in for another.
 # Warnings-only skips exit 0; real propagation or reread-send errors exit non-zero.
 set -u
 
@@ -30,6 +34,9 @@ This is local-material-only:
   - after config/* changes, sends a local literal-content pointer or
     one durable marked remote reread nudge
     (no message when unchanged unless a previous reread is still owed)
+  - after a data/captain-shared.md change in a local home, records the new
+    applied generation and sends one exact-generation re-read request
+    (fm-shared-prefs.sh status reports applied, delivered, acknowledged)
   - reports each live home and each inheritable item as pushed, unchanged,
     skipped, or error
   - exits non-zero for real propagation errors or reread-send failures
@@ -80,6 +87,8 @@ SECONDMATES_MD="$DATA/secondmates.md"
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-secondmate-nudge-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
+# shellcheck source=bin/fm-shared-prefs-lib.sh
+. "$SCRIPT_DIR/fm-shared-prefs-lib.sh"
 
 print_item_report() {
   local report=$1 item status reason
@@ -257,6 +266,11 @@ while IFS='|' read -r id home _window meta; do
       printf '  config-reread: send failed\n'
     fi
   fi
+  prefs_rc=0
+  prefs_out=$(FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$STATE" \
+    fm_shared_prefs_converge "$id" "$home_real" "$DATA" 2>&1) || prefs_rc=$?
+  [ -z "$prefs_out" ] || printf '%s\n' "$prefs_out" | sed 's/^SHARED_PREFS: secondmate [^:]*: /  shared-prefs: /'
+  [ "$prefs_rc" -ne 1 ] || errors=1
   fm_lock_release "$home_lock" || true
 done < "$records"
 

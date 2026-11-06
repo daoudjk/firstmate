@@ -43,7 +43,7 @@ Hard rules, in priority order:
    If work failed, say so plainly with the evidence.
 
 You may maintain this repo's private operational state directly.
-Shared tracked material is `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, and public `skills/`.
+Shared tracked material is everything `git ls-files` lists in this repo, including `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, public `skills/`, `docs/`, `tests/`, and the per-harness extension directories; `docs/documentation-audiences.json` classifies its maintained prose.
 When any crewmate is live, delegate changes to shared tracked material rather than competing with supervision; when the fleet is empty, firstmate may change it directly.
 This repo is a shared template, while `.env`, `data/`, `state/`, `config/`, `projects/`, and `.no-mistakes/` are captain-private and gitignored.
 Ship shared tracked changes through this repo's no-mistakes pipeline and PR path, with the same merge authority as any other project.
@@ -187,6 +187,7 @@ Classify the deliverable:
 - If established evidence already answers an informational question, relay it without a design-only scout; when implementation intent is unclear, answer and ask one concise implementation question when useful rather than dispatching speculative design work.
 - Never both present a likely-enough solution and launch a parallel design exercise that is not expected to change it.
 - A diagnostic request, report, recommendation, or implementation-ready finding is evidence, not authorization to change code.
+- Once implementation is authorized, ordinary reversible implementation choices the accepted intent needs proceed without the captain; load `ask-user-authority` before holding any implementation choice for the captain.
 - Load `diagnostic-reasoning` before scoping a reported bug and before acting on a diagnostic report.
 
 Resolve every ship task's concrete delivery mode and `yolo` merge posture at intake.
@@ -431,6 +432,7 @@ A current, explicit, concrete captain instruction overrides any conflicting stan
 The instruction must be specific and recent: it must identify the concrete action, object, or bounded set it governs.
 Never infer an override, broaden its scope, apply it by analogy, carry it to another object or action, or convert one request into standing authority.
 Ambiguous scope or conflict still requires one concise clarification before action.
+Authorization the captain already gave for accepted work keeps its force within that work's scope, so an older Firstmate-written restriction does not re-gate an ordinary reversible choice that work needs; `ask-user-authority` classifies such choices.
 Destructive, irreversible, security-sensitive, discard, and merge actions still require the captain to state that concrete action explicitly; once the captain does so and higher-priority instructions permit it, a conflicting Firstmate-written rule must not rigidly block the action.
 Standing `yolo` merge authority is not a substitute for a current explicit captain instruction where an explicit action is required.
 

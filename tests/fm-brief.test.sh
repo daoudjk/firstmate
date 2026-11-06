@@ -1574,6 +1574,33 @@ test_crewmate_scaffolds_forbid_pool_administration() {
   pass "fm-brief.sh: every crewmate scaffold forbids administering the shared worktree pool"
 }
 
+# Workers stall for hours when an ordinary choice reads as needing approval, so
+# every crewmate scaffold says those choices are the worker's own, while the
+# genuine escalations stay named.
+test_crewmate_scaffolds_own_ordinary_choices() {
+  local home mode brief
+  home="$TMP_ROOT/ordinary-choice-home"
+  mkdir -p "$home/data"
+  for mode in no-mistakes direct-PR local-only scout; do
+    if [ "$mode" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-choice-scout alpha --scout >/dev/null 2>&1 \
+        || fail "fm-brief.sh --scout exited non-zero"
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "brief-choice-$mode" alpha --mode "$mode" >/dev/null 2>&1 \
+        || fail "fm-brief.sh --mode $mode exited non-zero"
+    fi
+    brief="$home/data/brief-choice-$mode/brief.md"
+    assert_grep "they never wait for approval" "$brief" \
+      "$mode brief did not make ordinary reversible choices the worker's own"
+    assert_grep "destructive, irreversible, security-sensitive, or spending action" "$brief" \
+      "$mode brief dropped the genuine escalations"
+    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+    assert_grep 'needs-decision [at=<epoch>]: {summary of options}' "$brief" \
+      "$mode brief lost the decision escalation format"
+  done
+  pass "fm-brief.sh: crewmate scaffolds own ordinary choices and still escalate genuine decisions"
+}
+
 test_script_parses
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
@@ -1613,3 +1640,4 @@ test_branch_prefix_is_refused_where_it_does_not_apply
 test_branch_prefix_value_is_validated
 test_branch_prefix_command_is_shell_safe
 test_crewmate_scaffolds_forbid_pool_administration
+test_crewmate_scaffolds_own_ordinary_choices

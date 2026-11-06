@@ -41,7 +41,6 @@ import os
 import re
 import secrets
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -171,32 +170,6 @@ def write_text_atomic(path, text, mode=0o600):
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
-
-
-def map_capability(home):
-    os.makedirs(home.map_state, mode=0o700, exist_ok=True)
-    path = os.path.join(home.map_state, "capability")
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    except FileExistsError:
-        pass
-    else:
-        with os.fdopen(fd, "w", encoding="ascii") as handle:
-            handle.write(secrets.token_urlsafe(32))
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-            raise MapError("state/system-map/capability must be an owner-only regular file")
-        with os.fdopen(fd, "r", encoding="ascii") as handle:
-            fd = -1
-            capability = handle.read().strip()
-    finally:
-        if fd >= 0:
-            os.close(fd)
-    if not capability:
-        raise MapError("state/system-map/capability is empty")
-    return capability
 
 
 @contextlib.contextmanager
@@ -2277,7 +2250,6 @@ class MapServer(ThreadingHTTPServer):
         super().__init__(address, handler)
         self.home = home
         self.port = port
-        self.token = map_capability(home)
         self.collect_threads = {}
         self.lock = threading.Lock()
 
@@ -2293,9 +2265,6 @@ class MapHandler(BaseHTTPRequestHandler):
     def _host_ok(self):
         host = (self.headers.get("Host") or "").strip()
         return host in ("127.0.0.1:%d" % self.server.port, "localhost:%d" % self.server.port)
-
-    def _authorized(self):
-        return secrets.compare_digest(self.headers.get("X-FM-Map-Token", ""), self.server.token)
 
     def _send(self, status, body, ctype="application/json; charset=utf-8"):
         data = body if isinstance(body, bytes) else body.encode("utf-8")
@@ -2326,8 +2295,6 @@ class MapHandler(BaseHTTPRequestHandler):
             return self._json(HTTPStatus.FORBIDDEN, {"error": "unexpected Host header"})
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
-        if parsed.path.startswith("/api/") and not self._authorized():
-            return self._json(HTTPStatus.FORBIDDEN, {"error": "missing or invalid map capability"})
         try:
             home, cfg = self._context()
             if parsed.path == "/":
@@ -2356,8 +2323,16 @@ class MapHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._host_ok():
             return self._json(HTTPStatus.FORBIDDEN, {"error": "unexpected Host header"})
-        if not self._authorized():
-            return self._json(HTTPStatus.FORBIDDEN, {"error": "missing or invalid map capability"})
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in (
+            "http://127.0.0.1:%d" % self.server.port,
+            "http://localhost:%d" % self.server.port,
+        ):
+            return self._json(HTTPStatus.FORBIDDEN, {"error": "unexpected Origin header"})
+        if self.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+            return self._json(HTTPStatus.FORBIDDEN, {"error": "cross-site request"})
+        if self.headers.get_content_type() != "application/json":
+            return self._json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "Content-Type must be application/json"})
         length = int(self.headers.get("Content-Length") or 0)
         if length > 65536:
             return self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "request too large"})
@@ -2415,7 +2390,7 @@ def cmd_serve(home, cfg, args):
 
 
 def cmd_open(home, cfg, args):
-    print("http://127.0.0.1:%d/#key=%s" % (cfg["port"], map_capability(home)))
+    print("http://127.0.0.1:%d/" % cfg["port"])
     return 0
 
 

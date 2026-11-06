@@ -181,11 +181,16 @@ case "${1:-}" in
         ;;
       *'--state in_flight'*)
         task_header 1
-        printf '%s\n' '  compact-startup,in_flight,ship,firstmate,Compact startup digest,none,captain,captain choice pending'
+        printf '%s\n' "${FM_FAKE_TASKS_AXI_IN_FLIGHT_ROW:-  compact-startup,in_flight,ship,firstmate,Compact startup digest,none,captain,captain choice pending}"
         ;;
       *'--state held'*)
-        task_header 1
-        printf '%s\n' '  held-queued,queued,ship,firstmate,Held queued work,none,captain,captain choice pending'
+        if [ -n "${FM_FAKE_TASKS_AXI_HELD_ROWS:-}" ]; then
+          task_header "$(printf '%s\n' "$FM_FAKE_TASKS_AXI_HELD_ROWS" | wc -l | tr -d ' ')"
+          printf '%s\n' "$FM_FAKE_TASKS_AXI_HELD_ROWS"
+        else
+          task_header 1
+          printf '%s\n' '  held-queued,queued,ship,firstmate,Held queued work,none,captain,captain choice pending'
+        fi
         ;;
       *'--state queued'*'--blocked'*)
         task_header 1
@@ -2031,7 +2036,7 @@ EOF
   out=$(FM_FAKE_TASKS_AXI_LOG="$log" FM_FAKE_TASKS_AXI_READY=3 \
     run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, and blocked row shown in full; ready queued bounded to 20; task bodies omitted)" \
+  assert_contains "$out" "compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, and blocked row shown; hold reasons over 220 chars truncated with a marker naming the full-record command; ready queued bounded to 20; task bodies omitted)" \
     "compatible tasks-axi backend did not render the compact backlog listing"
   assert_contains "$out" "tasks[1]{id,state,kind,repo,title,blocked_by,hold_kind,hold_reason}:" \
     "tasks-axi compact listing omitted the expected structured field header"
@@ -2119,7 +2124,7 @@ EOF
 
   out=$(FM_SESSION_START_QUEUED_LIMIT=4 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "compact backlog listing (manual backend; done rows omitted; every in-flight, held, and blocked title line kept; other queued bounded to 4; indented task bodies omitted)" \
+  assert_contains "$out" "compact backlog listing (manual backend; done rows omitted; every in-flight, held, and blocked title line kept; hold reasons over 220 chars truncated with a marker naming the full-record command; other queued bounded to 4; indented task bodies omitted)" \
     "manual backend did not use compact title-line rendering"
   assert_contains "$out" "## In flight" "manual compact rendering omitted the in-flight section heading"
   assert_contains "$out" "- [ ] compact-startup - Compact startup digest" \
@@ -2167,6 +2172,227 @@ EOF
   assert_not_contains "$out" "DONE-ROW-LINE" "unavailable tasks-axi fallback listed a done row at startup"
 
   pass "unavailable or incompatible tasks-axi falls back to compact manual backlog rendering"
+}
+
+# --- fleet-state digest: bounded hold-reason display ----------------------
+#
+# A hold reason is the one unbounded field in an otherwise compact startup row.
+# The digest bounds only its DISPLAY: the row, its id, state, kind, blocked_by,
+# and hold_kind stay whole, the shown text is the exact opening of the stored
+# reason, the marker names the shown and total counts and the exact full-record
+# command, and the stored backlog is never touched.
+
+# long_hold_reason: a reason far over the bound that mixes the characters a
+# naive cut or CSV split gets wrong - commas, quotes, parentheses, a line break,
+# multi-byte and combining characters - and ends in a sentinel that must never
+# reach the digest.
+long_hold_reason() {
+  perl -CS -e 'print "Decide: ship A, or B (\"cheap\") - caf\x{e9} \x{6f22}\x{5b57} \x{1f44d}\x{1f3fd}\nsecond line ", "x" x 900, " TAIL-SENTINEL-MUST-NOT-RENDER"'
+}
+
+# grapheme_count <text>: user-perceived characters, the unit the bound counts.
+grapheme_count() {
+  printf '%s' "$1" | perl -CS -0777 -ne 'my @g = /(\X)/g; print scalar @g'
+}
+
+# FM_TEST_LIMIT=<limit> expected_bounded_prefix <reason>: the first <limit>
+# grapheme clusters, JSON-encoded without its closing quote, exactly as a quoted field opens.
+expected_bounded_prefix() {
+  printf '%s' "$1" | perl -CS -MJSON::PP -0777 -ne '
+    my @g = /(\X)/g;
+    my $s = JSON::PP->new->allow_nonref->encode(join("", @g[0 .. $ENV{FM_TEST_LIMIT} - 1]));
+    $s =~ s/"\z//;
+    print $s'
+}
+
+test_backlog_hold_reason_display_is_bounded_with_full_record_pointer() {
+  local rec root home fakebin out reason encoded total prefix before
+  rec=$(new_world backlog-hold-reason-bound)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_tasks_axi_compact "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  write_long_body_backlog "$home/data/backlog.md"
+  before=$(cksum < "$home/data/backlog.md")
+  reason=$(long_hold_reason)
+  # shellcheck source=bin/fm-hold-reason-lib.sh
+  . "$ROOT/bin/fm-hold-reason-lib.sh"
+  encoded=$(fm_hold_reason_encode "$reason")
+  total=$(grapheme_count "$reason")
+  prefix=$(FM_TEST_LIMIT=220 expected_bounded_prefix "$reason")
+
+  out=$(FM_FAKE_TASKS_AXI_HELD_ROWS="  huge-hold,queued,task,firstmate,\"Huge, held\",\"dep-a,dep-b\",captain,$encoded
+  short-hold,queued,task,firstmate,Short hold,none,parked,brief reason" \
+    FM_FAKE_TASKS_AXI_IN_FLIGHT_ROW="  live-hold,in_flight,ship,firstmate,Live hold,none,captain,$encoded" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "  huge-hold,queued,task,firstmate,\"Huge, held\",\"dep-a,dep-b\",captain,$prefix [truncated 220/$total chars; full: bin/fm-tasks-axi.sh show huge-hold --full]\"" \
+    "a long held reason did not keep its row identity, dependencies, hold kind, exact opening text, and full-record pointer"
+  assert_contains "$out" "  live-hold,in_flight,ship,firstmate,Live hold,none,captain,$prefix [truncated 220/$total chars; full: bin/fm-tasks-axi.sh show live-hold --full]\"" \
+    "a long in-flight hold reason was not bounded with its own id in the pointer"
+  assert_contains "$out" "  short-hold,queued,task,firstmate,Short hold,none,parked,brief reason" \
+    "a reason inside the bound did not pass through unchanged"
+  assert_contains "$out" 'blocked-followup,queued,scout,firstmate,Follow compact startup,compact-startup,"-","-"' \
+    "bounding hold reasons disturbed a blocked row"
+  assert_not_contains "$out" "TAIL-SENTINEL-MUST-NOT-RENDER" "the digest rendered a long hold reason past its bound"
+  assert_not_contains "$out" "fm-hold-v1:" "the digest showed an encoded hold reason instead of decoding it"
+  [ "$(cksum < "$home/data/backlog.md")" = "$before" ] || fail "rendering the startup digest changed the stored backlog"
+
+  out=$(FM_SESSION_START_HOLD_REASON_LIMIT=0 \
+    FM_FAKE_TASKS_AXI_HELD_ROWS="  huge-hold,queued,task,firstmate,Huge held,none,captain,$encoded" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "hold reasons shown in full" "a disabled bound did not say reasons are shown in full"
+  assert_contains "$out" "TAIL-SENTINEL-MUST-NOT-RENDER" "a disabled bound still cut a hold reason"
+  assert_not_contains "$out" "[truncated 220/" "a disabled bound still printed a truncation marker"
+
+  pass "startup bounds long hold-reason display with exact opening text and a full-record pointer, keeping every row whole"
+}
+
+# The real tasks-axi listing is the canonical source; drive it end to end so the
+# bound is proven against the tool's own quoting, not only against a fixture.
+test_backlog_hold_reason_bound_with_real_tasks_axi() {
+  local rec root home fakebin out reason total prefix real full backlog node
+  real=$(command -v tasks-axi 2>/dev/null || true)
+  if [ -z "$real" ]; then
+    pass "real tasks-axi hold-reason bound skipped: tasks-axi not installed"
+    return 0
+  fi
+  node=$(command -v node 2>/dev/null || true)
+  rec=$(new_world backlog-hold-reason-real)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  # The installed tool may be a node script, and the fixture toolchain fakes
+  # node, so pin the real interpreter in a wrapper instead of trusting PATH.
+  if [ -n "$node" ] && head -n 1 "$real" 2>/dev/null | grep -q node; then
+    printf '#!/bin/sh\nexec %s %s "$@"\n' "$node" "$real" > "$fakebin/tasks-axi"
+    chmod +x "$fakebin/tasks-axi"
+  else
+    ln -s "$real" "$fakebin/tasks-axi"
+  fi
+  backlog="$home/data/backlog.md"
+  printf '# Backlog\n\n## In flight\n\n## Queued\n\n## Done\n' > "$backlog"
+  if ! { PATH="$fakebin:$BASE_PATH" tasks-axi add dep-a "Dependency A" --file "$backlog" >/dev/null \
+    && PATH="$fakebin:$BASE_PATH" tasks-axi add real-hold "Real, held item" --file "$backlog" >/dev/null \
+    && PATH="$fakebin:$BASE_PATH" tasks-axi block real-hold --by dep-a --file "$backlog" >/dev/null; }; then
+    fail "the installed tasks-axi could not build the fixture backlog"
+  fi
+  reason=$(long_hold_reason)
+  # shellcheck source=bin/fm-hold-reason-lib.sh
+  . "$ROOT/bin/fm-hold-reason-lib.sh"
+  PATH="$fakebin:$BASE_PATH" tasks-axi hold real-hold --reason "$(fm_hold_reason_encode "$reason")" --kind captain \
+    --file "$backlog" >/dev/null || fail "real tasks-axi refused the encoded hold reason"
+  total=$(grapheme_count "$reason")
+  prefix=$(FM_TEST_LIMIT=220 expected_bounded_prefix "$reason")
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  case "$out" in
+    *"compact backlog listing (tasks-axi;"*) ;;
+    *)
+      # An installed build below the compatibility floor renders the same real
+      # backlog through the title-line fallback, which must bound it too.
+      assert_contains "$out" "- [ ] real-hold - Real, held item blocked-by: dep-a" \
+        "the fallback listing lost the real held row identity or dependency"
+      assert_contains "$out" "(hold: $prefix [truncated 220/$total chars; full: data/backlog.md entry real-hold]\") (hold-kind: captain)" \
+        "the fallback listing did not bound the real hold reason with its entry pointer"
+      assert_not_contains "$out" "TAIL-SENTINEL-MUST-NOT-RENDER" "the fallback listing rendered a long hold reason past its bound"
+      pass "startup bounds a hold reason written by an installed tasks-axi below the compatibility floor"
+      return 0
+      ;;
+  esac
+  assert_contains "$out" "  real-hold,queued,task," "the real listing lost the held row identity"
+  assert_contains "$out" ",dep-a,captain,$prefix [truncated 220/$total chars; full: bin/fm-tasks-axi.sh show real-hold --full]\"" \
+    "the real listing did not keep the dependency and hold kind beside the bounded reason and pointer"
+  assert_not_contains "$out" "TAIL-SENTINEL-MUST-NOT-RENDER" "the real listing rendered a long hold reason past its bound"
+  full=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" "$ROOT/bin/fm-tasks-axi.sh" show real-hold --full 2>/dev/null || true)
+  assert_contains "$full" "TAIL-SENTINEL-MUST-NOT-RENDER" "the pointed-to full record no longer carries the complete reason"
+  pass "startup bounds a real tasks-axi hold reason and the pointed-to record keeps the full text"
+}
+
+test_backlog_hold_reason_bound_manual_backend() {
+  local rec root home fakebin out reason encoded total prefix
+  rec=$(new_world backlog-hold-reason-manual)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  reason=$(long_hold_reason)
+  # shellcheck source=bin/fm-hold-reason-lib.sh
+  . "$ROOT/bin/fm-hold-reason-lib.sh"
+  encoded=$(fm_hold_reason_encode "$reason")
+  total=$(grapheme_count "$reason")
+  prefix=$(FM_TEST_LIMIT=220 expected_bounded_prefix "$reason")
+  {
+    printf '# Backlog\n\n## In flight\n\n## Queued\n'
+    printf -- '- [ ] manual-hold - Manual held item blocked-by: dep-a blocked-by: dep-b (since 2026-07-15) (hold: %s) (hold-kind: captain)\n' "$encoded"
+    printf -- '- [ ] plain-hold - Plain held item (since 2026-07-15) (hold: brief reason) (hold-kind: parked)\n'
+    printf '\n## Done\n'
+  } > "$home/data/backlog.md"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "- [ ] manual-hold - Manual held item blocked-by: dep-a blocked-by: dep-b (since 2026-07-15) (hold: $prefix [truncated 220/$total chars; full: data/backlog.md entry manual-hold]\") (hold-kind: captain)" \
+    "the manual title line did not keep identity, dependencies, and hold kind beside the bounded reason and pointer"
+  assert_contains "$out" "- [ ] plain-hold - Plain held item (since 2026-07-15) (hold: brief reason) (hold-kind: parked)" \
+    "a short manual hold reason did not pass through unchanged"
+  assert_not_contains "$out" "TAIL-SENTINEL-MUST-NOT-RENDER" "the manual listing rendered a long hold reason past its bound"
+  pass "manual backlog rendering bounds a long hold reason with its entry pointer"
+}
+
+test_backlog_hold_reason_bound_manual_unquoted_text() {
+  local rec root home fakebin out reason total prefix
+  rec=$(new_world backlog-hold-reason-manual-unquoted)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  reason="\"Discuss scope\" before proceeding $(printf 'x%.0s' {1..300})TAIL-SENTINEL-MUST-NOT-RENDER"
+  total=$(grapheme_count "$reason")
+  prefix=$(printf '%s' "$reason" | perl -CS -0777 -ne 'my @g = /(\X)/g; print join "", @g[0 .. 219]')
+  {
+    printf '# Backlog\n\n## In flight\n'
+    printf -- '- [ ] manual-quoted - Manual held item (hold: %s) (hold-kind: captain)\n' "$reason"
+    printf '\n## Queued\n\n## Done\n'
+  } > "$home/data/backlog.md"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "- [ ] manual-quoted - Manual held item (hold: $prefix [truncated 220/$total chars; full: data/backlog.md entry manual-quoted]) (hold-kind: captain)" \
+    "a plain-text reason beginning with a quote was not bounded"
+  assert_not_contains "$out" "TAIL-SENTINEL-MUST-NOT-RENDER" "the manual listing rendered an unbounded quoted plain-text reason"
+  pass "manual backlog rendering bounds invalid-JSON quoted plain text"
+}
+
+test_backlog_hold_reason_bound_manual_parenthesized_text() {
+  local rec root home fakebin out reason total prefix
+  rec=$(new_world backlog-hold-reason-manual-parenthesized)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  reason="Discuss (A) followed by $(printf 'x%.0s' {1..300})TAIL-SENTINEL-MUST-NOT-RENDER"
+  total=$(grapheme_count "$reason")
+  prefix=$(printf '%s' "$reason" | perl -CS -0777 -ne 'my @g = /(\X)/g; print join "", @g[0 .. 219]')
+  {
+    printf '# Backlog\n\n## In flight\n'
+    printf -- '- [ ] manual-paren - Manual held item blocked-by: dep-a (hold: %s) (hold-kind: captain)\n' "$reason"
+    printf '\n## Queued\n\n## Done\n'
+  } > "$home/data/backlog.md"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "- [ ] manual-paren - Manual held item blocked-by: dep-a (hold: $prefix [truncated 220/$total chars; full: data/backlog.md entry manual-paren]) (hold-kind: captain)" \
+    "a parenthesized plain-text reason was not bounded beside its metadata"
+  assert_not_contains "$out" "TAIL-SENTINEL-MUST-NOT-RENDER" "the manual listing rendered an unbounded parenthesized reason"
+  assert_contains "$(cat "$home/data/backlog.md")" "$reason" "the display bound changed the stored backlog"
+  pass "manual backlog rendering bounds a complete parenthesized hold reason"
 }
 
 # --- runtime bound -----------------------------------------------------------
@@ -3142,6 +3368,11 @@ test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
 test_backlog_queued_bound_discloses_its_remainder
 test_backlog_compact_manual_backend_skips_indented_bodies
 test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback
+test_backlog_hold_reason_display_is_bounded_with_full_record_pointer
+test_backlog_hold_reason_bound_with_real_tasks_axi
+test_backlog_hold_reason_bound_manual_backend
+test_backlog_hold_reason_bound_manual_unquoted_text
+test_backlog_hold_reason_bound_manual_parenthesized_text
 test_fleet_digest_empty_fleet
 test_system_map_summary_is_opt_in
 test_next_step_sources_x_mode_cadence
