@@ -237,6 +237,23 @@ test_evidence_is_version_bound() {
   pass "evidence qualifies only the exact observed version"
 }
 
+test_timeline_orders_offset_timestamps() {
+  local home id at result
+  home=$(new_home timeline-offset)
+  for id in earlier later; do
+    if [ "$id" = earlier ]; then at=2026-01-01T10:00:00+02:00; result=pass
+    else at=2026-01-01T09:00:00Z; result=fail; fi
+    cat > "$home/ev-$id.json" <<EOF
+{"schema":"fm-system-map.evidence.v1","id":"$id","subjects":["worker-host"],"versions":{"worker-host":"ami-0123456789abcdef0"},"result":"$result","summary":"$id","recorded_at":"$at","run_id":"run-a","phase":"run","provenance":{"source":"test"}}
+EOF
+    map "$home" evidence add example "$home/ev-$id.json" >/dev/null || fail "timeline evidence failed"
+  done
+  view_json "$home"
+  assert_equals "later" "$(py "$home/view.json" 'd["timeline"]["runs"][0]["cells"]["run"]["record"]')" "the later instant wins despite its smaller timestamp text"
+  assert_equals "2026-01-01T09:00:00Z" "$(py "$home/view.json" 'd["timeline"]["runs"][0]["last"]')" "run last follows absolute time"
+  pass "timeline compares timestamp instants"
+}
+
 test_collect_lock_is_single_owner() {
   local home pid rc=0 out
   home=$(new_home lock)
@@ -327,6 +344,8 @@ test_scheduler_install_is_idempotent_and_removable() {
   out=$(map "$home" install) || fail "second install failed"
   assert_contains "$out" "unchanged" "a repeated install changes nothing"
   assert_not_contains "$(cat "$home/systemctl.log")" "daemon-reload" "no reload without a unit change"
+  rc=0; map "$home" install --only ui >/dev/null 2>&1 || rc=$?
+  expect_code 2 "$rc" "partial installation is unsupported"
   out=$(FM_HOME="$home" "$home/state/system-map.check.sh")
   assert_equals "" "$out" "the registered check is quiet with nothing pending"
   map "$home" uninstall >/dev/null || fail "uninstall failed"
@@ -373,9 +392,18 @@ EOF
   assert_contains "$out" "queue-wakes-worker: deployment untracked, runtime not-observed, proof unversioned, live-verified no (proof not version-bound)" "a subject without a version source shows unversioned proof"
   map "$home" bind task-b --subject worker-host >/dev/null || fail "bind failed"
   map "$home" complete task-b --kind ship --mode no-mistakes >/dev/null
+  rc=0; out=$(map "$home" verify task-a) || rc=$?
+  expect_code 3 "$rc" "task A keeps its own completion boundary despite task B landing"
+  assert_contains "$out" "worker-host: deployment deployed, runtime as-intended, proof proven, live-verified yes" "task A retains its passing verification"
   write_evidence "$home" after-b ami-0123456789abcdef0 pass false "$(date -u +%Y-%m-%dT%H:%M:%SZ -d '+2 minute' 2>/dev/null || date -u -v+2M +%Y-%m-%dT%H:%M:%SZ)"
   rc=0; out=$(map "$home" verify task-b) || rc=$?
   expect_code 0 "$rc" "verify once every bound subject has later version-bound evidence"
+  write_evidence "$home" failed-after-b ami-0123456789abcdef0 fail false "$(date -u +%Y-%m-%dT%H:%M:%SZ -d '+3 minute' 2>/dev/null || date -u -v+3M +%Y-%m-%dT%H:%M:%SZ)"
+  rc=0; out=$(map "$home" verify task-b) || rc=$?
+  expect_code 3 "$rc" "a later failure revokes task verification"
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["live_verified"]')" "subject verification follows the latest decisive result"
+  assert_equals "failed" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "the failed proof remains visible"
   out=$(map "$home" bind task-s --subject api) && map "$home" complete task-s --kind scout >/dev/null
   assert_absent "$home/data/system-map/example/completions/task-s.json" "a scout never records implementation-complete"
   pass "binding, landing, and live verification stay distinct"
@@ -433,13 +461,25 @@ test_ui_annotations_and_intent_edits() {
   pid=$!
   MAP_SERVER_PID=$pid
   base="http://127.0.0.1:$port"
-  for _ in $(seq 1 50); do http GET "$base/api/projects" >/dev/null 2>&1 && break; sleep 0.1; done
+  for _ in $(seq 1 50); do [ -f "$home/state/system-map/capability" ] && break; sleep 0.1; done
   page=$(http GET "$base/")
   assert_contains "$page" "200 " "the page is served"
-  token=$(printf '%s' "$page" | sed -n 's/.*name="fm-map-token" content="\([^"]*\)".*/\1/p')
-  [ -n "$token" ] || fail "page carries no token"
+  token=$(map "$home" open)
+  assert_contains "$token" "http://127.0.0.1:4790/#key=" "open prints a URL with a fragment capability"
+  token=${token#*#key=}
+  [ -n "$token" ] || fail "open omitted the capability"
+  assert_not_contains "$page" "$token" "the page must not disclose the capability"
+  assert_equals "600" "$(stat -c %a "$home/state/system-map/capability")" "capability is owner-only"
   out=$(http GET "$base/api/projects" "" "" "evil.example:$port")
   assert_contains "$out" "403" "a foreign Host header is refused"
+  out=$(http GET "$base/api/projects")
+  assert_contains "$out" "403" "project list requires the capability"
+  out=$(http GET "$base/api/state?project=example")
+  assert_contains "$out" "403" "map state requires the capability"
+  out=$(http GET "$base/api/state?project=example" "" "wrong")
+  assert_contains "$out" "403" "a wrong capability is refused"
+  out=$(http GET "$base/api/projects" "" "$token")
+  assert_contains "$out" "200" "the owner capability reads the project list"
   out=$(http GET "$base/../config/system-map")
   assert_contains "$out" "404" "arbitrary paths are not served"
   out=$(http POST "$base/api/annotate" '{"project":"example","target":"api","text":"check scaling"}')
@@ -457,7 +497,7 @@ test_ui_annotations_and_intent_edits() {
   assert_contains "$out" '"revision": 2' "a valid intent edit raises the revision"
   assert_present "$home/data/system-map/example/history/manifest-r1.json" "the previous design is archived"
   cmp -s "$home/snapshot.before" "$home/state/system-map/example/snapshot.json" || fail "an intent edit changed observed records"
-  out=$(http GET "$base/api/state?project=example")
+  out=$(http GET "$base/api/state?project=example" "" "$token")
   assert_contains "$out" "Accepts jobs." "the view reflects the edited intent"
   assert_contains "$out" '"fixture": true' "stand-in observations are marked as test data"
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
@@ -488,6 +528,7 @@ test_scope_mismatch_skips_aws_reads
 test_missing_and_invalid_bindings
 test_credential_material_is_refused
 test_evidence_is_version_bound
+test_timeline_orders_offset_timestamps
 test_collect_lock_is_single_owner
 test_requests_dedupe_and_review_cadence
 test_active_cadence_ignores_secondmates

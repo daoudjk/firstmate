@@ -38,6 +38,7 @@ Without that file every integration point is a silent no-op, so a home that neve
 3. Run `bin/fm-system-map.sh validate <project>` until it reports no binding problems, then `collect <project>` once.
 4. Run `bin/fm-system-map.sh install` to install the collector timer, the UI service, and the watcher check.
    `install --dry-run` prints every file and command first, and `uninstall` removes exactly what install created.
+5. Run `bin/fm-system-map.sh open` to get the local UI URL; keep its fragment key private.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -65,6 +66,7 @@ Without that file every integration point is a silent no-op, so a home that neve
 | `state/system-map/<project>/snapshot.json` | collector | The latest published observations, replaced atomically. |
 | `state/system-map/<project>/last-success.json` | collector | The last successful read of each observation, kept separately. |
 | `state/system-map/<project>/health.json`, `requests.json`, `schedule.json` | collector | Collector health, pending supervisor requests, review schedule. |
+| `state/system-map/capability` | map owner | Owner-only 0600 capability for every UI API read and write. |
 
 Nothing observed is ever written into `data/`'s intended design, and intent edits never touch `state/`.
 
@@ -107,7 +109,8 @@ A file on disk changing does not refresh any running agent's context; an agent s
 
 ## Safety boundaries
 
-- The UI binds 127.0.0.1 only, accepts only a `127.0.0.1` or `localhost` Host header for its own port, serves a fixed file list, and requires a per-process page token for every write.
+- The UI binds 127.0.0.1 only, accepts only a `127.0.0.1` or `localhost` Host header for its own port, serves a fixed file list, and requires the owner-only capability for every API read and write.
+  The public page never embeds the capability; `open` places it in a URL fragment that the browser sends only as an API header.
 - Writes are limited to notes and to the title, description, notes, and intended state of an existing subject; structural changes go through `intent replace` with a reason.
 - Evidence paths are shown as text and only `https` links are clickable; no file content is served.
 - A collection run with `FM_SYSTEM_MAP_FIXTURE=1` is marked as test data in the UI and the summary, so stand-in output is never mistaken for a live read.

@@ -36,12 +36,12 @@ import errno
 import fcntl
 import glob
 import hashlib
-import html
 import json
 import os
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -163,6 +163,32 @@ def write_text_atomic(path, text, mode=0o600):
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
+
+
+def map_capability(home):
+    os.makedirs(home.map_state, mode=0o700, exist_ok=True)
+    path = os.path.join(home.map_state, "capability")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        pass
+    else:
+        with os.fdopen(fd, "w", encoding="ascii") as handle:
+            handle.write(secrets.token_urlsafe(32))
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise MapError("state/system-map/capability must be an owner-only regular file")
+        with os.fdopen(fd, "r", encoding="ascii") as handle:
+            fd = -1
+            capability = handle.read().strip()
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if not capability:
+        raise MapError("state/system-map/capability is empty")
+    return capability
 
 
 @contextlib.contextmanager
@@ -1159,6 +1185,19 @@ def _runtime_status(subject, observations, expected_mode):
     return {"status": status, "observed": observed, "intended": intended}
 
 
+def live_verification(evidence, sid, version, vstate, completed_at):
+    qualifying = [r for r in evidence if not r.get("invalid") and r["result"] in ("pass", "fail")
+                  and (sid in r.get("subjects", []) or sid in r.get("versions", {}))
+                  and evidence_qualifies(r, sid, version, vstate)[0]
+                  and (parse_iso(r["recorded_at"]) or 0) >= completed_at]
+    if not qualifying:
+        return False
+    latest = max(qualifying, key=lambda r: (parse_iso(r["recorded_at"]) or 0, r["result"] == "fail"))
+    if latest["result"] == "fail":
+        return False
+    return "unversioned" if vstate == "untracked" else True
+
+
 def build_view(home, cfg, project):
     manifest = load_manifest(home, project)
     bindings = load_bindings(home, project)
@@ -1234,11 +1273,7 @@ def build_view(home, cfg, project):
         live_verified = None
         if comps:
             completed_at = max(parse_iso(c["completed_at"]) or 0 for c in comps)
-            after = [r for r in decisive if r["result"] == "pass" and (parse_iso(r["recorded_at"]) or 0) >= completed_at]
-            if after and vstate == "untracked":
-                live_verified = "unversioned"
-            else:
-                live_verified = bool(after)
+            live_verified = live_verification(evidence, sid, version, vstate, completed_at)
         obs_list = []
         for ob in subject.get("observe", []):
             cur = observations.get(ob["id"])
@@ -1327,17 +1362,19 @@ def build_timeline(manifest, evidence):
         if rec.get("invalid") or not rec.get("run_id"):
             continue
         run = runs.setdefault(rec["run_id"], {"run_id": rec["run_id"], "cells": {}, "first": rec["recorded_at"], "last": rec["recorded_at"], "historical": False, "notes": []})
-        run["first"] = min(run["first"], rec["recorded_at"])
-        run["last"] = max(run["last"], rec["recorded_at"])
+        if parse_iso(rec["recorded_at"]) < parse_iso(run["first"]):
+            run["first"] = rec["recorded_at"]
+        if parse_iso(rec["recorded_at"]) > parse_iso(run["last"]):
+            run["last"] = rec["recorded_at"]
         run["historical"] = run["historical"] or bool(rec.get("historical"))
         phase = rec.get("phase")
         if phase:
             prev = run["cells"].get(phase)
-            if prev is None or prev["recorded_at"] <= rec["recorded_at"]:
+            if prev is None or parse_iso(prev["recorded_at"]) <= parse_iso(rec["recorded_at"]):
                 run["cells"][phase] = {"result": rec["result"], "summary": rec["summary"], "record": rec["id"], "recorded_at": rec["recorded_at"]}
         else:
             run["notes"].append({"summary": rec["summary"], "record": rec["id"], "result": rec["result"]})
-    ordered = sorted(runs.values(), key=lambda r: r["last"], reverse=True)
+    ordered = sorted(runs.values(), key=lambda r: parse_iso(r["last"]), reverse=True)
     return {"phases": [{"id": p["id"], "title": p["title"], "description": p.get("description", ""), "criterion": p.get("criterion")} for p in phases], "runs": ordered}
 
 
@@ -1871,7 +1908,9 @@ def cmd_verify(home, cfg, args):
         print("task %s has no system-map binding" % args.task)
         return 0
     view = build_view(home, cfg, project)
-    completed = os.path.exists(home.pdata(project, "completions", args.task + ".json"))
+    completion = read_json(home.pdata(project, "completions", args.task + ".json"))
+    completed = completion is not None
+    evidence = load_evidence(home, project) if completed else []
     print("task %s (%s): %s" % (args.task, project, "implementation-complete" if completed else "not landed yet"))
     unverified = 0
     for sid in binding.get("subjects", []):
@@ -1879,7 +1918,7 @@ def cmd_verify(home, cfg, args):
         if not s:
             print("  %s: no longer in the manifest" % sid)
             continue
-        live = s["live_verified"]
+        live = live_verification(evidence, sid, s["version"], s["version_state"], parse_iso(completion["completed_at"]) or 0) if completed else None
         if live is not True:
             unverified += 1
         print("  %s: deployment %s, runtime %s, proof %s, live-verified %s" % (
@@ -2047,11 +2086,7 @@ def cmd_install(home, cfg, args):
     units = render_units(home, cfg)
     paths = scheduler_paths(home)
     changed = False
-    components = args.only or ["check", "collector", "ui"]
     for name, path in paths.items():
-        part = "ui" if name.startswith("ui") else "collector"
-        if part not in components:
-            continue
         current = None
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as handle:
@@ -2067,28 +2102,24 @@ def cmd_install(home, cfg, args):
                 print("wrote %s" % path)
         else:
             print("unchanged %s" % path)
-    if "check" in components:
-        shim_path = os.path.join(home.state_dir, CHECK_ID + ".check.sh")
-        shim = check_shim(home)
-        current = None
-        if os.path.exists(shim_path):
-            with open(shim_path, "r", encoding="utf-8") as handle:
-                current = handle.read()
-        if args.dry_run:
-            print("would %s %s and register it" % ("keep" if current == shim else "write", shim_path))
-        else:
-            if current != shim:
-                write_text_atomic(shim_path, shim, mode=0o700)
-            print(_run_root_script(home, "fm-check-register.sh", [CHECK_ID]))
-    if "collector" in components or "ui" in components:
-        if changed:
-            _systemctl(["daemon-reload"], args.dry_run)
-        if "collector" in components:
-            _systemctl(["enable", "--now", os.path.basename(paths["collector.timer"])], args.dry_run)
-        if "ui" in components:
-            _systemctl(["enable", "--now", os.path.basename(paths["ui.service"])], args.dry_run)
-            if changed:
-                _systemctl(["restart", os.path.basename(paths["ui.service"])], args.dry_run)
+    shim_path = os.path.join(home.state_dir, CHECK_ID + ".check.sh")
+    shim = check_shim(home)
+    current = None
+    if os.path.exists(shim_path):
+        with open(shim_path, "r", encoding="utf-8") as handle:
+            current = handle.read()
+    if args.dry_run:
+        print("would %s %s and register it" % ("keep" if current == shim else "write", shim_path))
+    else:
+        if current != shim:
+            write_text_atomic(shim_path, shim, mode=0o700)
+        print(_run_root_script(home, "fm-check-register.sh", [CHECK_ID]))
+    if changed:
+        _systemctl(["daemon-reload"], args.dry_run)
+    _systemctl(["enable", "--now", os.path.basename(paths["collector.timer"])], args.dry_run)
+    _systemctl(["enable", "--now", os.path.basename(paths["ui.service"])], args.dry_run)
+    if changed:
+        _systemctl(["restart", os.path.basename(paths["ui.service"])], args.dry_run)
     print("system map installed for %s; UI http://127.0.0.1:%d/" % (", ".join(cfg["projects"]), cfg["port"]))
     return 0
 
@@ -2139,7 +2170,7 @@ class MapServer(ThreadingHTTPServer):
         super().__init__(address, handler)
         self.home = home
         self.port = port
-        self.token = secrets.token_urlsafe(24)
+        self.token = map_capability(home)
         self.collect_threads = {}
         self.lock = threading.Lock()
 
@@ -2155,6 +2186,9 @@ class MapHandler(BaseHTTPRequestHandler):
     def _host_ok(self):
         host = (self.headers.get("Host") or "").strip()
         return host in ("127.0.0.1:%d" % self.server.port, "localhost:%d" % self.server.port)
+
+    def _authorized(self):
+        return secrets.compare_digest(self.headers.get("X-FM-Map-Token", ""), self.server.token)
 
     def _send(self, status, body, ctype="application/json; charset=utf-8"):
         data = body if isinstance(body, bytes) else body.encode("utf-8")
@@ -2185,11 +2219,13 @@ class MapHandler(BaseHTTPRequestHandler):
             return self._json(HTTPStatus.FORBIDDEN, {"error": "unexpected Host header"})
         parsed = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(parsed.query)
+        if parsed.path.startswith("/api/") and not self._authorized():
+            return self._json(HTTPStatus.FORBIDDEN, {"error": "missing or invalid map capability"})
         try:
             home, cfg = self._context()
             if parsed.path == "/":
                 with open(os.path.join(home.ui_dir, "index.html"), "r", encoding="utf-8") as handle:
-                    page = handle.read().replace("__FM_MAP_TOKEN__", html.escape(self.server.token, quote=True))
+                    page = handle.read()
                 return self._send(HTTPStatus.OK, page, "text/html; charset=utf-8")
             if parsed.path in UI_FILES:
                 name, ctype = UI_FILES[parsed.path]
@@ -2213,8 +2249,8 @@ class MapHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._host_ok():
             return self._json(HTTPStatus.FORBIDDEN, {"error": "unexpected Host header"})
-        if not secrets.compare_digest(self.headers.get("X-FM-Map-Token", ""), self.server.token):
-            return self._json(HTTPStatus.FORBIDDEN, {"error": "missing or stale page token; reload the page"})
+        if not self._authorized():
+            return self._json(HTTPStatus.FORBIDDEN, {"error": "missing or invalid map capability"})
         length = int(self.headers.get("Content-Length") or 0)
         if length > 65536:
             return self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "request too large"})
@@ -2271,6 +2307,11 @@ def cmd_serve(home, cfg, args):
     return 0
 
 
+def cmd_open(home, cfg, args):
+    print("http://127.0.0.1:%d/#key=%s" % (cfg["port"], map_capability(home)))
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 
@@ -2292,6 +2333,7 @@ def build_parser():
     p.add_argument("project", nargs="?")
     p = sub.add_parser("serve", help="serve the local UI on 127.0.0.1")
     p.add_argument("--port", type=int)
+    sub.add_parser("open", help="print the owner-only local UI URL")
     p = sub.add_parser("evidence", help="record version-bound evidence")
     p.add_argument("evidence_cmd", choices=["add"])
     p.add_argument("project")
@@ -2345,14 +2387,12 @@ def build_parser():
     for name in ("install", "uninstall"):
         p = sub.add_parser(name, help="%s the scheduler units and watcher check" % name)
         p.add_argument("--dry-run", action="store_true")
-        if name == "install":
-            p.add_argument("--only", action="append", choices=["check", "collector", "ui"])
     return parser
 
 
 COMMANDS = {
     "tick": cmd_tick, "collect": cmd_collect, "summary": cmd_summary, "check": cmd_check,
-    "status": cmd_status, "view": cmd_view, "validate": cmd_validate, "serve": cmd_serve,
+    "status": cmd_status, "view": cmd_view, "validate": cmd_validate, "serve": cmd_serve, "open": cmd_open,
     "evidence": cmd_evidence_add, "annotate": cmd_annotate, "intent": cmd_intent, "bind": cmd_bind,
     "complete": cmd_complete, "verify": cmd_verify, "link": cmd_link, "ack": cmd_ack,
     "review-done": cmd_review_done, "install": cmd_install, "uninstall": cmd_uninstall,

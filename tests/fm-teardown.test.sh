@@ -958,6 +958,22 @@ test_teardown_records_system_map_completion() {
   pass "teardown records implementation-complete for a task bound to the system map"
 }
 
+test_forced_teardown_does_not_complete_system_map() {
+  local case_dir rc
+  case_dir=$(make_case map-force)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit "$case_dir" "mapped work"
+  map_case_enable "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "map-force: forced teardown"
+  assert_absent "$case_dir/data/system-map/example/completions/task-x1.json" "map-force: discarded work was marked complete"
+  pass "forced teardown never records system map completion"
+}
+
 test_teardown_survives_a_broken_system_map() {
   local case_dir rc
   case_dir=$(make_case map-broken)
@@ -5287,6 +5303,7 @@ test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
 test_no_mistakes_origin_remote_allows
 test_teardown_records_system_map_completion
+test_forced_teardown_does_not_complete_system_map
 test_teardown_survives_a_broken_system_map
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed

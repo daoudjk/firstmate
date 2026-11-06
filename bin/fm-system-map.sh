@@ -29,6 +29,7 @@
 #   validate [project]         Validate manifest, bindings, and evidence. Exit 1
 #                              when a binding or evidence record is unusable.
 #   serve [--port N]           Serve the UI on 127.0.0.1 (default port 4790).
+#   open                       Print the local URL with its owner-only capability.
 #   evidence add <project> <file.json>
 #                              Record one append-only version-bound evidence
 #                              record (receipts dropped in
@@ -61,7 +62,7 @@
 #   ack <project> [key...]     Acknowledge pending review requests (all if none).
 #   review-done <project> [--note N]
 #                              Record a completed review and clear its requests.
-#   install [--dry-run] [--only check|collector|ui]...
+#   install [--dry-run]
 #   uninstall [--dry-run]      Single-owner, idempotent install and removal of
 #                              the systemd user collector timer, the UI service,
 #                              and the registered watcher check

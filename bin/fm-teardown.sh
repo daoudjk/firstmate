@@ -3980,7 +3980,7 @@ fi
 # subjects (bin/fm-system-map.sh complete). It runs after the record is gone,
 # is bounded, and only prints an advisory, so it can never block or undo this
 # cleanup; live verification stays a separate, evidence-backed state.
-if [ -f "$CONFIG/system-map" ] && [ "$KIND" != secondmate ]; then
+if [ -f "$CONFIG/system-map" ] && [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
   fm_run_timed 20 "$SCRIPT_DIR/fm-system-map.sh" complete "$ID" --kind "${KIND:-ship}" \
     --mode "$MODE" --pr "${PR_URL:-}" 2>&1 \
     || echo "warning: the system map could not record $ID's completion; run bin/fm-system-map.sh complete $ID by hand" >&2
