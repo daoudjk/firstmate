@@ -2702,6 +2702,30 @@ EOF
   pass "an empty fleet reports (none) for in-flight tasks and an absent AFK flag"
 }
 
+test_system_map_summary_is_opt_in() {
+  local rec root home fakebin out
+  rec=$(new_world system-map)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" "System map" "a home without config/system-map grew a map section"
+
+  cp "$ROOT/docs/examples/system-map/sample.config" "$home/config/system-map"
+  mkdir -p "$home/data/system-map/example"
+  cp "$ROOT/docs/examples/system-map/sample.manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$ROOT/docs/examples/system-map/sample.bindings.json" "$home/data/system-map/example/bindings.json"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "System map" "an opted-in home did not get the map section"
+  assert_contains "$out" "example: observations never collected" "the map summary did not report a never-collected map honestly"
+  assert_contains "$out" "map UI: http://127.0.0.1:4790/" "the map summary did not name the UI"
+
+  pass "the session-start map summary appears only for an opted-in home and stays local"
+}
+
 test_next_step_sources_x_mode_cadence() {
   local rec root home fakebin out
   rec=$(new_world next-step-x)
@@ -3119,6 +3143,7 @@ test_backlog_queued_bound_discloses_its_remainder
 test_backlog_compact_manual_backend_skips_indented_bodies
 test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback
 test_fleet_digest_empty_fleet
+test_system_map_summary_is_opt_in
 test_next_step_sources_x_mode_cadence
 test_next_step_afk_delegates_to_daemon
 test_next_step_quiet_mode_delegates_to_daemon
