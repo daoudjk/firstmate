@@ -1280,6 +1280,7 @@ def build_view(home, cfg, project):
         version_observation = observations.get(subject.get("version_from"))
         resource_identity = version_observation.get("binding_digest") if version_observation else None
         pin = _pin_value(subject, bindings)
+        pin_missing = bool(subject.get("pin") and not pin)
         # Implementation layer
         comps = [c for c in completions if sid in c.get("subjects", [])]
         live_tasks = [t for t in task_bindings if sid in t.get("subjects", []) and t["task"] not in {c["task"] for c in comps}]
@@ -1301,12 +1302,14 @@ def build_view(home, cfg, project):
                 deploy = {"status": "absent", "detail": "the versioned resource was not found"}
             else:
                 deploy = {"status": "unknown", "detail": (vobs or {}).get("error") or "version not observed yet"}
-        elif subject.get("pin") and not pin:
-            deploy = {"status": "unknown", "detail": "declared pin has no binding value", "pin_missing": True}
+        elif pin_missing:
+            deploy = {"status": "unknown", "detail": "declared pin has no binding value"}
         elif pin and version != pin:
             deploy = {"status": "mismatch", "detail": "observed %s, pinned %s" % (version, pin), "version": version, "pin": pin}
         else:
             deploy = {"status": "deployed", "detail": "observed %s%s" % (version, " (matches pin)" if pin else ""), "version": version, "pin": pin}
+        if pin_missing:
+            deploy["pin_missing"] = True
         runtime = _runtime_status(subject, observations, expected_mode)
         # Proof layer
         recs = [r for r in evidence if not r.get("invalid") and (sid in r.get("subjects", []) or sid in r.get("versions", {}))]
@@ -1486,7 +1489,7 @@ def derive_discrepancies(home, cfg, project):
         if dep["status"] == "mismatch":
             add("version", sid, "pin=%s" % dep.get("pin"), "%s runs a version other than its pin" % s["title"], dep["detail"], "high", owners)
         elif dep.get("pin_missing"):
-            add("version", sid, "pin-missing", "%s has no value for its declared pin" % s["title"], dep["detail"], "high", owners)
+            add("version", sid, "pin-missing", "%s has no value for its declared pin" % s["title"], "Declared pin has no binding value.", "high", owners)
         for o in s["observations"]:
             cur = o["current"]
             if not cur:
@@ -1557,9 +1560,7 @@ def update_discrepancies(home, cfg, project):
         for did, prev in entries.items():
             if did in found or prev.get("status") != "open":
                 continue
-            # Only resolve what this round could actually see; an unreadable
-            # subject keeps its open discrepancy rather than turning green.
-            if prev["kind"] in ("runtime", "version", "observation", "binding") and prev["subject"] not in observed_ok and prev["kind"] != "binding":
+            if prev["kind"] in ("runtime", "version", "observation", "binding") and prev["subject"] not in observed_ok and prev["kind"] != "binding" and did != discrepancy_id(project, "version", prev["subject"], "pin-missing"):
                 continue
             prev["status"] = "resolved"
             prev["resolved_at"] = stamp

@@ -341,7 +341,7 @@ PY
 }
 
 test_missing_declared_pin_blocks_acceptance() {
-  local home future out rc=0
+  local home future out rc=0 outcome
   home=$(new_home missing-pin)
   map "$home" bind task-missing-pin --subject worker-host >/dev/null || fail "binding failed"
   map "$home" complete task-missing-pin --kind ship >/dev/null || fail "completion failed"
@@ -364,6 +364,26 @@ PY
   assert_contains "$(map "$home" check)" "system-map:" "the pin discrepancy reaches the owner check"
   out=$(map "$home" verify task-missing-pin) || rc=$?
   expect_code 3 "$rc" "an unresolved pin cannot verify a completed task"
+  for outcome in denied absent error; do
+    case "$outcome" in
+      denied) aws_state "$home" '{"deny": ["ec2"]}' ;;
+      absent) aws_state "$home" '{"missing": ["ec2"]}' ;;
+      error) aws_state "$home" '{"fail_all": true}' ;;
+    esac
+    map "$home" collect >/dev/null || fail "$outcome collection failed"
+    view_json "$home"
+    assert_equals "True" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["deployment"].get("pin_missing")')" "the missing pin remains visible when the resource is $outcome"
+    assert_equals "1" "$(py "$home/data/system-map/example/discrepancies.json" 'sum(1 for item in d["discrepancies"].values() if item["kind"] == "version" and item["subject"] == "worker-host" and item["status"] == "open" and "no value" in item["title"])')" "the missing pin discrepancy remains open when the resource is $outcome"
+  done
+  python3 - "$home/data/system-map/example/bindings.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle: bindings = json.load(handle)
+bindings["bindings"]["worker_host"]["pin"] = "ami-0123456789abcdef0"
+with open(path, "w") as handle: json.dump(bindings, handle)
+PY
+  map "$home" collect >/dev/null || fail "collection after restoring pin failed"
+  assert_equals "0" "$(py "$home/data/system-map/example/discrepancies.json" 'sum(1 for item in d["discrepancies"].values() if item["kind"] == "version" and item["subject"] == "worker-host" and item["status"] == "open" and "no value" in item["title"])')" "the restored pin resolves its discrepancy despite an unreadable resource"
   pass "unresolved declared pins block acceptance"
 }
 
