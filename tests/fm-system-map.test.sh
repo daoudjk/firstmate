@@ -218,6 +218,31 @@ PY
   pass "a new manifest revision invalidates old observations"
 }
 
+test_binding_change_invalidates_observations_and_history() {
+  local home
+  home=$(new_home binding-identity)
+  map "$home" collect >/dev/null || fail "initial collection failed"
+  write_evidence "$home" old-binding ami-0123456789abcdef0 pass
+  view_json "$home"
+  assert_equals "proven" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "original binding has current proof"
+  assert_equals "$(py "$home/state/system-map/example/snapshot.json" 'd["bindings_digest"]')" "$(py "$home/state/system-map/example/last-success.json" 'd["worker-ec2"]["bindings_digest"]')" "snapshot and successful reads share binding identity"
+  python3 - "$home/data/system-map/example/bindings.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle: bindings = json.load(handle)
+bindings["bindings"]["worker_host"]["instance_id"] = "i-0replacement00001"
+with open(path, "w") as handle: json.dump(bindings, handle)
+PY
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["version_state"]')" "old version is unavailable after a binding change"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "old proof is unavailable after a binding change"
+  aws_state "$home" '{"deny": ["ec2"]}'
+  map "$home" collect >/dev/null || fail "failed replacement read did not publish"
+  view_json "$home"
+  assert_equals "None" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["observations"][0]["last_success"]')" "old resource is absent from last-success history"
+  pass "binding identity gates current and historical observations"
+}
+
 test_missing_and_invalid_bindings() {
   local home out rc=0
   home=$(new_home bindings)
@@ -765,6 +790,7 @@ test_scope_mismatch_skips_aws_reads
 test_absent_response_matches_absent_intent
 test_failed_collection_preserves_success_time
 test_intent_revision_invalidates_observations
+test_binding_change_invalidates_observations_and_history
 test_missing_and_invalid_bindings
 test_credential_material_is_refused
 test_evidence_is_version_bound

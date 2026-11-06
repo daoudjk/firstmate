@@ -78,7 +78,8 @@ Adapters are a fixed, read-only set: `aws.ec2_instance`, `aws.ec2_tagged_instanc
 Each AWS call is a describe, get, list, or head operation with connect, read, and process timeouts, and provider text is stored with account numbers and ARNs redacted.
 When `bindings.json` pins `expected_account`, the collector first checks the caller identity and skips every AWS read under any other account.
 A subject's `version_from` names the observation whose version identifies what is deployed, and `pin` names the binding field holding the intended version.
-After a manifest revision changes, previous observations cannot establish current deployment, runtime, or proof until the next collection.
+After a manifest revision or private binding changes, previous observations cannot establish current deployment, runtime, or proof until the next collection.
+Snapshots and successful reads carry a canonical digest of the validated bindings so reused observation IDs cannot inherit another resource's evidence.
 
 An evidence record (`fm-system-map.evidence.v1`) names its subjects, optional criterion, phase and run id, the exact `versions` it covers, a `pass`, `fail`, or `not-run` result, timestamps, a summary, and provenance.
 The map stamps `received_at` when it stores a receipt; live verification requires both its event time and receipt time to follow the task's precise completion time.

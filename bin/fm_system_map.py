@@ -605,6 +605,10 @@ def load_bindings(home, project):
     return bindings
 
 
+def bindings_digest(bindings):
+    return hashlib.sha256(json.dumps(bindings, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def subjects_of(manifest):
     out = {}
     for comp in manifest["components"]:
@@ -1066,6 +1070,7 @@ def collect(home, cfg, project, reason="manual"):
 def _collect_locked(home, cfg, project, started):
     manifest = load_manifest(home, project)
     bindings = load_bindings(home, project)
+    digest = bindings_digest(bindings)
     moved, rejected = ingest_inbox(home, project, manifest)
     scope = dict(bindings.get("scope", {}))
     deadline = time.monotonic() + cfg["collect_timeout"]
@@ -1082,7 +1087,8 @@ def _collect_locked(home, cfg, project, started):
         public_scope["fixture"] = True
     observations = {}
     last_path = home.pstate(project, "last-success.json")
-    last_success = read_json(last_path, {}) or {}
+    last_success = {key: value for key, value in (read_json(last_path, {}) or {}).items()
+                    if value.get("manifest_revision") == manifest["revision"] and value.get("bindings_digest") == digest}
     entries = bindings.get("bindings", {})
     for sid, (kind, subject) in subjects_of(manifest).items():
         for obs in subject.get("observe", []):
@@ -1110,7 +1116,7 @@ def _collect_locked(home, cfg, project, started):
                 result["resource_label"] = str(entry["label"])[:80]
             observations[obs["id"]] = result
             if result["outcome"] in SUCCESS_OUTCOMES:
-                last_success[obs["id"]] = result
+                last_success[obs["id"]] = dict(result, manifest_revision=manifest["revision"], bindings_digest=digest)
     outcomes = [o["outcome"] for o in observations.values()]
     failed = [o for o in outcomes if o not in SUCCESS_OUTCOMES]
     if not outcomes:
@@ -1125,6 +1131,7 @@ def _collect_locked(home, cfg, project, started):
         "schema": SNAPSHOT_SCHEMA,
         "project": project,
         "manifest_revision": manifest["revision"],
+        "bindings_digest": digest,
         "started_at": iso(started),
         "finished_at": iso(),
         "collector": {"status": status, "error": scope_error, "failed_observations": len(failed), "total_observations": len(outcomes), "fixture": fixture},
@@ -1222,13 +1229,14 @@ def live_verification(evidence, sid, version, vstate, completed_at):
 def build_view(home, cfg, project):
     manifest = load_manifest(home, project)
     bindings = load_bindings(home, project)
+    digest = bindings_digest(bindings)
     snapshot = read_json(home.pstate(project, "snapshot.json"))
     last_success = read_json(home.pstate(project, "last-success.json"), {}) or {}
     health = read_json(home.pstate(project, "health.json"), {}) or {}
-    snapshot_current = bool(snapshot and snapshot.get("manifest_revision") == manifest["revision"])
+    snapshot_current = bool(snapshot and snapshot.get("manifest_revision") == manifest["revision"] and snapshot.get("bindings_digest") == digest)
     observations = snapshot.get("observations", {}) if snapshot_current else {}
-    if not snapshot_current:
-        last_success = {}
+    last_success = {key: value for key, value in last_success.items()
+                    if value.get("manifest_revision") == manifest["revision"] and value.get("bindings_digest") == digest} if snapshot_current else {}
     evidence = load_evidence(home, project)
     annotations = load_annotations(home, project)
     task_bindings = load_task_bindings(home, project)

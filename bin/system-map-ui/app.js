@@ -203,7 +203,7 @@
       append(el, h("p", { class: "banner banner--warn" }, h("strong", { text: "Never collected. " }), "Every observed state below is unknown until the first collection runs."));
     } else if (c.last_status === "failed") {
       append(el, h("p", { class: "banner banner--danger" }, h("strong", { text: "The last collection failed " + ago(c.last_attempt_at) + ". " }),
-        c.last_error || "", " Observed states come from the last successful collection (" + ago(c.last_success_at) + ")."));
+        c.last_error || "", " Displayed observations come from the latest published snapshot; failed reads show their errors and earlier successful reads are labeled separately."));
     } else if (c.stale) {
       append(el, h("p", { class: "banner banner--warn" }, h("strong", { text: "Observations are stale. " }),
         "Last success " + ago(c.last_success_at) + "; the collector should run every " + Math.round(v.config.active_interval / 60) + " minutes while work is under way and every " + Math.round(v.config.idle_interval / 60) + " minutes when idle."));
