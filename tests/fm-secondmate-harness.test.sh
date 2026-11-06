@@ -3082,7 +3082,7 @@ test_shared_prefs_only_change_requires_exact_generation_ack() {
 }
 
 test_shared_prefs_delivery_failure_keeps_retry_owed() {
-  local w out status
+  local w out status args
   w=$(new_prefs_world shared-prefs-retry)
   write_primary_prefs "$w" "retry body"
   # An unwritable steering inbox makes the durable record impossible.
@@ -3093,12 +3093,17 @@ test_shared_prefs_delivery_failure_keeps_retry_owed() {
   assert_contains "$out" "retry owed" "a failed delivery did not say the request is still owed"
   assert_contains "$(prefs_status "$w")" "applied=1 delivered=none acknowledged=none state=delivery-pending" \
     "a failed send was reported as delivered"
+  args=$(shown_ack_args "$(mate_prefs "$w" show)")
+  # shellcheck disable=SC2086
+  mate_prefs "$w" ack $args >/dev/null || fail "the mate could not acknowledge the applied generation"
+  assert_contains "$(prefs_status "$w")" "applied=1 delivered=none acknowledged=1 state=delivery-pending" \
+    "acknowledgement concealed an owed delivery"
   rm -f "$w/home/state/sm.inbox"
   out=$(run_config_push "$w" 2>/dev/null); status=$?
   expect_code 0 "$status" "the retry push should succeed"
   assert_contains "$out" "shared-prefs: generation 1 re-read request delivered" \
     "an owed request was not retried once the content stopped changing"
-  assert_contains "$(prefs_status "$w")" "applied=1 delivered=1 acknowledged=none state=acknowledgement-pending" \
+  assert_contains "$(prefs_status "$w")" "applied=1 delivered=1 acknowledged=1 state=acknowledged" \
     "the retry did not record delivery of the same generation"
   pass "a failed shared-preference request stays owed and is retried for the same generation"
 }
@@ -3124,6 +3129,8 @@ test_shared_prefs_not_applied_and_deferred_are_honest() {
   expect_code 0 "$status" "a deferred request is not a propagation error"
   assert_contains "$out" "shared-prefs: generation 1 applied; re-read request deferred until the home carries bin/fm-shared-prefs.sh" \
     "a home without the command was not reported as deferred"
+  assert_contains "$(prefs_status "$w")" "applied=1 delivered=none acknowledged=none state=deferred" \
+    "status did not identify a home whose tracked files lack the acknowledgement command"
   assert_not_contains "$(inbox_stream "$w/home/state" sm)" "SHARED_PREFS_REREAD" "a request was sent to a home that cannot act on it"
   pass "shared-preference status names unapplied copies and deferred delivery instead of claiming either"
 }

@@ -18,7 +18,7 @@
 # status lists every live secondmate direct report of this home with the
 #        primary content, applied, delivered, and acknowledged generations, and
 #        one state: acknowledged, acknowledgement-pending, delivery-pending,
-#        generation-not-recorded, not-applied, none, or, for a remote home,
+#        generation-not-recorded, not-applied, deferred, none, or, for a remote home,
 #        remote-not-observable. It writes nothing and sends nothing.
 #
 # bin/fm-shared-prefs-lib.sh owns the records, what an acknowledgement attests

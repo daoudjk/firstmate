@@ -165,11 +165,6 @@ fm_shared_prefs_converge() {
   if [ "$delivered_generation" = "$generation" ] && [ "$delivered_sha" = "$primary_id" ]; then
     return 0
   fi
-  # An agent that already acknowledged this exact generation needs no request.
-  if [ "$(fm_shared_prefs_record_get "$dest_home/$FM_SHARED_PREFS_ACK_REL" generation 2>/dev/null)" = "$generation" ] \
-    && [ "$(fm_shared_prefs_record_get "$dest_home/$FM_SHARED_PREFS_ACK_REL" sha256 2>/dev/null)" = "$primary_id" ]; then
-    return 0
-  fi
   if [ ! -x "$dest_home/bin/fm-shared-prefs.sh" ]; then
     printf 'SHARED_PREFS: secondmate %s: generation %s applied; re-read request deferred until the home carries bin/fm-shared-prefs.sh\n' "$id" "$generation"
     return 2
@@ -209,10 +204,12 @@ fm_shared_prefs_status() {
     state="none"
   elif [ -z "$generation" ] || [ "$sha" != "$primary_id" ]; then
     state="generation-not-recorded"
-  elif [ "$acked" = "$generation" ] && [ "$acked_sha" = "$sha" ]; then
-    state="acknowledged"
+  elif [ ! -x "$dest_home/bin/fm-shared-prefs.sh" ]; then
+    state="deferred"
   elif [ "$delivered" != "$generation" ]; then
     state="delivery-pending"
+  elif [ "$acked" = "$generation" ] && [ "$acked_sha" = "$sha" ]; then
+    state="acknowledged"
   else
     state="acknowledgement-pending"
   fi
