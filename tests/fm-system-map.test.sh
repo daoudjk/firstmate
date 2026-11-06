@@ -325,6 +325,45 @@ PY
   pass "missing, malformed, and executable-looking bindings are refused or reported"
 }
 
+test_missing_declared_pin_blocks_acceptance() {
+  local home
+  home=$(new_home missing-pin)
+  python3 - "$home/data/system-map/example/bindings.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle: bindings = json.load(handle)
+del bindings["bindings"]["worker_host"]["pin"]
+with open(path, "w") as handle: json.dump(bindings, handle)
+PY
+  map "$home" collect >/dev/null || fail "collection with missing pin failed"
+  write_evidence "$home" observed-without-pin ami-0123456789abcdef0 pass
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["deployment"]["status"]')" "a declared pin without a value cannot establish deployment"
+  assert_equals "proven" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "matching evidence still describes the observed resource"
+  assert_equals "stale" "$(py "$home/view.json" '[a["status"] for a in d["acceptance"] if a["id"] == "mvp-run"][0]')" "the pinned-image criterion does not pass without a pin"
+  assert_equals "['worker-host']" "$(py "$home/view.json" '[a["unresolved_pins"] for a in d["acceptance"] if a["id"] == "mvp-run"][0]')" "the unresolved pin is identified"
+  pass "unresolved declared pins block acceptance"
+}
+
+test_manifest_rejects_duplicate_ids() {
+  local section home out rc
+  for section in groups phases acceptance known_gaps credentials; do
+    home=$(new_home "duplicate-$section")
+    python3 - "$home/data/system-map/example/manifest.json" "$section" <<'PY'
+import json, sys
+path, section = sys.argv[1:]
+with open(path) as handle: manifest = json.load(handle)
+entries = manifest["lifecycle"]["phases"] if section == "phases" else manifest[section]
+entries.append(dict(entries[0]))
+with open(path, "w") as handle: json.dump(manifest, handle)
+PY
+    rc=0; out=$(map "$home" validate 2>&1) || rc=$?
+    expect_code 1 "$rc" "duplicate $section id"
+    assert_contains "$out" "duplicate id" "$section duplicate is rejected"
+  done
+  pass "manifest validation rejects duplicate ids in named collections"
+}
+
 test_credential_material_is_refused() {
   local home out rc=0
   home=$(new_home creds)
@@ -919,6 +958,8 @@ test_binding_change_invalidates_observations_and_history
 test_resource_identity_qualifies_proof
 test_removed_bound_subject_is_unverified
 test_missing_and_invalid_bindings
+test_missing_declared_pin_blocks_acceptance
+test_manifest_rejects_duplicate_ids
 test_credential_material_is_refused
 test_evidence_is_version_bound
 test_tagged_instances_report_observed_state

@@ -373,6 +373,14 @@ def _validate_owner_list(owners, where):
             raise MapError("%s.task: invalid task id" % w)
 
 
+def _unique_manifest_id(item, seen, where):
+    item_id = _req(item, "id", "id", where)
+    if item_id in seen:
+        raise MapError("%s: duplicate id %r" % (where, item_id))
+    seen.add(item_id)
+    return item_id
+
+
 def validate_manifest(manifest):
     """Validate a manifest in place-free fashion; return the set of subject ids."""
     if not isinstance(manifest, dict):
@@ -396,10 +404,11 @@ def validate_manifest(manifest):
     if manifest.get("expected_mode") not in modes:
         raise MapError("manifest.expected_mode must be one of manifest.modes")
     groups = {}
+    group_ids = set()
     for index, group in enumerate(manifest.get("groups", [])):
         w = "manifest.groups[%d]" % index
         _check_keys(group, {"id", "title", "description"}, w)
-        groups[_req(group, "id", "id", w)] = group
+        groups[_unique_manifest_id(group, group_ids, w)] = group
         _req(group, "title", "str", w)
     ids = {}
     observation_ids = set()
@@ -467,13 +476,14 @@ def validate_manifest(manifest):
             if ids.get(target) != "component":
                 raise MapError("%s.%s: unknown component %r" % (w, end, target))
     phases = []
+    phase_ids = set()
     lifecycle = manifest.get("lifecycle", {})
     if lifecycle:
         _check_keys(lifecycle, {"title", "description", "phases"}, "manifest.lifecycle")
         for index, phase in enumerate(_req(lifecycle, "phases", "list", "manifest.lifecycle")):
             w = "manifest.lifecycle.phases[%d]" % index
             _check_keys(phase, {"id", "title", "description", "subjects", "criterion"}, w)
-            phases.append(_req(phase, "id", "id", w))
+            phases.append(_unique_manifest_id(phase, phase_ids, w))
             _req(phase, "title", "str", w)
             for sid in phase.get("subjects", []):
                 if sid not in ids:
@@ -482,8 +492,7 @@ def validate_manifest(manifest):
     for index, crit in enumerate(manifest.get("acceptance", [])):
         w = "manifest.acceptance[%d]" % index
         _check_keys(crit, {"id", "title", "description", "subjects", "phase", "group"}, w)
-        cid = _req(crit, "id", "id", w)
-        criteria.add(cid)
+        _unique_manifest_id(crit, criteria, w)
         _req(crit, "title", "str", w)
         for sid in crit.get("subjects", []):
             if sid not in ids:
@@ -493,10 +502,11 @@ def validate_manifest(manifest):
     for index, phase in enumerate(lifecycle.get("phases", []) if lifecycle else []):
         if "criterion" in phase and phase["criterion"] not in criteria:
             raise MapError("manifest.lifecycle.phases[%d].criterion: unknown criterion" % index)
+    gap_ids = set()
     for index, gap in enumerate(manifest.get("known_gaps", [])):
         w = "manifest.known_gaps[%d]" % index
         _check_keys(gap, {"id", "title", "detail", "subjects", "severity", "owners", "evidence"}, w)
-        _req(gap, "id", "id", w)
+        _unique_manifest_id(gap, gap_ids, w)
         _req(gap, "title", "str", w)
         if gap.get("severity", "medium") not in SEVERITIES:
             raise MapError("%s.severity: one of %s" % (w, ", ".join(SEVERITIES)))
@@ -504,10 +514,11 @@ def validate_manifest(manifest):
             if sid not in ids:
                 raise MapError("%s.subjects: unknown subject %r" % (w, sid))
         _validate_owner_list(gap.get("owners", []), w)
+    credential_ids = set()
     for index, cred in enumerate(manifest.get("credentials", [])):
         w = "manifest.credentials[%d]" % index
         _check_keys(cred, {"id", "title", "purpose", "owner", "expires", "rotation", "subjects", "kind", "note"}, w)
-        _req(cred, "id", "id", w)
+        _unique_manifest_id(cred, credential_ids, w)
         _req(cred, "title", "str", w)
         _req(cred, "purpose", "str", w)
         if "expires" in cred and parse_iso(cred["expires"]) is None:
@@ -1288,6 +1299,8 @@ def build_view(home, cfg, project):
                 deploy = {"status": "absent", "detail": "the versioned resource was not found"}
             else:
                 deploy = {"status": "unknown", "detail": (vobs or {}).get("error") or "version not observed yet"}
+        elif subject.get("pin") and not pin:
+            deploy = {"status": "unknown", "detail": "declared pin has no binding value", "pin_missing": True}
         elif pin and version != pin:
             deploy = {"status": "mismatch", "detail": "observed %s, pinned %s" % (version, pin), "version": version, "pin": pin}
         else:
@@ -1379,9 +1392,12 @@ def build_view(home, cfg, project):
         else:
             status = "not-demonstrated"
         mismatched = [sid for sid in crit.get("subjects", []) if subjects.get(sid, {}).get("layers", {}).get("deployment", {}).get("status") == "mismatch"]
+        unresolved_pins = [sid for sid in crit.get("subjects", []) if subjects.get(sid, {}).get("layers", {}).get("deployment", {}).get("pin_missing")]
         if mismatched:
             status = "failed"
-        acceptance.append(dict(crit, status=status, evidence=quals + olds, unversioned_subjects=untracked, deployment_mismatches=mismatched))
+        elif unresolved_pins and status == "passed":
+            status = "stale"
+        acceptance.append(dict(crit, status=status, evidence=quals + olds, unversioned_subjects=untracked, deployment_mismatches=mismatched, unresolved_pins=unresolved_pins))
     timeline = build_timeline(manifest, evidence)
     stale_after = 2 * cfg["active_interval"]
     last_ok = parse_iso(health.get("last_success_at"))
