@@ -18,7 +18,14 @@ MAP="$ROOT/bin/fm-system-map.sh"
 SAMPLE="$ROOT/docs/examples/system-map"
 TMP_ROOT=$(fm_test_tmproot fm-system-map-tests)
 MAP_SERVER_PID=
-trap '[ -z "$MAP_SERVER_PID" ] || kill "$MAP_SERVER_PID" 2>/dev/null; fm_test_cleanup' EXIT
+stop_map_server() {
+  [ -n "$MAP_SERVER_PID" ] || return 0
+  pkill -TERM -P "$MAP_SERVER_PID" 2>/dev/null || true
+  kill "$MAP_SERVER_PID" 2>/dev/null || true
+  wait "$MAP_SERVER_PID" 2>/dev/null || true
+  MAP_SERVER_PID=
+}
+trap 'stop_map_server; fm_test_cleanup' EXIT
 command -v python3 >/dev/null 2>&1 || { echo "# skip: python3 is required for the system map"; exit 0; }
 
 # new_home <name>: an enabled home with the tracked sample manifest, a fake
@@ -954,8 +961,7 @@ PY
   out=$(http GET "$base/api/state?project=example" "" "$token")
   assert_contains "$out" "Accepts jobs." "the view reflects the edited intent"
   assert_contains "$out" '"fixture": true' "stand-in observations are marked as test data"
-  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-  MAP_SERVER_PID=
+  stop_map_server
   # The annotation survives a server restart.
   view_json "$home"
   assert_equals "check scaling" "$(py "$home/view.json" 'd["subjects"]["api"]["annotations"][0]["text"]')" "annotations persist across restarts"

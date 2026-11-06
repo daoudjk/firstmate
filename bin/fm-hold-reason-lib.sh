@@ -121,9 +121,9 @@ fm_hold_reason_bound_stream() {
         if ($line =~ /^([-*][ \t]+(?:\[[ xX]\][ \t]+(\S+)|\*\*([^*]+)\*\*)[ \t]+-[ \t].*?\(hold:[ \t]*)("(?:[^"\\]|\\.)*"|[^)]*?)([ \t]*\).*)$/s) {
           my ($head, $id, $reason, $tail) = ($1, defined $2 ? $2 : $3, $4, $5);
           my $value = field_value($reason);
-          my $cut = defined $value ? bound($value, $id) : undef;
+          my $cut = bound(defined $value ? $value : $reason, $id);
           if (defined $cut) {
-            $cut = $json->encode($cut) if $reason =~ /^"/;
+            $cut = $json->encode($cut) if defined($value) && $reason =~ /^"/;
             $line = $head . $cut . $tail;
           }
         }
