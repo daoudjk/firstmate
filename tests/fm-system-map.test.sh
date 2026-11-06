@@ -340,6 +340,23 @@ PY
   pass "completion retries preserve the first receipt and proof"
 }
 
+test_prelanding_receipt_never_verifies() {
+  local home out rc=0 future
+  home=$(new_home prelanding-proof)
+  map "$home" bind task-timing --subject worker-host >/dev/null || fail "binding failed"
+  map "$home" collect >/dev/null || fail "collection failed"
+  future=$(date -u +%Y-%m-%dT%H:%M:%SZ -d '+1 minute' 2>/dev/null || date -u -v+1M +%Y-%m-%dT%H:%M:%SZ)
+  write_evidence "$home" prelanding ami-0123456789abcdef0 pass false "$future"
+  map "$home" complete task-timing --kind ship >/dev/null || fail "completion failed"
+  rc=0; out=$(map "$home" verify task-timing) || rc=$?
+  expect_code 3 "$rc" "a receipt accepted before completion cannot verify it"
+  assert_contains "$out" "live-verified no" "prelanding proof is excluded"
+  write_evidence "$home" postlanding ami-0123456789abcdef0 pass false "$future"
+  rc=0; out=$(map "$home" verify task-timing) || rc=$?
+  expect_code 0 "$rc" "a later receipt can verify completion"
+  pass "receipt intake order is part of live verification"
+}
+
 test_collect_lock_is_single_owner() {
   local home pid rc=0 out
   home=$(new_home lock)
@@ -361,13 +378,15 @@ test_collect_lock_is_single_owner() {
 }
 
 test_requests_dedupe_and_review_cadence() {
-  local home out
+  local home out rc=0
   home=$(new_home requests)
   out=$(map "$home" tick) || fail "tick failed"
   assert_contains "$out" "example: ok" "first tick collects"
   assert_contains "$out" "review requested" "first tick queues the daily review"
   out=$(map "$home" tick) || fail "tick failed"
   assert_contains "$out" "not due (idle cadence)" "an idle home waits for the idle interval"
+  map "$home" tick --force >/dev/null 2>&1 || rc=$?
+  expect_code 2 "$rc" "forced scheduler tick is unsupported"
   assert_not_contains "$out" "review requested" "the review is requested once per interval"
   out=$(map "$home" check)
   assert_contains "$out" "system-map:" "check surfaces pending requests"
@@ -461,6 +480,34 @@ PY
   expect_code 1 "$rc" "install over an unmanaged unit"
   assert_contains "$out" "not managed by this installer" "an unmanaged unit is never overwritten"
   pass "scheduler install is single-owner, idempotent, and removable"
+}
+
+test_scheduler_preserves_unmanaged_artifacts() {
+  local home out rc=0 timer check trust
+  home=$(new_home unmanaged-check)
+  check="$home/state/system-map.check.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$check"
+  cp "$check" "$home/custom.check"
+  out=$(map "$home" install 2>&1) || rc=$?
+  expect_code 1 "$rc" "install over an unmanaged watcher check"
+  assert_contains "$out" "not managed by this installer" "unmanaged check is refused"
+  cmp -s "$check" "$home/custom.check" || fail "install changed the unmanaged check"
+  [ -z "$(ls "$home/units")" ] || fail "install wrote units before refusing the unmanaged check"
+
+  home=$(new_home unmanaged-uninstall)
+  map "$home" install >/dev/null || fail "install failed"
+  timer=$(ls "$home/units"/*-collect.timer)
+  check="$home/state/system-map.check.sh"
+  trust="$home/state/system-map.check-trust"
+  printf '[Unit]\nDescription=custom timer\n' > "$timer"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$check"
+  : > "$home/systemctl.log"
+  map "$home" uninstall >/dev/null || fail "uninstall failed"
+  assert_present "$timer" "unmanaged timer was removed"
+  assert_present "$check" "unmanaged watcher check was removed"
+  assert_present "$trust" "unmanaged watcher trust was removed"
+  assert_not_contains "$(cat "$home/systemctl.log")" "disable --now $(basename "$timer")" "unmanaged timer was disabled"
+  pass "scheduler ownership checks leave unmanaged artifacts untouched"
 }
 
 test_binding_completion_and_live_verification() {
@@ -643,10 +690,12 @@ test_tagged_instances_report_observed_state
 test_evidence_ids_are_create_only
 test_timeline_orders_offset_timestamps
 test_completion_retry_preserves_first_receipt
+test_prelanding_receipt_never_verifies
 test_collect_lock_is_single_owner
 test_requests_dedupe_and_review_cadence
 test_active_cadence_ignores_secondmates
 test_scheduler_install_is_idempotent_and_removable
+test_scheduler_preserves_unmanaged_artifacts
 test_binding_completion_and_live_verification
 test_coverage_gap_for_unbound_project_tasks
 test_ui_annotations_and_intent_edits

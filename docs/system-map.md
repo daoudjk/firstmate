@@ -38,6 +38,7 @@ Without that file every integration point is a silent no-op, so a home that neve
 3. Run `bin/fm-system-map.sh validate <project>` until it reports no binding problems, then `collect <project>` once.
 4. Run `bin/fm-system-map.sh install` to install the collector timer, the UI service, and the watcher check.
    `install --dry-run` prints every file and command first, and `uninstall` removes exactly what install created.
+   Install refuses same-named units or checks it does not own, and uninstall leaves them running and untouched.
 5. Run `bin/fm-system-map.sh open` to get the local UI URL; keep its fragment key private.
 
 | Key | Default | Meaning |
@@ -79,6 +80,7 @@ When `bindings.json` pins `expected_account`, the collector first checks the cal
 A subject's `version_from` names the observation whose version identifies what is deployed, and `pin` names the binding field holding the intended version.
 
 An evidence record (`fm-system-map.evidence.v1`) names its subjects, optional criterion, phase and run id, the exact `versions` it covers, a `pass`, `fail`, or `not-run` result, timestamps, a summary, and provenance.
+The map stamps `received_at` when it stores a receipt; live verification requires both its event time and receipt time to follow the task's precise completion time.
 Provenance `kind` is `receipt`, `imported-report`, or `manual`; none of them is a collector observation.
 A record proves a subject only for the exact observed version it names, and a `historical` record never qualifies.
 A subject with no `version_from` cannot carry version-bound proof: a pass on it shows as `unversioned` ("passed, not version-bound"), a criterion that depends on it shows `unversioned` rather than passed, and landed work on it is never reported as live-verified.
@@ -89,6 +91,7 @@ Credentials are described by purpose, owner, expiry, and rotation only, and an e
 ## Supervision integration
 
 - **Scheduler.** A systemd user timer runs `fm-system-map.sh tick` on the active cadence; `tick` collects when the active or idle interval is due and queues the daily review request.
+  Run `collect` for a manual observation instead of forcing the scheduled tick.
   The units carry an explicit `PATH` built from the tools resolved at install time, because user services do not inherit the login `PATH`.
   The collector never starts a supervisor and runs whether or not one exists.
 - **Requests.** New or reopened high and medium discrepancies and the daily review become durable records in `requests.json`.

@@ -109,6 +109,10 @@ def iso(ts=None):
     return _dt.datetime.fromtimestamp(ts, _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def precise_iso():
+    return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
 def parse_iso(value):
     if not isinstance(value, str) or not value:
         return None
@@ -625,6 +629,7 @@ def load_evidence(home, project):
 
 def record_evidence(home, project, record):
     target = home.pdata(project, "evidence", record["id"] + ".json")
+    record = dict(record, received_at=precise_iso())
     try:
         write_json_atomic(target, record, create_only=True)
     except FileExistsError:
@@ -637,7 +642,7 @@ def validate_evidence(record, subject_ids=None):
     _scan_forbidden(record, "evidence")
     _check_keys(record, {
         "schema", "id", "subjects", "criterion", "phase", "run_id", "versions", "result",
-        "recorded_at", "observed_at", "summary", "historical", "provenance",
+        "recorded_at", "observed_at", "received_at", "summary", "historical", "provenance",
     }, "evidence")
     if record.get("schema") != EVIDENCE_SCHEMA:
         raise MapError("evidence.schema must be %s" % EVIDENCE_SCHEMA)
@@ -651,6 +656,8 @@ def validate_evidence(record, subject_ids=None):
         raise MapError("evidence.recorded_at must be an ISO-8601 timestamp")
     if "observed_at" in record and parse_iso(record["observed_at"]) is None:
         raise MapError("evidence.observed_at must be an ISO-8601 timestamp")
+    if "received_at" in record and parse_iso(record["received_at"]) is None:
+        raise MapError("evidence.received_at must be an ISO-8601 timestamp")
     versions = record.get("versions", {})
     if not isinstance(versions, dict) or not all(isinstance(v, str) for v in versions.values()):
         raise MapError("evidence.versions must map subject ids to version strings")
@@ -1199,7 +1206,8 @@ def live_verification(evidence, sid, version, vstate, completed_at):
     qualifying = [r for r in evidence if not r.get("invalid") and r["result"] in ("pass", "fail")
                   and (sid in r.get("subjects", []) or sid in r.get("versions", {}))
                   and evidence_qualifies(r, sid, version, vstate)[0]
-                  and (parse_iso(r["recorded_at"]) or 0) >= completed_at]
+                  and (parse_iso(r["recorded_at"]) or 0) > completed_at
+                  and (parse_iso(r.get("received_at")) or 0) > completed_at]
     if not qualifying:
         return False
     latest = max(qualifying, key=lambda r: (parse_iso(r["recorded_at"]) or 0, r["result"] == "fail"))
@@ -1593,7 +1601,7 @@ def cmd_tick(home, cfg, args):
     for project in cfg["projects"]:
         health = read_json(home.pstate(project, "health.json"), {}) or {}
         last = parse_iso(health.get("last_attempt_at"))
-        if args.force or last is None or now_ts() - last >= interval:
+        if last is None or now_ts() - last >= interval:
             try:
                 snap = collect(home, cfg, project, reason="scheduled-%s" % ("active" if active else "idle"))
                 lines.append("%s: %s" % (project, snap.get("status") or snap["collector"]["status"]))
@@ -1900,7 +1908,7 @@ def cmd_complete(home, cfg, args):
     status = "implementation-complete" if kind == "ship" else "investigated"
     record = {
         "schema": COMPLETION_SCHEMA, "task": args.task, "project": project, "subjects": binding.get("subjects", []),
-        "kind": kind, "mode": args.mode or "", "pr": args.pr or "", "status": status, "completed_at": iso(),
+        "kind": kind, "mode": args.mode or "", "pr": args.pr or "", "status": status, "completed_at": precise_iso(),
     }
     if kind == "ship":
         path = home.pdata(project, "completions", args.task + ".json")
@@ -2090,6 +2098,13 @@ def _run_root_script(home, script, args):
     return proc.stdout.strip()
 
 
+def managed_unit(path, tag):
+    if not os.path.exists(path):
+        return False
+    with open(path, "r", encoding="utf-8") as handle:
+        return handle.readline().rstrip("\n") == "# Managed by bin/fm-system-map.sh install (home %s). Remove with uninstall." % tag
+
+
 def cmd_install(home, cfg, args):
     if not cfg["projects"]:
         raise MapError("config/system-map lists no project")
@@ -2098,14 +2113,27 @@ def cmd_install(home, cfg, args):
         load_bindings(home, project)
     units = render_units(home, cfg)
     paths = scheduler_paths(home)
+    for path in paths.values():
+        if os.path.exists(path) and not managed_unit(path, home.home_tag()):
+            raise MapError("%s exists and is not managed by this installer; refusing to overwrite" % path)
+    shim_path = os.path.join(home.state_dir, CHECK_ID + ".check.sh")
+    trust_path = os.path.join(home.state_dir, CHECK_ID + ".check-trust")
+    shim = check_shim(home)
+    if os.path.exists(shim_path):
+        with open(shim_path, "r", encoding="utf-8") as handle:
+            current_shim = handle.read()
+        if current_shim != shim:
+            raise MapError("%s exists and is not managed by this installer; refusing to overwrite" % shim_path)
+    else:
+        if os.path.exists(trust_path):
+            raise MapError("%s exists without a managed check; refusing to replace" % trust_path)
+        current_shim = None
     changed = False
     for name, path in paths.items():
         current = None
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as handle:
                 current = handle.read()
-            if "Managed by bin/fm-system-map.sh install" not in current:
-                raise MapError("%s exists and is not managed by this installer; refusing to overwrite" % path)
         if current != units[name]:
             changed = True
             if args.dry_run:
@@ -2115,16 +2143,10 @@ def cmd_install(home, cfg, args):
                 print("wrote %s" % path)
         else:
             print("unchanged %s" % path)
-    shim_path = os.path.join(home.state_dir, CHECK_ID + ".check.sh")
-    shim = check_shim(home)
-    current = None
-    if os.path.exists(shim_path):
-        with open(shim_path, "r", encoding="utf-8") as handle:
-            current = handle.read()
     if args.dry_run:
-        print("would %s %s and register it" % ("keep" if current == shim else "write", shim_path))
+        print("would %s %s and register it" % ("keep" if current_shim == shim else "write", shim_path))
     else:
-        if current != shim:
+        if current_shim != shim:
             write_text_atomic(shim_path, shim, mode=0o700)
         print(_run_root_script(home, "fm-check-register.sh", [CHECK_ID]))
     if changed:
@@ -2140,7 +2162,7 @@ def cmd_install(home, cfg, args):
 def cmd_uninstall(home, cfg, args):
     paths = scheduler_paths(home)
     for name in ("collector.timer", "ui.service"):
-        if os.path.exists(paths[name]):
+        if managed_unit(paths[name], home.home_tag()):
             try:
                 _systemctl(["disable", "--now", os.path.basename(paths[name])], args.dry_run)
             except MapError as exc:
@@ -2148,10 +2170,9 @@ def cmd_uninstall(home, cfg, args):
     removed = False
     for path in paths.values():
         if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as handle:
-                if "Managed by bin/fm-system-map.sh install" not in handle.read():
-                    print("skipped unmanaged %s" % path)
-                    continue
+            if not managed_unit(path, home.home_tag()):
+                print("skipped unmanaged %s" % path)
+                continue
             removed = True
             if args.dry_run:
                 print("would remove %s" % path)
@@ -2160,11 +2181,19 @@ def cmd_uninstall(home, cfg, args):
                 print("removed %s" % path)
     if removed:
         _systemctl(["daemon-reload"], args.dry_run)
-    if os.path.exists(os.path.join(home.state_dir, CHECK_ID + ".check.sh")) or os.path.exists(os.path.join(home.state_dir, CHECK_ID + ".check-trust")):
+    shim_path = os.path.join(home.state_dir, CHECK_ID + ".check.sh")
+    if os.path.exists(shim_path):
+        with open(shim_path, "r", encoding="utf-8") as handle:
+            owned_shim = handle.read() == check_shim(home)
+    else:
+        owned_shim = False
+    if owned_shim:
         if args.dry_run:
             print("would unregister the watcher check")
         else:
             print(_run_root_script(home, "fm-check-unregister.sh", [CHECK_ID]) or "unregistered watcher check")
+    elif os.path.exists(shim_path):
+        print("skipped unmanaged %s" % shim_path)
     print("system map scheduler and check removed; data/system-map and state/system-map are kept")
     return 0
 
@@ -2332,8 +2361,7 @@ def cmd_open(home, cfg, args):
 def build_parser():
     parser = argparse.ArgumentParser(prog="fm-system-map.sh", description="Living system map (see docs/system-map.md).")
     sub = parser.add_subparsers(dest="cmd")
-    p = sub.add_parser("tick", help="scheduled entry: collect when due, queue the daily review request")
-    p.add_argument("--force", action="store_true")
+    sub.add_parser("tick", help="scheduled entry: collect when due, queue the daily review request")
     p = sub.add_parser("collect", help="collect observations now")
     p.add_argument("project", nargs="?")
     sub.add_parser("summary", help="bounded local summary for session start")

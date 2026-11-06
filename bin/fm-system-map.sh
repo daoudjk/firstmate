@@ -11,7 +11,7 @@
 #
 # Usage: fm-system-map.sh <command> [args]
 #
-#   tick [--force]             Scheduled entry point (user timer). Collects each
+#   tick                       Scheduled entry point (user timer). Collects each
 #                              configured project when its cadence is due
 #                              (active_interval while a ship or scout task record
 #                              exists; persistent secondmate records never count;
