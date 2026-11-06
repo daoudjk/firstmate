@@ -28,7 +28,7 @@
 #                              proof layers, discrepancies, acceptance, timeline.
 #   validate [project]         Validate manifest, bindings, and evidence. Exit 1
 #                              when a binding or evidence record is unusable.
-#   serve [--port N]           Serve the UI on 127.0.0.1 (default port 4790).
+#   serve                      Serve the UI on 127.0.0.1 at the configured port.
 #   open                       Print the local URL with its owner-only capability.
 #   evidence add <project> <file.json>
 #                              Record one append-only version-bound evidence

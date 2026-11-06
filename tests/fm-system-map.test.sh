@@ -251,7 +251,41 @@ EOF
   view_json "$home"
   assert_equals "later" "$(py "$home/view.json" 'd["timeline"]["runs"][0]["cells"]["run"]["record"]')" "the later instant wins despite its smaller timestamp text"
   assert_equals "2026-01-01T09:00:00Z" "$(py "$home/view.json" 'd["timeline"]["runs"][0]["last"]')" "run last follows absolute time"
+  for id in tie-fail tie-pass; do
+    if [ "$id" = tie-fail ]; then at=2026-01-01T09:00:00Z; result=fail
+    else at=2026-01-01T10:00:00+01:00; result=pass; fi
+    cat > "$home/ev-$id.json" <<EOF
+{"schema":"fm-system-map.evidence.v1","id":"$id","subjects":["worker-host"],"versions":{"worker-host":"ami-0123456789abcdef0"},"result":"$result","summary":"$id","recorded_at":"$at","run_id":"run-b","phase":"run","provenance":{"source":"test"}}
+EOF
+    map "$home" evidence add example "$home/ev-$id.json" >/dev/null || fail "timeline tie evidence failed"
+  done
+  view_json "$home"
+  assert_equals "tie-fail" "$(py "$home/view.json" '[r["cells"]["run"]["record"] for r in d["timeline"]["runs"] if r["run_id"] == "run-b"][0]')" "failure wins a parsed-time tie despite receipt order"
   pass "timeline compares timestamp instants"
+}
+
+test_completion_retry_preserves_first_receipt() {
+  local home out rc=0
+  home=$(new_home completion-retry)
+  map "$home" bind task-retry --subject worker-host >/dev/null || fail "binding failed"
+  map "$home" complete task-retry --kind ship --mode no-mistakes >/dev/null || fail "completion failed"
+  python3 - "$home/data/system-map/example/completions/task-retry.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle: record = json.load(handle)
+record["completed_at"] = "2026-01-01T00:00:00Z"
+with open(path, "w") as handle: json.dump(record, handle)
+PY
+  cp "$home/data/system-map/example/completions/task-retry.json" "$home/first-completion.json"
+  map "$home" collect >/dev/null || fail "collect failed"
+  write_evidence "$home" retry-proof ami-0123456789abcdef0 pass false 2026-01-02T00:00:00Z
+  rc=0; out=$(map "$home" verify task-retry) || rc=$?
+  expect_code 0 "$rc" "the first completion has later proof"
+  map "$home" complete task-retry --kind ship --mode no-mistakes >/dev/null || fail "completion retry failed"
+  cmp -s "$home/first-completion.json" "$home/data/system-map/example/completions/task-retry.json" || fail "retry replaced the first completion receipt"
+  rc=0; out=$(map "$home" verify task-retry) || rc=$?
+  expect_code 0 "$rc" "retry keeps previously qualifying proof"
+  pass "completion retries preserve the first receipt and proof"
 }
 
 test_collect_lock_is_single_owner() {
@@ -457,7 +491,13 @@ test_ui_annotations_and_intent_edits() {
   map "$home" collect >/dev/null || fail "collect failed"
   cp "$home/state/system-map/example/snapshot.json" "$home/snapshot.before"
   port=$(free_port)
-  map "$home" serve --port "$port" > "$home/serve.log" 2>&1 &
+  python3 - "$home/config/system-map" "$port" <<'PY'
+import sys
+path, port = sys.argv[1:]
+with open(path) as handle: config = handle.read()
+with open(path, "w") as handle: handle.write(config.replace("port=4790", "port=" + port))
+PY
+  map "$home" serve > "$home/serve.log" 2>&1 &
   pid=$!
   MAP_SERVER_PID=$pid
   base="http://127.0.0.1:$port"
@@ -465,7 +505,7 @@ test_ui_annotations_and_intent_edits() {
   page=$(http GET "$base/")
   assert_contains "$page" "200 " "the page is served"
   token=$(map "$home" open)
-  assert_contains "$token" "http://127.0.0.1:4790/#key=" "open prints a URL with a fragment capability"
+  assert_contains "$token" "http://127.0.0.1:$port/#key=" "open uses the configured service port"
   token=${token#*#key=}
   [ -n "$token" ] || fail "open omitted the capability"
   assert_not_contains "$page" "$token" "the page must not disclose the capability"
@@ -529,6 +569,7 @@ test_missing_and_invalid_bindings
 test_credential_material_is_refused
 test_evidence_is_version_bound
 test_timeline_orders_offset_timestamps
+test_completion_retry_preserves_first_receipt
 test_collect_lock_is_single_owner
 test_requests_dedupe_and_review_cadence
 test_active_cadence_ignores_secondmates

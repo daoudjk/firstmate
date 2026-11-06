@@ -1370,7 +1370,7 @@ def build_timeline(manifest, evidence):
         phase = rec.get("phase")
         if phase:
             prev = run["cells"].get(phase)
-            if prev is None or parse_iso(prev["recorded_at"]) <= parse_iso(rec["recorded_at"]):
+            if prev is None or (parse_iso(rec["recorded_at"]), rec["result"] == "fail") > (parse_iso(prev["recorded_at"]), prev["result"] == "fail"):
                 run["cells"][phase] = {"result": rec["result"], "summary": rec["summary"], "record": rec["id"], "recorded_at": rec["recorded_at"]}
         else:
             run["notes"].append({"summary": rec["summary"], "record": rec["id"], "result": rec["result"]})
@@ -1896,7 +1896,13 @@ def cmd_complete(home, cfg, args):
         "kind": kind, "mode": args.mode or "", "pr": args.pr or "", "status": status, "completed_at": iso(),
     }
     if kind == "ship":
-        write_json_atomic(home.pdata(project, "completions", args.task + ".json"), record)
+        path = home.pdata(project, "completions", args.task + ".json")
+        with file_lock(path + ".lock"):
+            existing = read_json(path)
+            if existing is not None:
+                record = existing
+            else:
+                write_json_atomic(path, record)
     print("System map: %s recorded %s for %s in %s; live verification stays separate - see bin/fm-system-map.sh verify %s." % (
         args.task, status, ", ".join(record["subjects"]), project, args.task))
     return 0
@@ -2295,7 +2301,7 @@ class MapHandler(BaseHTTPRequestHandler):
 
 
 def cmd_serve(home, cfg, args):
-    port = args.port or cfg["port"]
+    port = cfg["port"]
     server = MapServer(("127.0.0.1", port), MapHandler, home, port)
     print("system map UI: http://127.0.0.1:%d/" % port, flush=True)
     try:
@@ -2331,8 +2337,7 @@ def build_parser():
     p.add_argument("--compact", action="store_true")
     p = sub.add_parser("validate", help="validate manifest, bindings and evidence")
     p.add_argument("project", nargs="?")
-    p = sub.add_parser("serve", help="serve the local UI on 127.0.0.1")
-    p.add_argument("--port", type=int)
+    sub.add_parser("serve", help="serve the local UI on 127.0.0.1")
     sub.add_parser("open", help="print the owner-only local UI URL")
     p = sub.add_parser("evidence", help="record version-bound evidence")
     p.add_argument("evidence_cmd", choices=["add"])
