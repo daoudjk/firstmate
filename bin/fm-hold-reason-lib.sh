@@ -76,3 +76,79 @@ fm_hold_reason_decode_stream() {
     }
   ' "${1:-toon}"
 }
+
+# fm_hold_reason_bound_stream <max-chars> <toon|markdown> <pointer-format>:
+# bound DECODED hold-reason fields for display, after fm_hold_reason_decode_stream.
+# This is a display projection only: the stored reason is never read back from
+# this output, and the full text stays one command away. A reason longer than
+# <max-chars> user-perceived characters (Unicode grapheme clusters, so a
+# multi-byte character or combining sequence is never split) keeps its first
+# <max-chars> characters exactly and gains one explicit marker naming the shown
+# and total counts plus the full-record pointer, built by substituting the row's
+# task id for %s in <pointer-format>. Reasons at or under the bound, every other
+# field, every row, and every non-row line pass through byte-for-byte; nothing
+# is summarized or rewritten. A tasks-axi row whose quoted fields do not
+# tokenize into exactly its header's column count, or whose id cannot be read,
+# is left whole rather than guessed at, so a format surprise costs bytes, never
+# a row or a wrong pointer. A <max-chars> of 0 disables bounding.
+fm_hold_reason_bound_stream() {
+  perl -MJSON::PP -e '
+    use strict;
+    use warnings;
+    binmode STDIN, ":encoding(UTF-8)";
+    binmode STDOUT, ":encoding(UTF-8)";
+    my ($max, $format, $pointer) = @ARGV;
+    $max = 0 unless defined($max) && $max =~ /^[0-9]+\z/;
+    my $json = JSON::PP->new->allow_nonref->canonical;
+    sub bound {
+      my ($text, $id) = @_;
+      return undef unless $max > 0 && defined $text;
+      my @graphemes = $text =~ /(\X)/g;
+      my $total = scalar @graphemes;
+      return undef if $total <= $max;
+      my $where = $pointer;
+      $where =~ s/%s/$id/g;
+      return join("", @graphemes[0 .. $max - 1])
+        . " [truncated $max/$total chars; full: $where]";
+    }
+    sub field_value {
+      my ($raw) = @_;
+      return $raw !~ /^"/ ? $raw : eval { $json->decode($raw) };
+    }
+    my ($reason_col, $id_col, $columns);
+    while (my $line = <STDIN>) {
+      if ($format eq "markdown") {
+        if ($line =~ /^([-*][ \t]+(?:\[[ xX]\][ \t]+(\S+)|\*\*([^*]+)\*\*)[ \t]+-[ \t].*?\(hold:[ \t]*)("(?:[^"\\]|\\.)*"|[^)]*?)([ \t]*\).*)$/s) {
+          my ($head, $id, $reason, $tail) = ($1, defined $2 ? $2 : $3, $4, $5);
+          my $value = field_value($reason);
+          my $cut = defined $value ? bound($value, $id) : undef;
+          if (defined $cut) {
+            $cut = $json->encode($cut) if $reason =~ /^"/;
+            $line = $head . $cut . $tail;
+          }
+        }
+      } elsif ($line =~ /^[A-Za-z_]+\[\d+\]\{([^}]*)\}:\n?\z/) {
+        my @names = split /,/, $1;
+        ($reason_col) = grep { $names[$_] eq "hold_reason" } 0 .. $#names;
+        ($id_col) = grep { $names[$_] eq "id" } 0 .. $#names;
+        $reason_col = undef unless defined $id_col;
+        $columns = scalar @names;
+      } elsif (defined($reason_col) && $line =~ /^  (.*?)\n?\z/s) {
+        my $row = $1;
+        my @fields = $row =~ /("(?:[^"\\]|\\.)*"|[^,]+)/g;
+        if (@fields == $columns && join(",", @fields) eq $row) {
+          my $id = field_value($fields[$id_col]);
+          my $value = field_value($fields[$reason_col]);
+          my $cut = (defined $id && defined $value && $id !~ /\s/) ? bound($value, $id) : undef;
+          if (defined $cut) {
+            $fields[$reason_col] = $json->encode($cut);
+            $line = "  " . join(",", @fields) . "\n";
+          }
+        }
+      } elsif ($line !~ /^  /) {
+        $reason_col = undef;
+      }
+      print $line;
+    }
+  ' "${1:-0}" "${2:-toon}" "${3:-%s}"
+}
