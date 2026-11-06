@@ -78,6 +78,7 @@ Adapters are a fixed, read-only set: `aws.ec2_instance`, `aws.ec2_tagged_instanc
 Each AWS call is a describe, get, list, or head operation with connect, read, and process timeouts, and provider text is stored with account numbers and ARNs redacted.
 When `bindings.json` pins `expected_account`, the collector first checks the caller identity and skips every AWS read under any other account.
 A subject's `version_from` names the observation whose version identifies what is deployed, and `pin` names the binding field holding the intended version.
+After a manifest revision changes, previous observations cannot establish current deployment, runtime, or proof until the next collection.
 
 An evidence record (`fm-system-map.evidence.v1`) names its subjects, optional criterion, phase and run id, the exact `versions` it covers, a `pass`, `fail`, or `not-run` result, timestamps, a summary, and provenance.
 The map stamps `received_at` when it stores a receipt; live verification requires both its event time and receipt time to follow the task's precise completion time.
@@ -94,6 +95,7 @@ Credentials are described by purpose, owner, expiry, and rotation only, and an e
   Run `collect` for a manual observation instead of forcing the scheduled tick.
   The units carry an explicit `PATH` built from the tools resolved at install time, because user services do not inherit the login `PATH`.
   The collector never starts a supervisor and runs whether or not one exists.
+  A collection advances `last_success_at` only after at least one observation succeeds.
 - **Requests.** New or reopened high and medium discrepancies and the daily review become durable records in `requests.json`.
   The registered watcher check (`state/system-map.check.sh`) surfaces them as one `check:` wake while a supervisor runs, and the session-start digest lists them otherwise.
   They stay pending until `review-done` or `ack`.

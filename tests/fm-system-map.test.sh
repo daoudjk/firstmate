@@ -46,6 +46,8 @@ def out(o):
     print(json.dumps(o)); sys.exit(0)
 if st.get("fail_all"):
     sys.stderr.write("Could not connect to the endpoint URL"); sys.exit(255)
+if svc in st.get("missing", []):
+    sys.stderr.write("ResourceNotFoundException: resource does not exist"); sys.exit(254)
 if svc in st.get("deny", []):
     sys.stderr.write("An error occurred (AccessDeniedException) when calling %s: User arn:aws:iam::123456789012:user/x is not authorized" % op); sys.exit(254)
 if svc == "sts": out({"Account": st.get("account", "123456789012")})
@@ -151,6 +153,69 @@ PY
   assert_no_grep "ecs describe-services" "$home/aws.log" "no read runs against the wrong account"
   assert_equals "ok" "$(py "$home/state/system-map/example/snapshot.json" 'd["observations"]["owner-task"]["outcome"] if d["observations"]["owner-task"]["outcome"] != "absent" else "ok"')" "local reads still run"
   pass "a credential/account mismatch skips AWS reads instead of reporting false state"
+}
+
+test_absent_response_matches_absent_intent() {
+  local home
+  home=$(new_home absent-intent)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle: manifest = json.load(handle)
+next(subject for subject in manifest["components"] if subject["id"] == "api")["intended"]["idle"] = "absent"
+with open(path, "w") as handle: json.dump(manifest, handle)
+PY
+  aws_state "$home" '{"missing": ["ecs"]}'
+  map "$home" collect >/dev/null || fail "collection failed"
+  view_json "$home"
+  assert_equals "absent" "$(py "$home/view.json" 'd["subjects"]["api"]["observations"][0]["current"]["state"]')" "NotFound has an absent state"
+  assert_equals "as-intended" "$(py "$home/view.json" 'd["subjects"]["api"]["layers"]["runtime"]["status"]')" "absence matches intended absence"
+  pass "provider absence is normalized at observation intake"
+}
+
+test_failed_collection_preserves_success_time() {
+  local home before
+  home=$(new_home failed-success-time)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as handle: manifest = json.load(handle)
+manifest["components"] = [subject for subject in manifest["components"] if subject["id"] not in ("source", "owner")]
+with open(path, "w") as handle: json.dump(manifest, handle)
+PY
+  map "$home" collect >/dev/null || fail "initial collection failed"
+  before=$(py "$home/state/system-map/example/health.json" 'd["last_success_at"]')
+  aws_state "$home" '{"fail_all": true}'
+  map "$home" collect >/dev/null || fail "failed-read collection did not publish"
+  assert_equals "failed" "$(py "$home/state/system-map/example/health.json" 'd["last_status"]')" "all failed reads mark the collection failed"
+  assert_equals "$before" "$(py "$home/state/system-map/example/health.json" 'd["last_success_at"]')" "all failed reads do not advance last success"
+  pass "failed observations do not refresh collection success"
+}
+
+test_intent_revision_invalidates_observations() {
+  local home
+  home=$(new_home intent-revision)
+  map "$home" collect >/dev/null || fail "initial collection failed"
+  write_evidence "$home" old-resource ami-0123456789abcdef0 pass
+  view_json "$home"
+  assert_equals "proven" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "initial resource has proof"
+  python3 - "$home/data/system-map/example/manifest.json" "$home/data/system-map/example/bindings.json" "$home/new-manifest.json" <<'PY'
+import json, sys
+manifest_path, bindings_path, new_path = sys.argv[1:]
+with open(manifest_path) as handle: manifest = json.load(handle)
+worker = next(subject for subject in manifest["components"] if subject["id"] == "worker-host")
+worker["observe"][0]["binding"] = "replacement_worker"
+with open(new_path, "w") as handle: json.dump(manifest, handle)
+with open(bindings_path) as handle: bindings = json.load(handle)
+bindings["bindings"]["replacement_worker"] = {"instance_id": "i-0replacement00001", "pin": "ami-0replacement000", "label": "replacement"}
+with open(bindings_path, "w") as handle: json.dump(bindings, handle)
+PY
+  map "$home" intent replace example "$home/new-manifest.json" --reason "replace worker" >/dev/null || fail "intent replacement failed"
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["version_state"]')" "old snapshot version is unavailable under new intent"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "old resource proof does not apply to replacement"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["stale"]')" "collector reports stale after intent changes"
+  pass "a new manifest revision invalidates old observations"
 }
 
 test_missing_and_invalid_bindings() {
@@ -680,9 +745,26 @@ test_summary_is_bounded_and_marks_fixtures() {
   pass "the startup summary is local, bounded, and labels test data"
 }
 
+test_summary_includes_later_project_requests() {
+  local home out project
+  home=$(new_home summary-projects)
+  for project in extra1 extra2 extra3 extra4; do
+    printf 'project=%s\n' "$project" >> "$home/config/system-map"
+  done
+  mkdir -p "$home/state/system-map/extra4"
+  printf '{"requests":{"review-due":{"kind":"daily"}}}\n' > "$home/state/system-map/extra4/requests.json"
+  out=$(map "$home" summary) || fail "summary failed"
+  assert_contains "$out" "extra4: review-due" "a fifth project's pending request reaches session start"
+  [ "$(printf '%s\n' "$out" | wc -l)" -le 16 ] || fail "summary exceeds its line bound"
+  pass "summary surfaces pending requests from every project"
+}
+
 test_no_map_home_is_inert
 test_collect_retains_last_success_on_partial_denial
 test_scope_mismatch_skips_aws_reads
+test_absent_response_matches_absent_intent
+test_failed_collection_preserves_success_time
+test_intent_revision_invalidates_observations
 test_missing_and_invalid_bindings
 test_credential_material_is_refused
 test_evidence_is_version_bound
@@ -700,5 +782,6 @@ test_binding_completion_and_live_verification
 test_coverage_gap_for_unbound_project_tasks
 test_ui_annotations_and_intent_edits
 test_summary_is_bounded_and_marks_fixtures
+test_summary_includes_later_project_requests
 
 echo "# fm-system-map.test.sh: all assertions passed"

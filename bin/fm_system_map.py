@@ -760,6 +760,8 @@ def classify_aws_error(stderr):
 
 
 def _result(outcome, state=None, facts=None, version=None, error=None):
+    if outcome == "absent" and state is None:
+        state = "absent"
     return {"outcome": outcome, "state": state, "facts": facts or {}, "version": version, "error": error}
 
 
@@ -1054,7 +1056,8 @@ def collect(home, cfg, project, reason="manual"):
         health["last_error"] = snapshot["collector"].get("error")
         health["last_duration_ms"] = int((now_ts() - started) * 1000)
         health["consecutive_failures"] = 0
-        health["last_success_at"] = snapshot["finished_at"]
+        if snapshot["collector"]["total_observations"] > snapshot["collector"]["failed_observations"]:
+            health["last_success_at"] = snapshot["finished_at"]
         write_json_atomic(health_path, health)
         update_discrepancies(home, cfg, project)
         return snapshot
@@ -1222,7 +1225,10 @@ def build_view(home, cfg, project):
     snapshot = read_json(home.pstate(project, "snapshot.json"))
     last_success = read_json(home.pstate(project, "last-success.json"), {}) or {}
     health = read_json(home.pstate(project, "health.json"), {}) or {}
-    observations = (snapshot or {}).get("observations", {})
+    snapshot_current = bool(snapshot and snapshot.get("manifest_revision") == manifest["revision"])
+    observations = snapshot.get("observations", {}) if snapshot_current else {}
+    if not snapshot_current:
+        last_success = {}
     evidence = load_evidence(home, project)
     annotations = load_annotations(home, project)
     task_bindings = load_task_bindings(home, project)
@@ -1349,8 +1355,8 @@ def build_view(home, cfg, project):
     stale_after = 2 * cfg["active_interval"]
     last_ok = parse_iso(health.get("last_success_at"))
     collector = dict(health)
-    collector["stale"] = last_ok is None or (now_ts() - last_ok) > max(stale_after, cfg["idle_interval"] + cfg["active_interval"])
-    collector["snapshot_status"] = (snapshot or {}).get("collector", {}).get("status")
+    collector["stale"] = not snapshot_current or last_ok is None or (now_ts() - last_ok) > max(stale_after, cfg["idle_interval"] + cfg["active_interval"])
+    collector["snapshot_status"] = snapshot.get("collector", {}).get("status") if snapshot_current else None
     collector["fixture"] = bool((snapshot or {}).get("collector", {}).get("fixture"))
     collector["snapshot_at"] = (snapshot or {}).get("finished_at")
     collector["manifest_revision_at_snapshot"] = (snapshot or {}).get("manifest_revision")
@@ -1359,7 +1365,7 @@ def build_view(home, cfg, project):
         "project": project,
         "generated_at": iso(),
         "manifest": {k: manifest.get(k) for k in ("title", "description", "revision", "updated_at", "modes", "expected_mode", "groups", "lifecycle", "known_gaps", "credentials")},
-        "scope": (snapshot or {}).get("scope") or {"region": bindings.get("scope", {}).get("region"), "account_label": bindings.get("scope", {}).get("account_label"), "account_verified": None},
+        "scope": (snapshot.get("scope") if snapshot_current else None) or {"region": bindings.get("scope", {}).get("region"), "account_label": bindings.get("scope", {}).get("account_label"), "account_verified": None},
         "collector": collector,
         "subjects": subjects,
         "order": {"components": [c["id"] for c in manifest["components"]], "connections": [c["id"] for c in manifest["connections"]]},
@@ -1663,11 +1669,17 @@ def cmd_summary(home, cfg, args):
             len(opened), len(high), view["manifest"]["revision"]))
         for item in (high or opened)[:3]:
             out.append("  - %s %s: %s" % (item["id"], item["severity"], item["title"][:110]))
-        if view["requests"]:
-            out.append("  pending review requests: %s (load system-map-review)" % ", ".join(sorted(view["requests"])))
+    pending = []
+    for project in cfg["projects"]:
+        requests = read_json(home.pstate(project, "requests.json"), {"requests": {}}).get("requests", {})
+        if requests:
+            pending.append("%s: %s" % (project, ", ".join(sorted(requests))))
+    out = out[:14 if pending else 15]
+    if pending:
+        out.append("pending review requests: %s (load system-map-review)" % "; ".join(pending))
     if cfg["projects"]:
         out.append("map UI: http://127.0.0.1:%d/ (bin/fm-system-map.sh status for scheduler health)" % cfg["port"])
-    print("\n".join(out[:16]))
+    print("\n".join(out))
     return 0
 
 
