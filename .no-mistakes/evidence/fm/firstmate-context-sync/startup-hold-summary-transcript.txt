@@ -1,0 +1,5 @@
+$ fm-session-start.sh (manual backlog; selected digest lines)
+compact backlog listing (manual backend; done rows omitted; every in-flight, held, and blocked title line kept; hold reasons over 220 chars truncated with a marker naming the full-record command; other queued bounded to 20; indented task bodies omitted)
+- [ ] manual-paren - Manual held item blocked-by: dep-a (hold: Discuss (A) followed by xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [truncated 220/342 chars; full: data/backlog.md entry manual-paren]) (hold-kind: captain)
+Full task bodies remain available on demand: bin/fm-tasks-axi.sh show <id> --full when compatible tasks-axi is available, or data/backlog.md.
+Stored backlog unchanged: yes

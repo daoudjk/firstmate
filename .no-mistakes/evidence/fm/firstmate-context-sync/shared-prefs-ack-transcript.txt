@@ -1,0 +1,38 @@
+$ fm-config-push.sh (shared preference update)
+config-push: /tmp/fm-secondmate-harness.2cRS2S/evidence-shared-prefs/home -> live secondmate homes
+secondmate sm (/tmp/fm-secondmate-harness.2cRS2S/evidence-shared-prefs/sm):
+  crew-dispatch.json: unchanged
+  dispatch-never-send: unchanged
+  crew-harness: unchanged
+  backlog-backend: unchanged
+  backend: unchanged
+  herdr-presentation-spaces: unchanged
+  herdr-project-groups: unchanged
+  startup-memory-budget: unchanged
+  trace-context: unchanged - session-scoped
+  launch-env-allowlist: unchanged
+  claude-permission-mode: unchanged
+  lavish-axi-host: unchanged
+  keep-ai-trailers: unchanged
+  supervision-host-off: unchanged
+  firstmate-role: unchanged
+  data/captain-shared.md: pushed
+  shared-prefs: generation 1 re-read request delivered; acknowledgement pending
+$ fm-shared-prefs.sh status (primary)
+sm: primary=0538dd3125ef applied=1 delivered=1 acknowledged=none state=acknowledgement-pending
+$ fm-shared-prefs.sh show (mate)
+-----BEGIN data/captain-shared.md-----
+# Shared captain preferences
+
+This file is main-authoritative in the main firstmate home.
+In secondmate homes it is read-only in secondmate homes and must not be edited there.
+Route new captain-preference discoveries to the main firstmate through marked status or a document pointer.
+Review dependency changes before dispatch.
+-----END data/captain-shared.md-----
+Generation 1: the complete current shared preferences are printed above.
+After reading them, acknowledge exactly this generation:
+  /tmp/fm-secondmate-harness.2cRS2S/evidence-shared-prefs/sm/bin/fm-shared-prefs.sh ack 1 0538dd3125ef7c8d8f13df07fc7956283b6c5cf6abefce61d13256d59c39c837
+$ fm-shared-prefs.sh ack <printed-generation> <printed-sha256> (mate)
+acknowledged: generation 1
+$ fm-shared-prefs.sh status (primary)
+sm: primary=0538dd3125ef applied=1 delivered=1 acknowledged=1 state=acknowledged
