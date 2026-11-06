@@ -82,9 +82,9 @@ After a manifest revision or private binding changes, previous observations cann
 Snapshots and successful reads carry a canonical digest of the validated bindings so reused observation IDs cannot inherit another resource's evidence.
 
 An evidence record (`fm-system-map.evidence.v1`) names its subjects, optional criterion, phase and run id, the exact `versions` it covers, a `pass`, `fail`, or `not-run` result, timestamps, a summary, and provenance.
-For each version-tracked subject, a receipt may include `resource_identities` mapping the subject ID to its per-observation binding digest, exposed as `resource_identity` in the subject view and `binding_digest` on its version observation. A receipt qualifies for proof, acceptance, or task verification only when both its version and resource identity match the current observation. Receipts without that identity remain visible but do not qualify; evidence intake never adds the identity on the producer's behalf.
+For each version-tracked subject, a receipt may include `resource_identities` mapping the subject ID to its per-observation binding digest, exposed as `resource_identity` in the subject view and `binding_digest` on its version observation. A receipt qualifies for proof, acceptance, or task verification only when deployment is current and its version and resource identity match the observation. Receipts without that identity remain visible but do not qualify; evidence intake never adds the identity on the producer's behalf.
 A criterion fails while any subject it depends on has a deployment mismatch, even when a receipt passes for the observed version.
-A declared pin without a binding value leaves deployment unknown and prevents dependent criteria from passing.
+A declared pin without a binding value leaves deployment unknown, opens a deployment discrepancy, and prevents proof, acceptance, and task verification from passing.
 The map stamps `received_at` when it stores a receipt; live verification requires both its event time and receipt time to follow the task's precise completion time.
 Provenance `kind` is `receipt`, `imported-report`, or `manual`; none of them is a collector observation.
 A record proves a version-tracked subject only for the exact observed version and resource identity it names, and a `historical` record never qualifies.

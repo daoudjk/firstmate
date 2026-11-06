@@ -1196,13 +1196,15 @@ def _pin_value(subject, bindings):
     return value if isinstance(value, str) else None
 
 
-def evidence_qualifies(record, subject_id, current_version, tracked, resource_identity=None):
+def evidence_qualifies(record, subject_id, current_version, tracked, resource_identity, deployment_status):
     """Return (qualifies, reason)."""
     if record.get("historical"):
         return False, "historical"
     rv = record.get("versions", {}).get(subject_id)
     if tracked == "untracked":
         return True, "not version-bound"
+    if deployment_status != "deployed":
+        return False, "deployment %s" % deployment_status
     if current_version is None:
         return False, "current version unobserved"
     if rv is None:
@@ -1211,7 +1213,7 @@ def evidence_qualifies(record, subject_id, current_version, tracked, resource_id
         return False, "older or different version"
     if not resource_identity or record.get("resource_identities", {}).get(subject_id) != resource_identity:
         return False, "different or unspecified resource identity"
-    return True, "applies to the current version"
+    return True, "applies to the current deployment"
 
 
 def _runtime_status(subject, observations, expected_mode):
@@ -1240,10 +1242,10 @@ def _runtime_status(subject, observations, expected_mode):
     return {"status": status, "observed": observed, "intended": intended}
 
 
-def live_verification(evidence, sid, version, vstate, completed_at, resource_identity=None):
+def live_verification(evidence, sid, version, vstate, completed_at, resource_identity, deployment_status):
     qualifying = [r for r in evidence if not r.get("invalid") and r["result"] in ("pass", "fail")
                   and (sid in r.get("subjects", []) or sid in r.get("versions", {}))
-                  and evidence_qualifies(r, sid, version, vstate, resource_identity)[0]
+                  and evidence_qualifies(r, sid, version, vstate, resource_identity, deployment_status)[0]
                   and (parse_iso(r["recorded_at"]) or 0) > completed_at
                   and (parse_iso(r.get("received_at")) or 0) > completed_at]
     if not qualifying:
@@ -1310,7 +1312,7 @@ def build_view(home, cfg, project):
         recs = [r for r in evidence if not r.get("invalid") and (sid in r.get("subjects", []) or sid in r.get("versions", {}))]
         qualifying, stale = [], []
         for rec in recs:
-            ok, why = evidence_qualifies(rec, sid, version, vstate, resource_identity)
+            ok, why = evidence_qualifies(rec, sid, version, vstate, resource_identity, deploy["status"])
             (qualifying if ok else stale).append(dict(rec, qualification=why))
         # On a timestamp tie the failure wins, so a simultaneous pass never hides it.
         qualifying.sort(key=lambda r: (parse_iso(r["recorded_at"]) or 0, r["result"] == "fail"))
@@ -1330,14 +1332,14 @@ def build_view(home, cfg, project):
             proof = {"status": "unknown", "detail": "current version is unobserved, so no record can qualify"}
         elif any(r["result"] in ("pass", "fail") for r in stale):
             reasons = sorted({r["qualification"] for r in stale if r["result"] in ("pass", "fail")})
-            proof = {"status": "stale", "detail": "pass/fail records do not apply to the current version (%s)" % "; ".join(reasons)}
+            proof = {"status": "stale", "detail": "pass/fail records do not apply to the current deployment (%s)" % "; ".join(reasons)}
         else:
             proof = {"status": "not-demonstrated", "detail": "no qualifying evidence"}
         # Completion verification: implementation-complete is not live-verified.
         live_verified = None
         if comps:
             completed_at = max(parse_iso(c["completed_at"]) or 0 for c in comps)
-            live_verified = live_verification(evidence, sid, version, vstate, completed_at, resource_identity)
+            live_verified = live_verification(evidence, sid, version, vstate, completed_at, resource_identity, deploy["status"])
         obs_list = []
         for ob in subject.get("observe", []):
             cur = observations.get(ob["id"])
@@ -1373,7 +1375,7 @@ def build_view(home, cfg, project):
                 if not s:
                     ok, why = False, "subject %s missing" % sid
                     break
-                subject_ok, why = evidence_qualifies(rec, sid, s["version"], s["version_state"], s["resource_identity"])
+                subject_ok, why = evidence_qualifies(rec, sid, s["version"], s["version_state"], s["resource_identity"], s["layers"]["deployment"]["status"])
                 if not subject_ok:
                     ok = False
                     why = "%s: %s" % (sid, why)
@@ -1395,8 +1397,6 @@ def build_view(home, cfg, project):
         unresolved_pins = [sid for sid in crit.get("subjects", []) if subjects.get(sid, {}).get("layers", {}).get("deployment", {}).get("pin_missing")]
         if mismatched:
             status = "failed"
-        elif unresolved_pins and status == "passed":
-            status = "stale"
         acceptance.append(dict(crit, status=status, evidence=quals + olds, unversioned_subjects=untracked, deployment_mismatches=mismatched, unresolved_pins=unresolved_pins))
     timeline = build_timeline(manifest, evidence)
     stale_after = 2 * cfg["active_interval"]
@@ -1485,6 +1485,8 @@ def derive_discrepancies(home, cfg, project):
         dep = s["layers"]["deployment"]
         if dep["status"] == "mismatch":
             add("version", sid, "pin=%s" % dep.get("pin"), "%s runs a version other than its pin" % s["title"], dep["detail"], "high", owners)
+        elif dep.get("pin_missing"):
+            add("version", sid, "pin-missing", "%s has no value for its declared pin" % s["title"], dep["detail"], "high", owners)
         for o in s["observations"]:
             cur = o["current"]
             if not cur:
@@ -1494,7 +1496,7 @@ def derive_discrepancies(home, cfg, project):
             elif cur["outcome"] in ("denied", "error"):
                 add("observation", sid, "%s:%s" % (o["id"], cur["outcome"]), "%s observation %s %s" % (s["title"], o["id"], "was denied" if cur["outcome"] == "denied" else "failed"), cur.get("error") or "", "medium", owners)
         if s["layers"]["proof"]["status"] == "stale":
-            add("proof", sid, "stale", "%s has no proof for its current version" % s["title"], s["layers"]["proof"]["detail"], "low", owners)
+            add("proof", sid, "stale", "%s has no proof for its current deployment" % s["title"], s["layers"]["proof"]["detail"], "low", owners)
         if s["live_verified"] == "unversioned":
             add("completion", sid, "unversioned", "%s is implementation-complete with only unversioned proof" % s["title"], "Passing evidence exists, but the subject declares no version source, so it cannot be live-verified across deployments.", "low", owners)
         if s["live_verified"] is False:
@@ -1999,7 +2001,7 @@ def cmd_verify(home, cfg, args):
             print("  %s: no longer in the manifest" % sid)
             unverified += 1
             continue
-        live = live_verification(evidence, sid, s["version"], s["version_state"], parse_iso(completion["completed_at"]) or 0, s["resource_identity"]) if completed else None
+        live = live_verification(evidence, sid, s["version"], s["version_state"], parse_iso(completion["completed_at"]) or 0, s["resource_identity"], s["layers"]["deployment"]["status"]) if completed else None
         if live is not True:
             unverified += 1
         print("  %s: deployment %s, runtime %s, proof %s, live-verified %s" % (

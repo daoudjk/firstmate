@@ -278,6 +278,21 @@ PY
   assert_equals "passed" "$(py "$home/view.json" '[a["status"] for a in d["acceptance"] if a["id"] == "mvp-run"][0]')" "matching replacement proof passes acceptance"
   rc=0; out=$(map "$home" verify task-resource) || rc=$?
   expect_code 0 "$rc" "matching replacement proof verifies the task"
+  aws_state "$home" '{"ami": "ami-0different000001"}'
+  map "$home" collect >/dev/null || fail "mismatched version collection failed"
+  write_evidence "$home" mismatched-run ami-0different000001 pass false "$future"
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "proof cannot qualify against a mismatched pin"
+  rc=0; out=$(map "$home" verify task-resource) || rc=$?
+  expect_code 3 "$rc" "a mismatched pin revokes task verification"
+  aws_state "$home" '{"deny": ["ec2"]}'
+  map "$home" collect >/dev/null || fail "denied resource collection failed"
+  rc=0; out=$(map "$home" verify task-resource) || rc=$?
+  expect_code 3 "$rc" "an unreadable resource cannot verify the task"
+  aws_state "$home" '{"instance_state": "terminated"}'
+  map "$home" collect >/dev/null || fail "absent resource collection failed"
+  rc=0; out=$(map "$home" verify task-resource) || rc=$?
+  expect_code 3 "$rc" "an absent resource cannot verify the task"
   pass "proof and acceptance bind to the observed resource identity"
 }
 
@@ -326,8 +341,10 @@ PY
 }
 
 test_missing_declared_pin_blocks_acceptance() {
-  local home
+  local home future out rc=0
   home=$(new_home missing-pin)
+  map "$home" bind task-missing-pin --subject worker-host >/dev/null || fail "binding failed"
+  map "$home" complete task-missing-pin --kind ship >/dev/null || fail "completion failed"
   python3 - "$home/data/system-map/example/bindings.json" <<'PY'
 import json, sys
 path = sys.argv[1]
@@ -336,12 +353,17 @@ del bindings["bindings"]["worker_host"]["pin"]
 with open(path, "w") as handle: json.dump(bindings, handle)
 PY
   map "$home" collect >/dev/null || fail "collection with missing pin failed"
-  write_evidence "$home" observed-without-pin ami-0123456789abcdef0 pass
+  future=$(date -u +%Y-%m-%dT%H:%M:%SZ -d '+1 minute' 2>/dev/null || date -u -v+1M +%Y-%m-%dT%H:%M:%SZ)
+  write_evidence "$home" observed-without-pin ami-0123456789abcdef0 pass false "$future"
   view_json "$home"
   assert_equals "unknown" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["deployment"]["status"]')" "a declared pin without a value cannot establish deployment"
-  assert_equals "proven" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "matching evidence still describes the observed resource"
+  assert_equals "stale" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "an unresolved pin cannot qualify proof"
   assert_equals "stale" "$(py "$home/view.json" '[a["status"] for a in d["acceptance"] if a["id"] == "mvp-run"][0]')" "the pinned-image criterion does not pass without a pin"
   assert_equals "['worker-host']" "$(py "$home/view.json" '[a["unresolved_pins"] for a in d["acceptance"] if a["id"] == "mvp-run"][0]')" "the unresolved pin is identified"
+  assert_equals "1" "$(py "$home/data/system-map/example/discrepancies.json" 'sum(1 for item in d["discrepancies"].values() if item["kind"] == "version" and item["subject"] == "worker-host" and item["status"] == "open" and "no value" in item["title"])')" "an unresolved pin opens a version discrepancy"
+  assert_contains "$(map "$home" check)" "system-map:" "the pin discrepancy reaches the owner check"
+  out=$(map "$home" verify task-missing-pin) || rc=$?
+  expect_code 3 "$rc" "an unresolved pin cannot verify a completed task"
   pass "unresolved declared pins block acceptance"
 }
 
@@ -419,7 +441,7 @@ test_evidence_is_version_bound() {
   assert_equals "stale" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "historical evidence never qualifies"
   write_evidence "$home" new-pass ami-0newnewnewnewnew0 pass false 2026-01-02T00:00:00Z
   view_json "$home"
-  assert_equals "proven" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "current-version evidence qualifies"
+  assert_equals "stale" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["proof"]["status"]')" "current-version evidence cannot prove a pin mismatch"
   assert_equals "failed" "$(py "$home/view.json" '[a["status"] for a in d["acceptance"] if a["id"] == "mvp-run"][0]')" "current-version proof cannot pass a mismatched deployment"
   assert_equals "['worker-host']" "$(py "$home/view.json" '[a["deployment_mismatches"] for a in d["acceptance"] if a["id"] == "mvp-run"][0]')" "the mismatched subject is identified"
   aws_state "$home" '{"ami": "ami-0nextnextnextnex0"}'
