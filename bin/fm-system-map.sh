@@ -40,9 +40,10 @@
 #                              Edit title, description, notes, or intended.<mode>.
 #   intent replace <project> <manifest.json> --reason R
 #   intent init <project> <manifest.json>
-#                              Every intent change validates, increments the
-#                              manifest revision, and archives the previous one
-#                              under data/system-map/<project>/history/.
+#                              Edits validate, increment the manifest revision,
+#                              and archive the previous one under
+#                              data/system-map/<project>/history/. Init creates
+#                              the first manifest at revision 1.
 #   bind <task> [--project P] --subject a,b [--note N]
 #   bind <task> [--project P] --no-subjects --note REASON
 #                              Validated companion binding of a task to map

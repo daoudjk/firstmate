@@ -24,8 +24,8 @@ Observation outcomes are distinct and never merged into a false green:
 | `error` | The read failed or timed out. |
 | `unknown` | Nothing was read: no usable binding, an unverified account scope, or the collection deadline. |
 
-When a read fails, the last successful read is kept in a separate record and shown as historical, never as current.
-Proof is `proven` (a pass at the exact observed version), `unversioned` (a pass on a subject that declares no version source), `failed`, `stale` (pass or fail records exist only for other versions or are historical), `unknown` (the current version is unobserved), or `not-demonstrated`.
+When a read fails, a last successful read from the same manifest revision and bindings is shown separately as historical, never as current.
+Proof is `proven` (a pass for the current deployment), `unversioned` (a pass on a subject that declares no version source), `failed`, `stale` (pass or fail records exist but cannot qualify for the current deployment), `unknown` (the current version is unobserved), or `not-demonstrated`.
 
 ## Enabling it
 
@@ -33,12 +33,13 @@ The map is off unless `config/system-map` exists.
 Without that file every integration point is a silent no-op, so a home that never opts in behaves exactly as before.
 
 1. Copy [`docs/examples/system-map/sample.config`](examples/system-map/sample.config) to `config/system-map` and set `project=<id>` (repeatable), `port`, and the cadences.
-2. Write `data/system-map/<project>/manifest.json` (intended design) and `data/system-map/<project>/bindings.json` (private resource names); the tracked [sample manifest](examples/system-map/sample.manifest.json) and [sample bindings](examples/system-map/sample.bindings.json) show both shapes.
-   Install a first manifest with `bin/fm-system-map.sh intent init <project> <file>`.
+2. Prepare a manifest file for the intended design, then install it with `bin/fm-system-map.sh intent init <project> <file>`; write private resource names to `data/system-map/<project>/bindings.json`.
+   The tracked [sample manifest](examples/system-map/sample.manifest.json) and [sample bindings](examples/system-map/sample.bindings.json) show both shapes.
 3. Run `bin/fm-system-map.sh validate <project>` until it reports no binding problems, then `collect <project>` once.
-4. Run `bin/fm-system-map.sh install` to install the collector timer, the UI service, and the watcher check.
+4. On a host with a working systemd user manager, run `bin/fm-system-map.sh install` to install the collector timer, the UI service, and the watcher check.
    `install --dry-run` prints every file and command first, and `uninstall` removes exactly what install created.
-   Install refuses same-named units or checks it does not own, and uninstall leaves them running and untouched. Install also refuses a run marked `FM_SYSTEM_MAP_FIXTURE=1`.
+   Install refuses same-named units or checks it does not own, and uninstall leaves them running and untouched.
+   Install also refuses a run marked `FM_SYSTEM_MAP_FIXTURE=1`.
 5. Run `bin/fm-system-map.sh open` to get the local UI URL; keep its fragment key private.
 
 | Key | Default | Meaning |
@@ -82,9 +83,12 @@ After a manifest revision or private binding changes, previous observations cann
 Snapshots and successful reads carry a canonical digest of the validated bindings so reused observation IDs cannot inherit another resource's evidence.
 
 An evidence record (`fm-system-map.evidence.v1`) names its subjects, optional criterion, phase and run id, the exact `versions` it covers, a `pass`, `fail`, or `not-run` result, timestamps, a summary, and provenance.
-For each version-tracked subject, a receipt may include `resource_identities` mapping the subject ID to its per-observation binding digest, exposed as `resource_identity` in the subject view and `binding_digest` on its version observation. A receipt qualifies for proof, acceptance, or task verification only when deployment is current and its version and resource identity match the observation. Receipts without that identity remain visible but do not qualify; evidence intake never adds the identity on the producer's behalf.
+For each version-tracked subject, a receipt must include `resource_identities` mapping the subject ID to its per-observation binding digest to qualify as proof.
+Copy that digest from `resource_identity` in the current subject view or `binding_digest` on its version observation when producing the receipt.
+A receipt qualifies for proof, acceptance, or task verification only when deployment is current and its version and resource identity match the observation.
+Receipts without that identity remain visible but do not qualify; evidence intake never adds the identity on the producer's behalf.
 A criterion fails while any subject it depends on has a deployment mismatch, even when a receipt passes for the observed version.
-A declared pin without a binding value leaves deployment unknown, opens a deployment discrepancy, and prevents proof, acceptance, and task verification from passing.
+A declared pin without a binding value leaves deployment unknown and opens a deployment discrepancy; for a version-tracked subject, it also prevents proof, acceptance, and task verification from passing.
 The map stamps `received_at` when it stores a receipt; live verification requires both its event time and receipt time to follow the task's precise completion time.
 Provenance `kind` is `receipt`, `imported-report`, or `manual`; none of them is a collector observation.
 A record proves a version-tracked subject only for the exact observed version and resource identity it names, and a `historical` record never qualifies.

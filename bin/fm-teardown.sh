@@ -3976,7 +3976,7 @@ elif teardown_owns_worktree; then
 else
   echo "teardown $ID complete (window ${T:-none}; pool slot $WT left to task $TEARDOWN_SLOT_REASSIGNED_TO${TEARDOWN_SLOT_REASSIGNED_HOME:+ (home $TEARDOWN_SLOT_REASSIGNED_HOME)}, which it was reassigned to)"
 fi
-# Opt-in system map: record implementation-complete for a task bound to map
+# Opt-in system map: record implementation-complete for a ship bound to map
 # subjects (bin/fm-system-map.sh complete). It runs after the record is gone,
 # is bounded, and only prints an advisory, so it can never block or undo this
 # cleanup; live verification stays a separate, evidence-backed state.
