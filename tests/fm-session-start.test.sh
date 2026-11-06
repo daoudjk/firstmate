@@ -2369,6 +2369,32 @@ EOF
   pass "manual backlog rendering bounds invalid-JSON quoted plain text"
 }
 
+test_backlog_hold_reason_bound_manual_parenthesized_text() {
+  local rec root home fakebin out reason total prefix
+  rec=$(new_world backlog-hold-reason-manual-parenthesized)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  reason="Discuss (A) followed by $(printf 'x%.0s' {1..300})TAIL-SENTINEL-MUST-NOT-RENDER"
+  total=$(grapheme_count "$reason")
+  prefix=$(printf '%s' "$reason" | perl -CS -0777 -ne 'my @g = /(\X)/g; print join "", @g[0 .. 219]')
+  {
+    printf '# Backlog\n\n## In flight\n'
+    printf -- '- [ ] manual-paren - Manual held item blocked-by: dep-a (hold: %s) (hold-kind: captain)\n' "$reason"
+    printf '\n## Queued\n\n## Done\n'
+  } > "$home/data/backlog.md"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "- [ ] manual-paren - Manual held item blocked-by: dep-a (hold: $prefix [truncated 220/$total chars; full: data/backlog.md entry manual-paren]) (hold-kind: captain)" \
+    "a parenthesized plain-text reason was not bounded beside its metadata"
+  assert_not_contains "$out" "TAIL-SENTINEL-MUST-NOT-RENDER" "the manual listing rendered an unbounded parenthesized reason"
+  assert_contains "$(cat "$home/data/backlog.md")" "$reason" "the display bound changed the stored backlog"
+  pass "manual backlog rendering bounds a complete parenthesized hold reason"
+}
+
 # --- runtime bound -----------------------------------------------------------
 #
 # The digest runs on a session-open hook that blocks session initialization, so
@@ -3346,6 +3372,7 @@ test_backlog_hold_reason_display_is_bounded_with_full_record_pointer
 test_backlog_hold_reason_bound_with_real_tasks_axi
 test_backlog_hold_reason_bound_manual_backend
 test_backlog_hold_reason_bound_manual_unquoted_text
+test_backlog_hold_reason_bound_manual_parenthesized_text
 test_fleet_digest_empty_fleet
 test_system_map_summary_is_opt_in
 test_next_step_sources_x_mode_cadence

@@ -29,7 +29,7 @@
 #   validate [project]         Validate manifest, bindings, and evidence. Exit 1
 #                              when a binding or evidence record is unusable.
 #   serve                      Serve the UI on 127.0.0.1 at the configured port.
-#   open                       Print the local URL with its owner-only capability.
+#   open                       Print the local UI URL.
 #   evidence add <project> <file.json>
 #                              Record one append-only version-bound evidence
 #                              record (receipts dropped in

@@ -886,18 +886,20 @@ free_port() {
   python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
 }
 
-http() {  # <method> <url> [json-body] [token] [host] -> "<status> <body>"
+http() {  # <method> <url> [json-body] [origin] [host] [content-type] [fetch-site] -> "<status> <body>"
   python3 - "$@" <<'PY'
 import json, sys, urllib.request, urllib.error
 method, url = sys.argv[1], sys.argv[2]
 body = sys.argv[3].encode() if len(sys.argv) > 3 and sys.argv[3] else None
 req = urllib.request.Request(url, data=body, method=method)
 if body is not None:
-    req.add_header("Content-Type", "application/json")
+    req.add_header("Content-Type", sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else "application/json")
 if len(sys.argv) > 4 and sys.argv[4]:
-    req.add_header("X-FM-Map-Token", sys.argv[4])
+    req.add_header("Origin", sys.argv[4])
 if len(sys.argv) > 5 and sys.argv[5]:
     req.add_header("Host", sys.argv[5])
+if len(sys.argv) > 7 and sys.argv[7]:
+    req.add_header("Sec-Fetch-Site", sys.argv[7])
 try:
     with urllib.request.urlopen(req, timeout=10) as res:
         print(res.status, res.read().decode())
@@ -907,7 +909,7 @@ PY
 }
 
 test_ui_annotations_and_intent_edits() {
-  local home port pid base page token out
+  local home port pid base page out
   home=$(new_home ui)
   map "$home" collect >/dev/null || fail "collect failed"
   cp "$home/state/system-map/example/snapshot.json" "$home/snapshot.before"
@@ -918,54 +920,54 @@ path, port = sys.argv[1:]
 with open(path) as handle: config = handle.read()
 with open(path, "w") as handle: handle.write(config.replace("port=4790", "port=" + port))
 PY
+  mkdir -p "$home/state/system-map"
+  : > "$home/state/system-map/capability"
   map "$home" serve > "$home/serve.log" 2>&1 &
   pid=$!
   MAP_SERVER_PID=$pid
   base="http://127.0.0.1:$port"
-  for _ in $(seq 1 50); do [ -f "$home/state/system-map/capability" ] && break; sleep 0.1; done
-  page=$(http GET "$base/")
+  for _ in $(seq 1 50); do page=$(http GET "$base/" 2>/dev/null) && break; sleep 0.1; done
   assert_contains "$page" "200 " "the page is served"
-  token=$(map "$home" open)
-  assert_contains "$token" "http://127.0.0.1:$port/#key=" "open uses the configured service port"
-  token=${token#*#key=}
-  [ -n "$token" ] || fail "open omitted the capability"
-  assert_not_contains "$page" "$token" "the page must not disclose the capability"
-  assert_equals "600" "$(stat -c %a "$home/state/system-map/capability")" "capability is owner-only"
+  assert_equals "$base/" "$(map "$home" open)" "open did not print the bare local URL"
+  [ -f "$home/state/system-map/capability" ] && [ ! -s "$home/state/system-map/capability" ] || fail "the legacy capability file was changed"
   out=$(http GET "$base/api/projects" "" "" "evil.example:$port")
   assert_contains "$out" "403" "a foreign Host header is refused"
   out=$(http GET "$base/api/projects")
-  assert_contains "$out" "403" "project list requires the capability"
+  assert_contains "$out" "200" "a bare local request could not read the project list"
   out=$(http GET "$base/api/state?project=example")
-  assert_contains "$out" "403" "map state requires the capability"
-  out=$(http GET "$base/api/state?project=example" "" "wrong")
-  assert_contains "$out" "403" "a wrong capability is refused"
-  out=$(http GET "$base/api/projects" "" "$token")
-  assert_contains "$out" "200" "the owner capability reads the project list"
+  assert_contains "$out" "200" "a bare local request could not read map state"
   out=$(http GET "$base/../config/system-map")
   assert_contains "$out" "404" "arbitrary paths are not served"
+  out=$(http POST "$base/api/annotate" '{"project":"example","target":"api","text":"foreign origin"}' 'https://evil.example')
+  assert_contains "$out" "403" "a foreign Origin was accepted"
+  out=$(http POST "$base/api/annotate" '{"project":"example","target":"api","text":"cross-site fetch"}' "$base" '' '' 'cross-site')
+  assert_contains "$out" "403" "a cross-site fetch was accepted"
+  out=$(http POST "$base/api/annotate" '{"project":"example","target":"api","text":"form body"}' "$base" '' 'text/plain')
+  assert_contains "$out" "415" "a non-JSON POST was accepted"
   out=$(http POST "$base/api/annotate" '{"project":"example","target":"api","text":"check scaling"}')
-  assert_contains "$out" "403" "writes without the page token are refused"
-  out=$(http POST "$base/api/annotate" '{"project":"example","target":"api","text":"check scaling"}' "$token")
   assert_contains "$out" "201" "an annotation is saved"
   assert_grep "check scaling" "$home/data/system-map/example/annotations.json" "the annotation persists on disk"
-  out=$(http POST "$base/api/annotate" '{"project":"example","target":"nope","text":"x"}' "$token")
+  assert_not_contains "$(cat "$home/data/system-map/example/annotations.json")" "foreign origin" "a foreign-Origin POST changed annotations"
+  assert_not_contains "$(cat "$home/data/system-map/example/annotations.json")" "cross-site fetch" "a cross-site POST changed annotations"
+  assert_not_contains "$(cat "$home/data/system-map/example/annotations.json")" "form body" "a non-JSON POST changed annotations"
+  out=$(http POST "$base/api/annotate" '{"project":"example","target":"nope","text":"x"}' "$base")
   assert_contains "$out" "400" "an annotation on an unknown target is refused"
-  out=$(http POST "$base/api/intent" '{"project":"example","subject":"api","field":"intended.idle","value":"zero","base_revision":99}' "$token")
+  out=$(http POST "$base/api/intent" '{"project":"example","subject":"api","field":"intended.idle","value":"zero","base_revision":99}' "$base")
   assert_contains "$out" "409" "a stale design revision is refused"
-  out=$(http POST "$base/api/intent" '{"project":"example","subject":"api","field":"observe","value":"x","base_revision":1}' "$token")
+  out=$(http POST "$base/api/intent" '{"project":"example","subject":"api","field":"observe","value":"x","base_revision":1}' "$base")
   assert_contains "$out" "400" "structural fields are not editable here"
-  out=$(http POST "$base/api/intent" '{"project":"example","subject":"api","field":"description","value":"Accepts jobs.","base_revision":1,"reason":"clarify"}' "$token")
+  out=$(http POST "$base/api/intent" '{"project":"example","subject":"api","field":"description","value":"Accepts jobs.","base_revision":1,"reason":"clarify"}' "$base")
   assert_contains "$out" '"revision": 2' "a valid intent edit raises the revision"
   assert_present "$home/data/system-map/example/history/manifest-r1.json" "the previous design is archived"
   cmp -s "$home/snapshot.before" "$home/state/system-map/example/snapshot.json" || fail "an intent edit changed observed records"
-  out=$(http GET "$base/api/state?project=example" "" "$token")
+  out=$(http GET "$base/api/state?project=example")
   assert_contains "$out" "Accepts jobs." "the view reflects the edited intent"
   assert_contains "$out" '"fixture": true' "stand-in observations are marked as test data"
   stop_map_server
   # The annotation survives a server restart.
   view_json "$home"
   assert_equals "check scaling" "$(py "$home/view.json" 'd["subjects"]["api"]["annotations"][0]["text"]')" "annotations persist across restarts"
-  pass "UI writes are token-bound, validated, persisted, and never alter observations"
+  pass "local UI reads are keyless and same-origin JSON writes are validated and persisted"
 }
 
 test_summary_is_bounded_and_marks_fixtures() {

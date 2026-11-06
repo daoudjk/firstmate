@@ -118,8 +118,8 @@ fm_hold_reason_bound_stream() {
     my ($reason_col, $id_col, $columns);
     while (my $line = <STDIN>) {
       if ($format eq "markdown") {
-        if ($line =~ /^([-*][ \t]+(?:\[[ xX]\][ \t]+(\S+)|\*\*([^*]+)\*\*)[ \t]+-[ \t].*?\(hold:[ \t]*)("(?:[^"\\]|\\.)*"|[^)]*?)([ \t]*\).*)$/s) {
-          my ($head, $id, $reason, $tail) = ($1, defined $2 ? $2 : $3, $4, $5);
+        if ($line =~ /^([-*][ \t]+(?:\[[ xX]\][ \t]+(\S+)|\*\*([^*]+)\*\*)[ \t]+-[ \t].*?\(hold:[ \t]*)("(?:[^"\\]|\\.)*"|(?<plain>(?:[^()]|\((?&plain)\))*))([ \t]*\).*)$/s) {
+          my ($head, $id, $reason, $tail) = ($1, defined $2 ? $2 : $3, $4, $6);
           my $value = field_value($reason);
           my $cut = bound(defined $value ? $value : $reason, $id);
           if (defined $cut) {
