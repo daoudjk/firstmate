@@ -3976,5 +3976,14 @@ elif teardown_owns_worktree; then
 else
   echo "teardown $ID complete (window ${T:-none}; pool slot $WT left to task $TEARDOWN_SLOT_REASSIGNED_TO${TEARDOWN_SLOT_REASSIGNED_HOME:+ (home $TEARDOWN_SLOT_REASSIGNED_HOME)}, which it was reassigned to)"
 fi
+# Opt-in system map: record implementation-complete for a ship bound to map
+# subjects (bin/fm-system-map.sh complete). It runs after the record is gone,
+# is bounded, and only prints an advisory, so it can never block or undo this
+# cleanup; live verification stays a separate, evidence-backed state.
+if [ -f "$CONFIG/system-map" ] && [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
+  fm_run_timed 20 "$SCRIPT_DIR/fm-system-map.sh" complete "$ID" --kind "${KIND:-ship}" \
+    --mode "$MODE" --pr "${PR_URL:-}" 2>&1 \
+    || echo "warning: the system map could not record $ID's completion; run bin/fm-system-map.sh complete $ID by hand" >&2
+fi
 backlog_refresh_reminder
 [ "$TEARDOWN_POOL_SLOT_LOST" = 0 ] || exit "$TEARDOWN_LOST_SLOT_EXIT"

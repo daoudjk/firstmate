@@ -1,0 +1,15 @@
+{
+  "schema": "fm-system-map.bindings.v1",
+  "scope": {"region": "us-east-1", "account_label": "example account"},
+  "firstmate_projects": ["example-project"],
+  "bindings": {
+    "api_service": {"cluster": "example-cluster", "service": "example-api"},
+    "job_queue": {"queue_name": "example-jobs"},
+    "control_item": {"table": "example-control", "key": {"PK": {"S": "CONTROL"}}, "attributes": ["Halted", "Revision"],
+                     "state_attribute": "Halted", "state_map": {"true": "halted", "false": "open"}},
+    "results_table": {"table": "example-results"},
+    "worker_host": {"instance_id": "i-0123456789abcdef0", "pin": "ami-0123456789abcdef0", "label": "worker host"},
+    "platform_source": {"path": "projects/example-platform", "ref": "HEAD"},
+    "owner_task": {"task": "example-owner"}
+  }
+}
