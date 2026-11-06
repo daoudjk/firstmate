@@ -76,7 +76,7 @@ SH
 map() {
   local home=$1
   shift
-  env FM_HOME="$home" FM_SYSTEM_MAP_AWS="$home/fakebin/aws" FM_SYSTEM_MAP_FIXTURE=1 \
+  env FM_HOME="$home" FM_SYSTEM_MAP_AWS="$home/fakebin/aws" FM_SYSTEM_MAP_FIXTURE="${FM_SYSTEM_MAP_TEST_FIXTURE:-1}" \
     FAKE_AWS_STATE="$home/aws-state.json" FAKE_AWS_LOG="$home/aws.log" \
     FM_SYSTEM_MAP_SYSTEMCTL="$home/fakebin/systemctl" FM_SYSTEM_MAP_UNIT_DIR="$home/units" \
     FAKE_SYSTEMCTL_LOG="$home/systemctl.log" "$MAP" "$@"
@@ -592,7 +592,12 @@ PY
 test_scheduler_install_is_idempotent_and_removable() {
   local home out rc=0
   home=$(new_home units)
-  out=$(map "$home" install) || fail "install failed: $out"
+  out=$(map "$home" install 2>&1) || rc=$?
+  expect_code 1 "$rc" "fixture install is refused"
+  assert_contains "$out" "fixture run" "fixture refusal is explicit"
+  [ -z "$(ls "$home/units")" ] || fail "fixture install wrote units"
+  assert_absent "$home/state/system-map.check.sh" "fixture install did not register a check"
+  out=$(FM_SYSTEM_MAP_TEST_FIXTURE=0 map "$home" install) || fail "install failed: $out"
   assert_contains "$out" "registered: state/system-map.check.sh" "the watcher check is registered"
   set -- "$home/units"/*-collect.timer
   [ -f "$1" ] || fail "timer unit missing"
@@ -621,7 +626,7 @@ assert "/usr/bin" in environment["PATH"].split(os.pathsep)
 PY
   assert_contains "$(cat "$home/systemctl.log")" "--user enable --now" "install enables the units"
   : > "$home/systemctl.log"
-  out=$(map "$home" install) || fail "second install failed"
+  out=$(FM_SYSTEM_MAP_TEST_FIXTURE=0 map "$home" install) || fail "second install failed"
   assert_contains "$out" "unchanged" "a repeated install changes nothing"
   assert_not_contains "$(cat "$home/systemctl.log")" "daemon-reload" "no reload without a unit change"
   rc=0; map "$home" install --only ui >/dev/null 2>&1 || rc=$?
@@ -632,7 +637,7 @@ PY
   [ -z "$(ls "$home/units")" ] || fail "units were left behind"
   assert_absent "$home/state/system-map.check.sh" "the watcher check is retired"
   printf '[Unit]\nDescription=not ours\n' > "$home/units/$(basename "$unit")"
-  out=$(map "$home" install 2>&1) || rc=$?
+  out=$(FM_SYSTEM_MAP_TEST_FIXTURE=0 map "$home" install 2>&1) || rc=$?
   expect_code 1 "$rc" "install over an unmanaged unit"
   assert_contains "$out" "not managed by this installer" "an unmanaged unit is never overwritten"
   pass "scheduler install is single-owner, idempotent, and removable"
@@ -644,14 +649,14 @@ test_scheduler_preserves_unmanaged_artifacts() {
   check="$home/state/system-map.check.sh"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$check"
   cp "$check" "$home/custom.check"
-  out=$(map "$home" install 2>&1) || rc=$?
+  out=$(FM_SYSTEM_MAP_TEST_FIXTURE=0 map "$home" install 2>&1) || rc=$?
   expect_code 1 "$rc" "install over an unmanaged watcher check"
   assert_contains "$out" "not managed by this installer" "unmanaged check is refused"
   cmp -s "$check" "$home/custom.check" || fail "install changed the unmanaged check"
   [ -z "$(ls "$home/units")" ] || fail "install wrote units before refusing the unmanaged check"
 
   home=$(new_home unmanaged-uninstall)
-  map "$home" install >/dev/null || fail "install failed"
+  FM_SYSTEM_MAP_TEST_FIXTURE=0 map "$home" install >/dev/null || fail "install failed"
   timer=$(ls "$home/units"/*-collect.timer)
   check="$home/state/system-map.check.sh"
   trust="$home/state/system-map.check-trust"
@@ -715,6 +720,26 @@ EOF
   out=$(map "$home" bind task-s --subject api) && map "$home" complete task-s --kind scout >/dev/null
   assert_absent "$home/data/system-map/example/completions/task-s.json" "a scout never records implementation-complete"
   pass "binding, landing, and live verification stay distinct"
+}
+
+test_verify_uses_completed_subjects() {
+  local home out rc=0 future
+  home=$(new_home frozen-subjects)
+  map "$home" bind task-frozen --subject worker-host >/dev/null || fail "binding failed"
+  map "$home" complete task-frozen --kind ship >/dev/null || fail "completion failed"
+  map "$home" bind task-frozen --no-subjects --note "later exemption" >/dev/null || fail "rebinding failed"
+  assert_equals "[]" "$(py "$home/data/system-map/example/tasks/task-frozen.json" 'd["subjects"]')" "current binding is empty"
+  assert_equals "['worker-host']" "$(py "$home/data/system-map/example/completions/task-frozen.json" 'd["subjects"]')" "completion retains the landed subject"
+  map "$home" collect >/dev/null || fail "collection failed"
+  out=$(map "$home" verify task-frozen) || rc=$?
+  expect_code 3 "$rc" "an empty current binding cannot hide missing proof"
+  assert_contains "$out" "worker-host:" "verify checks the landed subject"
+  future=$(date -u +%Y-%m-%dT%H:%M:%SZ -d '+1 minute' 2>/dev/null || date -u -v+1M +%Y-%m-%dT%H:%M:%SZ)
+  write_evidence "$home" frozen-proof ami-0123456789abcdef0 pass false "$future"
+  rc=0; out=$(map "$home" verify task-frozen) || rc=$?
+  expect_code 0 "$rc" "the completed subject verifies with matching proof"
+  assert_contains "$out" "worker-host:" "the completed subject is still checked"
+  pass "verification uses completion subjects after rebinding"
 }
 
 test_coverage_gap_for_unbound_project_tasks() {
@@ -873,6 +898,7 @@ test_active_cadence_ignores_secondmates
 test_scheduler_install_is_idempotent_and_removable
 test_scheduler_preserves_unmanaged_artifacts
 test_binding_completion_and_live_verification
+test_verify_uses_completed_subjects
 test_coverage_gap_for_unbound_project_tasks
 test_ui_annotations_and_intent_edits
 test_summary_is_bounded_and_marks_fixtures

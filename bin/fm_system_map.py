@@ -1973,7 +1973,7 @@ def cmd_verify(home, cfg, args):
     evidence = load_evidence(home, project) if completed else []
     print("task %s (%s): %s" % (args.task, project, "implementation-complete" if completed else "not landed yet"))
     unverified = 0
-    for sid in binding.get("subjects", []):
+    for sid in (completion if completed else binding).get("subjects", []):
         s = view["subjects"].get(sid)
         if not s:
             print("  %s: no longer in the manifest" % sid)
@@ -2146,6 +2146,8 @@ def managed_unit(path, tag):
 
 
 def cmd_install(home, cfg, args):
+    if os.environ.get("FM_SYSTEM_MAP_FIXTURE") == "1":
+        raise MapError("cannot install the system map from a fixture run")
     if not cfg["projects"]:
         raise MapError("config/system-map lists no project")
     for project in cfg["projects"]:

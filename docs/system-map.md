@@ -38,7 +38,7 @@ Without that file every integration point is a silent no-op, so a home that neve
 3. Run `bin/fm-system-map.sh validate <project>` until it reports no binding problems, then `collect <project>` once.
 4. Run `bin/fm-system-map.sh install` to install the collector timer, the UI service, and the watcher check.
    `install --dry-run` prints every file and command first, and `uninstall` removes exactly what install created.
-   Install refuses same-named units or checks it does not own, and uninstall leaves them running and untouched.
+   Install refuses same-named units or checks it does not own, and uninstall leaves them running and untouched. Install also refuses a run marked `FM_SYSTEM_MAP_FIXTURE=1`.
 5. Run `bin/fm-system-map.sh open` to get the local UI URL; keep its fragment key private.
 
 | Key | Default | Meaning |
@@ -120,4 +120,4 @@ A file on disk changing does not refresh any running agent's context; an agent s
   The public page never embeds the capability; `open` places it in a URL fragment that the browser sends only as an API header.
 - Writes are limited to notes and to the title, description, notes, and intended state of an existing subject; structural changes go through `intent replace` with a reason.
 - Evidence paths are shown as text and only `https` links are clickable; no file content is served.
-- A collection run with `FM_SYSTEM_MAP_FIXTURE=1` is marked as test data in the UI and the summary, so stand-in output is never mistaken for a live read.
+- A collection run with `FM_SYSTEM_MAP_FIXTURE=1` is marked as test data in the UI and the summary; installation is refused while that marker is set.
