@@ -132,7 +132,7 @@ def read_json(path, default=None):
         return default
 
 
-def write_json_atomic(path, data, mode=0o600):
+def write_json_atomic(path, data, mode=0o600, create_only=False):
     directory = os.path.dirname(path)
     os.makedirs(directory, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=directory)
@@ -143,7 +143,11 @@ def write_json_atomic(path, data, mode=0o600):
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(tmp, mode)
-        os.replace(tmp, path)
+        if create_only:
+            os.link(tmp, path)
+            os.unlink(tmp)
+        else:
+            os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
@@ -619,6 +623,14 @@ def load_evidence(home, project):
     return records
 
 
+def record_evidence(home, project, record):
+    target = home.pdata(project, "evidence", record["id"] + ".json")
+    try:
+        write_json_atomic(target, record, create_only=True)
+    except FileExistsError:
+        raise MapError("evidence id %r already exists; records are append-only" % record["id"])
+
+
 def validate_evidence(record, subject_ids=None):
     if not isinstance(record, dict):
         raise MapError("evidence must be a JSON object")
@@ -774,7 +786,8 @@ def adapt_ec2_tagged(runner, b):
     # The count covers only instances carrying this tag key; it is not an
     # account-wide absence census, and the fact says so wherever it is shown.
     facts = {"instances": total, "by_state": counts, "scope": "only instances tagged with key %s" % b["tag_key"]}
-    return _result("ok", state="zero" if total == 0 else "running", facts=facts)
+    state = next((name for name in ("running", "pending", "stopping", "stopped", "shutting-down", "unknown") if counts.get(name)), "zero")
+    return _result("ok", state=state, facts=facts)
 
 
 def adapt_ec2_image(runner, b):
@@ -993,10 +1006,7 @@ def ingest_inbox(home, project, manifest):
         try:
             record = read_json(path)
             validate_evidence(record, ids)
-            target = home.pdata(project, "evidence", record["id"] + ".json")
-            if os.path.exists(target):
-                raise MapError("evidence id %r already exists" % record["id"])
-            write_json_atomic(target, record)
+            record_evidence(home, project, record)
             os.unlink(path)
             moved.append(record["id"])
         except (MapError, ValueError, OSError) as exc:
@@ -1725,10 +1735,7 @@ def cmd_evidence_add(home, cfg, args):
         except ValueError as exc:
             raise MapError("evidence file is not JSON: %s" % exc)
     validate_evidence(record, set(subjects_of(manifest)))
-    target = home.pdata(project, "evidence", record["id"] + ".json")
-    if os.path.exists(target):
-        raise MapError("evidence id %r already exists; records are append-only" % record["id"])
-    write_json_atomic(target, record)
+    record_evidence(home, project, record)
     print("recorded evidence %s" % record["id"])
     return 0
 

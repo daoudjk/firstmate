@@ -237,6 +237,58 @@ test_evidence_is_version_bound() {
   pass "evidence qualifies only the exact observed version"
 }
 
+test_tagged_instances_report_observed_state() {
+  local home
+  home=$(new_home tagged-instances)
+  python3 - "$home/data/system-map/example/manifest.json" "$home/data/system-map/example/bindings.json" <<'PY'
+import json, sys
+manifest_path, bindings_path = sys.argv[1:]
+with open(manifest_path) as handle: manifest = json.load(handle)
+console = next(item for item in manifest["components"] if item["id"] == "console")
+console["intended"] = {"idle": "stopped", "active": "running"}
+console["observe"] = [{"id": "tagged-workers", "adapter": "aws.ec2_tagged_instances", "binding": "tagged_workers"}]
+with open(manifest_path, "w") as handle: json.dump(manifest, handle)
+with open(bindings_path) as handle: bindings = json.load(handle)
+bindings["bindings"]["tagged_workers"] = {"tag_key": "example-worker"}
+with open(bindings_path, "w") as handle: json.dump(bindings, handle)
+PY
+  map "$home" collect >/dev/null || fail "stopped tagged instance collection failed"
+  view_json "$home"
+  assert_equals "stopped" "$(py "$home/view.json" 'd["subjects"]["console"]["observations"][0]["current"]["state"]')" "a stopped tagged instance is not running"
+  assert_equals "as-intended" "$(py "$home/view.json" 'd["subjects"]["console"]["layers"]["runtime"]["status"]')" "stopped state matches idle intent"
+  aws_state "$home" '{"instance_state": "running"}'
+  map "$home" collect >/dev/null || fail "running tagged instance collection failed"
+  view_json "$home"
+  assert_equals "running" "$(py "$home/view.json" 'd["subjects"]["console"]["observations"][0]["current"]["state"]')" "a running tagged instance is reported running"
+  pass "tagged instance state follows observed instances"
+}
+
+test_evidence_ids_are_create_only() {
+  local home i pid successes=0 rc=0
+  local -a pids=()
+  home=$(new_home evidence-create-only)
+  for i in 1 2 3 4 5 6; do
+    cat > "$home/ev-$i.json" <<EOF
+{"schema":"fm-system-map.evidence.v1","id":"shared-id","subjects":["worker-host"],"versions":{"worker-host":"ami-0123456789abcdef0"},"result":"pass","summary":"receipt $i","recorded_at":"2026-01-01T00:00:00Z","provenance":{"source":"test"}}
+EOF
+    map "$home" evidence add example "$home/ev-$i.json" > "$home/ev-$i.out" 2>&1 &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" || rc=$?
+    if [ "$rc" -eq 0 ]; then successes=$((successes + 1)); fi
+    rc=0
+  done
+  assert_equals "1" "$successes" "only one concurrent writer creates an evidence ID"
+  cp "$home/data/system-map/example/evidence/shared-id.json" "$home/first-evidence.json"
+  mkdir -p "$home/data/system-map/example/inbox"
+  cp "$home/ev-1.json" "$home/data/system-map/example/inbox/duplicate.json"
+  map "$home" collect >/dev/null || fail "collection with duplicate inbox receipt failed"
+  cmp -s "$home/first-evidence.json" "$home/data/system-map/example/evidence/shared-id.json" || fail "inbox ingestion replaced existing evidence"
+  assert_present "$home/data/system-map/example/inbox/rejected/duplicate.json" "duplicate inbox receipt was not rejected"
+  pass "evidence IDs are create-only across CLI and inbox ingestion"
+}
+
 test_timeline_orders_offset_timestamps() {
   local home id at result
   home=$(new_home timeline-offset)
@@ -370,9 +422,28 @@ test_scheduler_install_is_idempotent_and_removable() {
   set -- "$home/units"/*-collect.timer
   [ -f "$1" ] || fail "timer unit missing"
   unit=$(ls "$home/units"/*-collect.service)
-  assert_grep "Environment=PATH=" "$unit" "units carry an explicit PATH"
-  assert_grep "ExecStart=$ROOT/bin/fm-system-map.sh tick" "$unit" "the collector runs the tick entry point"
-  assert_grep "Environment=FM_HOME=" "$unit" "units name their home"
+  python3 - "$unit" "$ROOT" "$home" <<'PY' || fail "collector unit settings are wrong"
+import os, shlex, sys
+unit, root, home = sys.argv[1:]
+settings = {}
+section = None
+with open(unit) as handle:
+    for raw in handle:
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+            continue
+        key, value = line.split("=", 1)
+        settings.setdefault(section, {}).setdefault(key, []).append(value)
+service = settings["Service"]
+environment = dict(entry.split("=", 1) for item in service["Environment"] for entry in shlex.split(item))
+assert shlex.split(service["ExecStart"][0]) == [os.path.join(root, "bin/fm-system-map.sh"), "tick"]
+assert environment["FM_HOME"] == os.path.realpath(home)
+assert environment["PATH"].split(os.pathsep)
+assert "/usr/bin" in environment["PATH"].split(os.pathsep)
+PY
   assert_contains "$(cat "$home/systemctl.log")" "--user enable --now" "install enables the units"
   : > "$home/systemctl.log"
   out=$(map "$home" install) || fail "second install failed"
@@ -568,6 +639,8 @@ test_scope_mismatch_skips_aws_reads
 test_missing_and_invalid_bindings
 test_credential_material_is_refused
 test_evidence_is_version_bound
+test_tagged_instances_report_observed_state
+test_evidence_ids_are_create_only
 test_timeline_orders_offset_timestamps
 test_completion_retry_preserves_first_receipt
 test_collect_lock_is_single_owner
