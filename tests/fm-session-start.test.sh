@@ -2276,10 +2276,11 @@ EOF
   fi
   backlog="$home/data/backlog.md"
   printf '# Backlog\n\n## In flight\n\n## Queued\n\n## Done\n' > "$backlog"
-  PATH="$fakebin:$BASE_PATH" tasks-axi add dep-a "Dependency A" --file "$backlog" >/dev/null \
+  if ! { PATH="$fakebin:$BASE_PATH" tasks-axi add dep-a "Dependency A" --file "$backlog" >/dev/null \
     && PATH="$fakebin:$BASE_PATH" tasks-axi add real-hold "Real, held item" --file "$backlog" >/dev/null \
-    && PATH="$fakebin:$BASE_PATH" tasks-axi block real-hold --by dep-a --file "$backlog" >/dev/null \
-    || fail "the installed tasks-axi could not build the fixture backlog"
+    && PATH="$fakebin:$BASE_PATH" tasks-axi block real-hold --by dep-a --file "$backlog" >/dev/null; }; then
+    fail "the installed tasks-axi could not build the fixture backlog"
+  fi
   reason=$(long_hold_reason)
   # shellcheck source=bin/fm-hold-reason-lib.sh
   . "$ROOT/bin/fm-hold-reason-lib.sh"

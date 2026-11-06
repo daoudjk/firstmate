@@ -195,6 +195,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-secondmate-nudge-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-secondmate-nudge-lib.sh"
+# shellcheck source=bin/fm-shared-prefs-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-shared-prefs-lib.sh"
 # shellcheck source=bin/fm-startup-memory-budget-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-startup-memory-budget-lib.sh"
 # shellcheck source=bin/fm-x-lib.sh disable=SC1091
@@ -532,7 +534,7 @@ secondmate_sync() {
   # running home, send its literal-content reread instruction pointer so the
   # live agent does not keep applying stale defaults. Spawn/respawn already
   # re-reads at launch and needs no redundant nudge unless files changed after launch.
-  local id home home_real home_lock propagated_homes report reread_out reread_skip_pending
+  local id home home_real home_lock propagated_homes report reread_out reread_skip_pending prefs_out
   propagated_homes=""
   SECONDMATE_RESPAWNED_IDS=${SECONDMATE_RESPAWNED_IDS:-}
   while IFS='|' read -r id home _window _meta; do
@@ -593,6 +595,15 @@ secondmate_sync() {
       fi
     elif [ -n "$reread_out" ]; then
       printf '%s\n' "$reread_out"
+    fi
+    # Shared preferences never ride the config pointer; deliver their own
+    # exact-generation re-read request (bin/fm-shared-prefs-lib.sh).
+    # A delivered request is information; anything else is a diagnostic.
+    if prefs_out=$(FM_HOME="$FM_HOME" FM_ROOT_OVERRIDE="$FM_ROOT" FM_STATE_OVERRIDE="$STATE" \
+      fm_shared_prefs_converge "$id" "$home_real" "$DATA" 2>&1); then
+      [ -z "$prefs_out" ] || printf '%s\n' "$prefs_out" | sed 's/^/BOOTSTRAP_INFO: /'
+    elif [ -n "$prefs_out" ]; then
+      printf '%s\n' "$prefs_out"
     fi
     rm -f "$report"
     fm_lock_release "$home_lock" || true

@@ -1,8 +1,8 @@
 ---
 name: ask-user-authority
 description: >-
-  Single owner of ask-user finding policy.
-  Load before deciding any ask-user finding.
+  Single owner of ask-user finding policy and of when an implementation choice needs the captain.
+  Load before deciding any ask-user finding and before holding any implementation choice for the captain.
 user-invocable: false
 metadata:
   internal: true
@@ -10,7 +10,7 @@ metadata:
 
 # ask-user-authority
 
-This skill is the single owner of the decision policy for no-mistakes ask-user findings.
+This skill is the single owner of the decision policy for no-mistakes ask-user findings, and its criteria below also decide whether any other implementation choice needs the captain.
 `AGENTS.md` section 7 points here and does not restate this procedure.
 Finding authority is determined by the criteria below, not by `yolo`.
 Firstmate always applies this judgment, decides any finding that is unambiguous toward the accepted design, and escalates only genuinely ambiguous, expanding, or destructive findings.
@@ -33,6 +33,14 @@ It stops at the finding, routes the decision to firstmate, and applies only the 
    - repeated same-theme findings when incremental corrections are preserving a questionable abstraction rather than closing independent defects
    - destructive, irreversible, and genuinely security-sensitive choices, which always escalate under the stronger existing captain boundary
 5. Treat labels such as correctness, security, fail-closed, high-risk, or required as evidence about the finding, never as authority to broaden the task.
+
+## Implementation choices outside a finding
+
+The same criteria decide an implementation choice a worker or firstmate meets outside a no-mistakes gate.
+An ordinary reversible choice that the accepted intent needs - naming, file placement, a test shape, a defaulted parameter, choosing between equivalent approaches, or a small in-scope correction - proceeds autonomously, is recorded with the work, and is never held for the captain.
+Authorization the captain already gave for accepted work governs within its scope over an older Firstmate-written restriction, so such a restriction does not re-gate that choice.
+That precedence never manufactures authorization from observations, an audit, or a report, and never widens the accepted scope.
+Explicit captain pauses, the never-discard and merge-authority rules, destructive, irreversible, security-sensitive, and real-spend limits, provider constraints, and honest evidence still stand, and the escalation criteria in step 4 still escalate.
 
 ## Captain-facing escalation
 

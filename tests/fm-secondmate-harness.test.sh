@@ -2948,6 +2948,204 @@ SH
   pass "B25 spawn quarantines stale rereads without blocking relaunch"
 }
 
+# ===========================================================================
+# Shared-preference generation acknowledgement: a data/captain-shared.md-only
+# change is applied, delivered, and acknowledged as three separate facts, and
+# only the mate's own acknowledgement of the exact current generation settles it.
+# ===========================================================================
+
+# A world whose primary tracks bin/ as a link to the real scripts, so a mate
+# worktree carries the real acknowledgement command exactly as a deployed home
+# does after its tracked files advance.
+new_prefs_world() {
+  local name=$1 w
+  w=$(new_world "$name")
+  git -C "$w/main" rm -rq bin
+  ln -s "$ROOT/bin" "$w/main/bin"
+  git -C "$w/main" add bin
+  git -C "$w/main" commit -qm "real bin"
+  add_sm_worktree "$w" sm "$(git -C "$w/main" rev-parse HEAD)"
+  record_live_watcher_fixture "$w/home"
+  printf '%s\n' "$w"
+}
+
+write_primary_prefs() {  # <world> <body>
+  {
+    shared_captain_header_for_tests
+    printf '%s\n' "$2"
+  } > "$1/home/data/captain-shared.md"
+}
+
+prefs_status() {  # <world>
+  PATH="$BASE_PATH" FM_HOME="$1/home" FM_ROOT_OVERRIDE="$1/main" \
+    "$ROOT/bin/fm-shared-prefs.sh" status
+}
+
+mate_prefs() {  # <world> <args...>: run the mate's own copy inside its home
+  local w=$1
+  shift
+  PATH="$BASE_PATH" FM_HOME="$w/sm" "$w/sm/bin/fm-shared-prefs.sh" "$@"
+}
+
+# The exact ack command `show` printed, as its two arguments.
+shown_ack_args() {  # <show-output>
+  printf '%s\n' "$1" | awk '/fm-shared-prefs\.sh ack / { print $(NF-1), $NF }'
+}
+
+inbox_count() {  # <world>
+  local n=0 rec
+  for rec in "$1/home/state/sm.inbox"/*.msg "$1/home/state/sm.inbox/handled"/*.msg; do
+    [ -e "$rec" ] && n=$((n + 1))
+  done
+  printf '%s\n' "$n"
+}
+
+test_shared_prefs_only_change_requires_exact_generation_ack() {
+  local w out status args gen1 gen1_args show rec count
+  w=$(new_prefs_world shared-prefs-ack)
+  write_primary_prefs "$w" "first shared preference body"
+
+  out=$(run_config_push "$w" 2>/dev/null); status=$?
+  expect_code 0 "$status" "a shared-preferences-only push should succeed"
+  assert_contains "$out" "data/captain-shared.md: pushed" "the shared file was not applied"
+  assert_contains "$out" "shared-prefs: generation 1 re-read request delivered; acknowledgement pending" \
+    "a shared-preferences-only change sent no exact-generation re-read request"
+  assert_not_contains "$out" "config-reread: sent" "a shared-only change must not ride the config pointer"
+  assert_contains "$(inbox_stream "$w/home/state" sm)" "SHARED_PREFS_REREAD: the primary shared captain preferences for this home are now generation 1. Run $w/sm/bin/fm-shared-prefs.sh show" \
+    "the durable request did not name the generation and the mate's own show command"
+  assert_contains "$(inbox_stream "$w/home/state" sm)" "it resumes, unpauses, reprioritizes, and authorizes nothing" \
+    "the request did not say it leaves paused and held work alone"
+  assert_not_contains "$(inbox_stream "$w/home/state" sm)" "first shared preference body" \
+    "the request inlined shared preference content"
+  assert_contains "$(prefs_status "$w")" "sm: primary=" "status did not list the live mate"
+  assert_contains "$(prefs_status "$w")" "applied=1 delivered=1 acknowledged=none state=acknowledgement-pending" \
+    "a delivered request was reported as more than delivered"
+
+  # Handling the inbox message is message handling, not acknowledgement.
+  mkdir -p "$w/home/state/sm.inbox/handled"
+  for rec in "$w/home/state/sm.inbox"/*.msg; do mv "$rec" "$w/home/state/sm.inbox/handled/"; done
+  assert_contains "$(prefs_status "$w")" "state=acknowledgement-pending" \
+    "moving the inbox message was counted as an acknowledgement"
+
+  show=$(mate_prefs "$w" show)
+  assert_contains "$show" "first shared preference body" "show did not print the complete current file"
+  assert_contains "$show" "-----END data/captain-shared.md-----" "show did not delimit the file"
+  gen1_args=$(shown_ack_args "$show")
+  gen1=${gen1_args##* }
+  [ "${gen1_args%% *}" = 1 ] && [ "${#gen1}" -eq 64 ] || fail "show did not print an exact ack command: $show"
+
+  mate_prefs "$w" ack 1 "$(printf '%064d' 0)" >/dev/null 2>&1 && fail "an ack naming the wrong content was accepted"
+  mate_prefs "$w" ack 2 "$gen1" >/dev/null 2>&1 && fail "an ack naming a generation that does not exist was accepted"
+  assert_contains "$(prefs_status "$w")" "state=acknowledgement-pending" "a refused ack changed the reported state"
+  # shellcheck disable=SC2086 # two whitespace-free words from show
+  out=$(mate_prefs "$w" ack $gen1_args) || fail "the exact ack command show printed was refused: $out"
+  assert_contains "$out" "acknowledged: generation 1" "ack did not confirm the generation"
+  # shellcheck disable=SC2086
+  assert_contains "$(mate_prefs "$w" ack $gen1_args)" "already recorded" "re-acknowledging is not idempotent"
+  assert_contains "$(prefs_status "$w")" "applied=1 delivered=1 acknowledged=1 state=acknowledged" \
+    "an exact acknowledgement did not settle the generation"
+
+  count=$(inbox_count "$w")
+  out=$(run_config_push "$w" 2>/dev/null)
+  assert_not_contains "$out" "shared-prefs:" "an unchanged push reported shared-preference activity"
+  [ "$(inbox_count "$w")" = "$count" ] || fail "an unchanged push sent another request"
+
+  # A newer generation is not settled by the older acknowledgement or its replay.
+  write_primary_prefs "$w" "second shared preference body"
+  out=$(run_config_push "$w" 2>/dev/null)
+  assert_contains "$out" "shared-prefs: generation 2 re-read request delivered; acknowledgement pending" \
+    "a second shared-only change was not delivered as generation 2"
+  assert_contains "$(prefs_status "$w")" "applied=2 delivered=2 acknowledged=1 state=acknowledgement-pending" \
+    "an older acknowledgement settled a newer generation"
+  # shellcheck disable=SC2086
+  out=$(mate_prefs "$w" ack $gen1_args 2>&1) && fail "a replayed stale acknowledgement was accepted"
+  assert_contains "$out" "generation 1 is stale; the current applied generation is 2" "a stale ack was not named as stale"
+  # shellcheck disable=SC2086
+  mate_prefs "$w" ack 2 "$gen1" >/dev/null 2>&1 && fail "the old content under the new generation number was accepted"
+  args=$(shown_ack_args "$(mate_prefs "$w" show)")
+  # shellcheck disable=SC2086
+  mate_prefs "$w" ack $args >/dev/null || fail "the generation 2 ack was refused"
+  assert_contains "$(prefs_status "$w")" "acknowledged=2 state=acknowledged" "generation 2 did not settle"
+
+  # Returning to earlier bytes is a new generation, never the old acknowledgement.
+  write_primary_prefs "$w" "first shared preference body"
+  out=$(run_config_push "$w" 2>/dev/null)
+  assert_contains "$out" "shared-prefs: generation 3 re-read request delivered" \
+    "returning to earlier bytes did not mint a new generation"
+  # shellcheck disable=SC2086
+  mate_prefs "$w" ack $gen1_args >/dev/null 2>&1 && fail "an acknowledgement of identical earlier bytes settled a newer generation"
+  assert_contains "$(prefs_status "$w")" "applied=3 delivered=3 acknowledged=2 state=acknowledgement-pending" \
+    "identical earlier bytes were reported as already acknowledged"
+  mate_prefs "$w" ack 3 "$gen1" >/dev/null || fail "the current generation with its exact content was refused"
+  assert_contains "$(prefs_status "$w")" "acknowledged=3 state=acknowledged" "generation 3 did not settle"
+  pass "shared-preferences-only changes are delivered and settle only on an exact current-generation acknowledgement"
+}
+
+test_shared_prefs_delivery_failure_keeps_retry_owed() {
+  local w out status
+  w=$(new_prefs_world shared-prefs-retry)
+  write_primary_prefs "$w" "retry body"
+  # An unwritable steering inbox makes the durable record impossible.
+  : > "$w/home/state/sm.inbox"
+  out=$(run_config_push "$w" 2>/dev/null); status=$?
+  [ "$status" -ne 0 ] || fail "an undelivered request still exited 0"
+  assert_contains "$out" "shared-prefs: generation 1 re-read request not delivered" "a failed delivery was not reported"
+  assert_contains "$out" "retry owed" "a failed delivery did not say the request is still owed"
+  assert_contains "$(prefs_status "$w")" "applied=1 delivered=none acknowledged=none state=delivery-pending" \
+    "a failed send was reported as delivered"
+  rm -f "$w/home/state/sm.inbox"
+  out=$(run_config_push "$w" 2>/dev/null); status=$?
+  expect_code 0 "$status" "the retry push should succeed"
+  assert_contains "$out" "shared-prefs: generation 1 re-read request delivered" \
+    "an owed request was not retried once the content stopped changing"
+  assert_contains "$(prefs_status "$w")" "applied=1 delivered=1 acknowledged=none state=acknowledgement-pending" \
+    "the retry did not record delivery of the same generation"
+  pass "a failed shared-preference request stays owed and is retried for the same generation"
+}
+
+test_shared_prefs_not_applied_and_deferred_are_honest() {
+  local w out status
+  w=$(new_prefs_world shared-prefs-not-applied)
+  write_primary_prefs "$w" "valid body"
+  run_config_push "$w" >/dev/null 2>&1
+  printf 'invalid shared header\n' > "$w/home/data/captain-shared.md"
+  out=$(run_config_push "$w" 2>/dev/null)
+  assert_contains "$out" "shared-prefs: home copy does not match the primary; not applied, nothing delivered" \
+    "a copy that did not converge was not reported as not applied"
+  assert_contains "$(prefs_status "$w")" "state=not-applied" "status hid a copy that does not match the primary"
+  assert_not_contains "$(inbox_stream "$w/home/state" sm)" "generation 2" "an unapplied change was delivered"
+
+  # A home whose tracked files predate the command gets no request it cannot act on.
+  w=$(new_world shared-prefs-deferred)
+  add_sm_worktree "$w" sm "$(git -C "$w/main" rev-parse HEAD)"
+  record_live_watcher_fixture "$w/home"
+  write_primary_prefs "$w" "deferred body"
+  out=$(run_config_push "$w" 2>/dev/null); status=$?
+  expect_code 0 "$status" "a deferred request is not a propagation error"
+  assert_contains "$out" "shared-prefs: generation 1 applied; re-read request deferred until the home carries bin/fm-shared-prefs.sh" \
+    "a home without the command was not reported as deferred"
+  assert_not_contains "$(inbox_stream "$w/home/state" sm)" "SHARED_PREFS_REREAD" "a request was sent to a home that cannot act on it"
+  pass "shared-preference status names unapplied copies and deferred delivery instead of claiming either"
+}
+
+test_shared_prefs_bootstrap_remote_and_role_boundaries() {
+  local w out
+  w=$(new_prefs_world shared-prefs-bootstrap)
+  write_primary_prefs "$w" "bootstrap body"
+  out=$(run_bootstrap "$w")
+  assert_contains "$out" "BOOTSTRAP_INFO: SHARED_PREFS: secondmate sm: generation 1 re-read request delivered; acknowledgement pending" \
+    "the bootstrap sweep did not deliver the shared-preference request"
+
+  printf 'remote_host=example-host\n' >> "$w/home/state/sm.meta"
+  assert_contains "$(prefs_status "$w")" "sm: remote home on example-host; state=remote-not-observable" \
+    "a remote home was reported as if its acknowledgement were visible here"
+
+  out=$(PATH="$BASE_PATH" FM_HOME="$w/home" "$ROOT/bin/fm-shared-prefs.sh" ack 1 absent 2>&1) \
+    && fail "the primary home recorded an acknowledgement"
+  assert_contains "$out" "is not a secondmate home" "ack outside a secondmate home was not refused by name"
+  pass "bootstrap delivers the request, remote acknowledgement is reported unobservable, and only a mate can acknowledge"
+}
+
 test_harness_resolution
 test_cursor_marker_detection
 test_secondmate_model_effort_tokens
@@ -3005,5 +3203,9 @@ test_config_reread_bootstrap_path_and_spawn_flexibility
 test_bootstrap_respawns_before_config_reread
 test_spawn_quarantines_pending_rereads_on_cleanup_failure
 test_bootstrap_detect_only_does_not_create_state
+test_shared_prefs_only_change_requires_exact_generation_ack
+test_shared_prefs_delivery_failure_keeps_retry_owed
+test_shared_prefs_not_applied_and_deferred_are_honest
+test_shared_prefs_bootstrap_remote_and_role_boundaries
 
 echo "# all fm-secondmate-harness tests passed"
