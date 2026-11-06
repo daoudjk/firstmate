@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="fm-map-token" content="__FM_MAP_TOKEN__">
+<title>System map</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <div class="bar__brand">
+    <svg class="bar__mark" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.5 6h9M6.3 8.2l4.4 7.6M17.7 8.2l-4.4 7.6"/></svg>
+    <h1 class="bar__title">System map</h1>
+    <label class="bar__project"><span class="sr-only">Project</span><select id="project"></select></label>
+  </div>
+  <div class="bar__health" id="health" aria-live="polite"></div>
+  <div class="bar__actions">
+    <label class="toggle"><input type="checkbox" id="auto"> Auto-refresh</label>
+    <button type="button" class="btn" id="reload" title="Re-read the latest published snapshot">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5"/></svg>Reload</button>
+    <button type="button" class="btn btn--primary" id="collect" title="Run the read-only collectors now">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h4l3-7 4 14 3-7h2"/></svg>Collect now</button>
+  </div>
+</header>
+<div id="banners" class="banners" aria-live="polite"></div>
+<main class="page">
+  <div class="tabs" role="tablist" aria-label="Views">
+    <button role="tab" id="tab-map" aria-controls="view-map" aria-selected="true">Map</button>
+    <button role="tab" id="tab-diff" aria-controls="view-diff" aria-selected="false" tabindex="-1">Differences <span class="count" id="diff-count"></span></button>
+    <button role="tab" id="tab-life" aria-controls="view-life" aria-selected="false" tabindex="-1">Experiment timeline</button>
+    <button role="tab" id="tab-accept" aria-controls="view-accept" aria-selected="false" tabindex="-1">MVP acceptance</button>
+    <button role="tab" id="tab-cred" aria-controls="view-cred" aria-selected="false" tabindex="-1">Credentials</button>
+  </div>
+
+  <section id="view-map" role="tabpanel" aria-labelledby="tab-map" class="view view--map">
+    <div class="map">
+      <div class="map__toolbar">
+        <div class="seg" role="radiogroup" aria-label="Lens">
+          <button role="radio" data-lens="intended" aria-checked="false">Intended</button>
+          <button role="radio" data-lens="observed" aria-checked="true">Observed</button>
+          <button role="radio" data-lens="difference" aria-checked="false">Difference</button>
+        </div>
+        <div class="zoom" role="group" aria-label="Map size">
+          <button type="button" class="btn btn--small" id="zoom-out" aria-label="Smaller map">−</button>
+          <span class="zoom__level" id="zoom-level" aria-live="polite">100%</span>
+          <button type="button" class="btn btn--small" id="zoom-in" aria-label="Larger map">+</button>
+          <button type="button" class="btn btn--small" id="zoom-fit" aria-label="Toggle between actual size and fit to frame">Fit</button>
+        </div>
+        <p class="map__mode" id="mode-line"></p>
+      </div>
+      <div class="map__canvas" id="canvas"></div>
+      <details class="legend" open>
+        <summary>Legend</summary>
+        <ul class="legend__list" id="legend"></ul>
+      </details>
+      <h2 class="h2">Connections</h2>
+      <p class="hint">Every connection is listed here as well as drawn, so each one can be opened from the keyboard.</p>
+      <div class="tablewrap"><table class="table" id="edge-table"><thead><tr><th scope="col">Connection</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Implementation</th><th scope="col">Runtime</th><th scope="col">Proof</th></tr></thead><tbody></tbody></table></div>
+    </div>
+    <aside class="detail" id="detail" aria-label="Selected item" tabindex="-1"></aside>
+  </section>
+
+  <section id="view-diff" role="tabpanel" aria-labelledby="tab-diff" class="view" hidden>
+    <div class="view__head">
+      <h2 class="h2">Intended vs observed</h2>
+      <div class="seg" role="radiogroup" aria-label="Discrepancy filter">
+        <button role="radio" data-dfilter="open" aria-checked="true">Open</button>
+        <button role="radio" data-dfilter="resolved" aria-checked="false">Resolved</button>
+        <button role="radio" data-dfilter="all" aria-checked="false">All</button>
+      </div>
+    </div>
+    <p class="hint">Each difference has a durable id. Linking one to an existing task (bin/fm-system-map.sh link) records ownership without creating a second task list.</p>
+    <div class="tablewrap"><table class="table" id="diff-table"><thead><tr><th scope="col">Severity</th><th scope="col">What differs</th><th scope="col">Subject</th><th scope="col">Kind</th><th scope="col">Seen</th><th scope="col">Owner / links</th></tr></thead><tbody></tbody></table></div>
+    <div id="diff-extra"></div>
+  </section>
+
+  <section id="view-life" role="tabpanel" aria-labelledby="tab-life" class="view" hidden>
+    <h2 class="h2" id="life-title">Experiment timeline</h2>
+    <p class="hint" id="life-desc"></p>
+    <div class="tablewrap"><table class="table table--grid" id="life-table"></table></div>
+  </section>
+
+  <section id="view-accept" role="tabpanel" aria-labelledby="tab-accept" class="view" hidden>
+    <h2 class="h2">MVP acceptance</h2>
+    <p class="hint">Each criterion stands on its own version-bound evidence. There is no completion percentage.</p>
+    <ol class="criteria" id="criteria"></ol>
+  </section>
+
+  <section id="view-cred" role="tabpanel" aria-labelledby="tab-cred" class="view" hidden>
+    <h2 class="h2">Credentials</h2>
+    <p class="hint">Purpose, owner and expiry only. Secret values are never recorded or shown.</p>
+    <div class="tablewrap"><table class="table" id="cred-table"><thead><tr><th scope="col">Credential</th><th scope="col">Purpose</th><th scope="col">Owner</th><th scope="col">Expires</th><th scope="col">Used by</th></tr></thead><tbody></tbody></table></div>
+  </section>
+</main>
+<noscript><p class="banner banner--danger">The system map needs JavaScript enabled.</p></noscript>
+</body>
+</html>

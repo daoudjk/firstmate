@@ -917,7 +917,65 @@ test_no_mistakes_origin_remote_allows() {
   ! grep -q REFUSED "$case_dir/stderr" || fail "nm-origin: teardown printed a REFUSED line"
   grep -F 'blockers are gone and date is due' "$case_dir/stdout" >/dev/null \
     || fail "nm-origin: teardown manual prompt did not preserve date-gate check"
+  ! grep -q 'System map' "$case_dir/stdout" "$case_dir/stderr" \
+    || fail "nm-origin: a home without config/system-map printed system map output"
   pass "no-mistakes worktree with HEAD on origin is torn down (no regression)"
+}
+
+# map_case_enable <case-dir>: opt the case's home into the system map with the
+# tracked sample and bind task-x1 to one component through the public CLI.
+map_case_enable() {
+  local case_dir=$1
+  mkdir -p "$case_dir/config" "$case_dir/data/system-map/example"
+  cp "$ROOT/docs/examples/system-map/sample.config" "$case_dir/config/system-map"
+  cp "$ROOT/docs/examples/system-map/sample.manifest.json" "$case_dir/data/system-map/example/manifest.json"
+  cp "$ROOT/docs/examples/system-map/sample.bindings.json" "$case_dir/data/system-map/example/bindings.json"
+  FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" FM_CONFIG_OVERRIDE="$case_dir/config" \
+    "$ROOT/bin/fm-system-map.sh" bind task-x1 --subject worker-host >/dev/null \
+    || fail "system map binding fixture failed"
+}
+
+test_teardown_records_system_map_completion() {
+  local case_dir rc
+  case_dir=$(make_case map-complete)
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/9' >> "$case_dir/state/task-x1.meta"
+  wt_commit "$case_dir" "mapped work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+  map_case_enable "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "map-complete: teardown of a landed, mapped task"
+  assert_grep "System map: task-x1 recorded implementation-complete for worker-host" "$case_dir/stdout" \
+    "map-complete: teardown did not record the completion advisory"
+  assert_grep "https://github.com/example/repo/pull/9" "$case_dir/data/system-map/example/completions/task-x1.json" \
+    "map-complete: the completion record lost the task's PR"
+  assert_absent "$case_dir/state/task-x1.meta" "map-complete: the task record survived teardown"
+  pass "teardown records implementation-complete for a task bound to the system map"
+}
+
+test_teardown_survives_a_broken_system_map() {
+  local case_dir rc
+  case_dir=$(make_case map-broken)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit "$case_dir" "mapped work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+  map_case_enable "$case_dir"
+  printf 'not json\n' > "$case_dir/data/system-map/example/manifest.json"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "map-broken: an unreadable map must not fail cleanup"
+  assert_grep "teardown task-x1 complete" "$case_dir/stdout" "map-broken: cleanup did not complete"
+  assert_absent "$case_dir/state/task-x1.meta" "map-broken: the task record survived teardown"
+  pass "an unreadable system map never blocks or fails teardown"
 }
 
 test_no_mistakes_truly_unpushed_refuses() {
@@ -5228,6 +5286,8 @@ test_teardown_manual_backend_leaves_the_backlog_to_the_operator
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
 test_no_mistakes_origin_remote_allows
+test_teardown_records_system_map_completion
+test_teardown_survives_a_broken_system_map
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed
 test_secondmate_pr_registration_publishes_ready_line

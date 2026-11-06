@@ -51,7 +51,9 @@
 #   6. fleet digest   - a compact data/backlog.md identity/metadata listing,
 #                       every state/*.meta, a bounded state/*.status tail,
 #                       the away posture (state/.afk-contract and the legacy
-#                       state/.afk daemon flag), and a cheap per-task
+#                       state/.afk daemon flag), the opt-in system map's
+#                       bounded local summary (bin/fm-system-map.sh summary,
+#                       only with config/system-map), and a cheap per-task
 #                       endpoint-liveness read, each bounded and crash-
 #                       isolated so one task's read can never abort the
 #                       digest: read-only, always runs. The per-task reads
@@ -1018,6 +1020,15 @@ if fm_pf_relay_active "$FM_HOME" \
     printf '%s/bin/fm-public-followup.sh deliver <id>. Hand a delivered loop on with rechain, or close it with\n' "$FM_ROOT"
     printf '%s/bin/fm-public-followup.sh retire <id> --reason "...". Load fmx-respond for the procedure.\n' "$FM_ROOT"
   fi
+fi
+
+# The living system map (bin/fm-system-map.sh) is opt-in: a home without
+# config/system-map runs one [ -f ] test and prints nothing. Its summary reads
+# only local snapshot and ledger files, under a short bound, never the network.
+if [ -f "$CONFIG/system-map" ]; then
+  subsection "System map"
+  fm_run_timed "${FM_SESSION_START_MAP_TIMEOUT:-5}" "$SCRIPT_DIR/fm-system-map.sh" summary 2>&1 \
+    || printf 'system map summary unavailable (bin/fm-system-map.sh status)\n'
 fi
 
 # --- 7. network checks ------------------------------------------------------

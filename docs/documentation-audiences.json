@@ -604,6 +604,26 @@
     {
       "path": ".agents/skills/validation-supervision/SKILL.md",
       "audience": "agent-runtime"
+    },
+    {
+      "path": ".agents/skills/system-map-review/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
+      "path": "docs/system-map.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/examples/system-map/sample.bindings.json",
+      "audience": "operator-example"
+    },
+    {
+      "path": "docs/examples/system-map/sample.config",
+      "audience": "operator-example"
+    },
+    {
+      "path": "docs/examples/system-map/sample.manifest.json",
+      "audience": "operator-example"
     }
   ]
 }
