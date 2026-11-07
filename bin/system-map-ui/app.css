@@ -270,3 +270,15 @@ details.edit summary { cursor: pointer; font-weight: 700; color: var(--text-stro
 .access-filters input, .access-filters select { max-width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-body); font: inherit; }
 .access-gaps { margin: 16px 0; }
 .access-gaps > summary { font-weight: 700; color: var(--text-strong); }
+
+.difference-group { min-width: 0; padding: 12px 0 20px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.difference-member { min-width: 0; padding: 8px 0; }
+.difference-member .layers { grid-template-columns: minmax(80px, 140px) minmax(0, 1fr); }
+.difference-member .layers dd { margin: 0; }
+.difference-member .mono, .identity-record { overflow-wrap: anywhere; }
+#component-access > details, .component-access, .identity-record { padding: 8px 0; }
+#identity-query { width: min(100%, 36rem); padding: 8px 10px; font: inherit; color: var(--text-body); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+@media (max-width: 540px) {
+  .difference-member .layers { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .difference-member .layers dt { margin-top: 8px; }
+}
