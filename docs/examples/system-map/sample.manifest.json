@@ -63,6 +63,34 @@
     {"id": "mvp-run", "title": "Isolated job runs on the pinned image", "phase": "run", "subjects": ["worker-host"]},
     {"id": "mvp-zero", "title": "Compute returns to zero", "phase": "zero", "subjects": ["api", "worker-host"]}
   ],
+  "prerequisites": [
+    {
+      "id": "submission-api",
+      "title": "Submission API",
+      "producer": "api",
+      "resource": "Named API service",
+      "phases": [
+        "submit"
+      ],
+      "baseline": "both",
+      "observation": "api-ecs",
+      "expected_state": "zero",
+      "authorization": "awaiting-authorization",
+      "next_check": "Obtain current configuration and console submission proof from the owner."
+    },
+    {
+      "id": "console-config",
+      "title": "Console configuration",
+      "producer": "console",
+      "resource": "Installed console configuration",
+      "phases": [
+        "submit"
+      ],
+      "baseline": "both",
+      "authorization": "unknown",
+      "next_check": "Import an owner receipt for the installed configuration; source alone does not establish installation."
+    }
+  ],
   "known_gaps": [
     {"id": "wake-gap", "title": "A queued job does not wake the worker yet", "severity": "high",
      "detail": "Example of an explicit intended-versus-built gap.", "subjects": ["queue-wakes-worker"],

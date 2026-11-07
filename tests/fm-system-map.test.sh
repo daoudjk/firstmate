@@ -58,6 +58,9 @@ if svc in st.get("missing", []):
 if svc in st.get("deny", []):
     sys.stderr.write("An error occurred (AccessDeniedException) when calling %s: User arn:aws:iam::123456789012:user/x is not authorized" % op); sys.exit(254)
 if svc == "sts": out({"Account": st.get("account", "123456789012")})
+if op == "get-function-configuration": out({"State": "Active", "CodeSha256": "code-v1", "LastUpdateStatus": "Successful", "Runtime": "python3.13", "Timeout": 30, "Role": "arn:aws:iam::123456789012:role/example", "Environment": {"Variables": {"EXAMPLE": "fixture-private-payload"}}})
+if op == "get-schedule": out({"State": "ENABLED", "ScheduleExpression": "at(2099-01-01T00:00:00)", "ScheduleExpressionTimezone": "UTC", "TargetArn": "arn:aws:lambda:us-east-1:123456789012:function:example", "RoleArn": "arn:aws:iam::123456789012:role/example", "Input": "fixture-private-payload"})
+if op == "get-role": out({"RoleId": "role-v1", "CreateDate": "2026-01-01T00:00:00Z", "MaxSessionDuration": 3600})
 if op == "describe-services":
     n = int(st.get("ecs_running", 0))
     out({"services": [{"status": "ACTIVE", "desiredCount": n, "runningCount": n, "pendingCount": 0, "taskDefinition": "arn:aws:ecs:us-east-1:123456789012:task-definition/example-api:7"}]})
@@ -997,6 +1000,146 @@ test_summary_includes_later_project_requests() {
   [ "$(printf '%s\n' "$out" | wc -l)" -le 16 ] || fail "summary exceeds its line bound"
   pass "summary surfaces pending requests from every project"
 }
+
+test_proactive_prerequisites_and_lineage() {
+  local home rc out
+  home=$(new_home proactive)
+  python3 - "$home/data/system-map/example/manifest.json" "$home/data/system-map/example/bindings.json" <<'PY'
+import json, sys
+m=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2]))
+for sid, adapter, entry in [('wake-function', 'aws.lambda_configuration', {'function_name':'example-wake'}), ('stop-schedule','aws.scheduler_schedule', {'schedule_name':'example-stop','group_name':'default'}), ('scheduler-role','aws.iam_role', {'role_name':'example-stop'})]:
+    m['components'].append({'id':sid,'title':sid,'observe':[{'id':sid+'-read','binding':sid,'adapter':adapter}], 'version_from':sid+'-read'})
+    b['bindings'][sid]=entry
+m['components'][1]['lineage']=[{'stage':'source','subject':'source'}, {'stage':'installed','subject':'worker-host','expected':'ami-new'}, {'stage':'artifact','subject':'console','evidence':'owner-report'}]
+m['prerequisites']=[]
+for pid, producer, observation in [('wake-ready','wake-function','wake-function-read'),('stop-ready','stop-schedule','stop-schedule-read'),('role-ready','scheduler-role','scheduler-role-read'),('unmeasured','console',None),('owner-check','console',None)]:
+    item={'id':pid,'title':pid,'producer':producer,'resource':pid,'phases':['submit'],'baseline':'both','authorization':'awaiting-authorization','next_check':'Obtain a bounded owner receipt.'}
+    if observation: item['observation']=observation
+    if pid=='owner-check': item['evidence']='owner-report'
+    m['prerequisites'].append(item)
+json.dump(m,open(sys.argv[1],'w')); json.dump(b,open(sys.argv[2],'w'))
+PY
+  map "$home" validate >/dev/null || fail "new adapters and prerequisites invalid"
+  map "$home" collect >/dev/null || fail "fixture collection failed"
+  view_json "$home"
+  assert_equals "present" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][0]["state"]')" "successful Lambda metadata is present"
+  assert_equals "awaiting-authorization" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][0]["authorization"]')" "presence does not authorize execution"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][3]["state"]')" "unmeasured resource remains unknown"
+  assert_equals "uncovered" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][3]["coverage"]')" "missing observer is visible"
+  assert_equals "uncovered" "$(py "$home/view.json" 'd["readiness"]["phases"][1]["coverage"]')" "unmodeled phase has a coverage gap"
+  assert_equals "missing-evidence" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][4]["coverage"]')" "missing receipt is visible"
+  assert_equals "mismatch" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][1]["status"]')" "installed lineage mismatch remains explicit"
+  assert_equals "not-demonstrated" "$(py "$home/view.json" 'd["subjects"]["wake-function"]["layers"]["proof"]["status"]')" "metadata is not demonstrated proof"
+  assert_not_contains "$(cat "$home/view.json")" "123456789012" "adapter metadata omits native role ids"
+  assert_not_contains "$(cat "$home/view.json")" "fixture-private-payload" "adapters persist metadata only"
+  assert_grep "lambda get-function-configuration" "$home/aws.log" "exact Lambda metadata operation"
+  assert_grep "scheduler get-schedule" "$home/aws.log" "exact Scheduler metadata operation"
+  assert_grep "iam get-role" "$home/aws.log" "exact IAM role metadata operation"
+  aws_state "$home" '{"deny":["lambda"],"missing":["scheduler"]}'
+  map "$home" collect >/dev/null || fail "partial read failed"
+  view_json "$home"
+  assert_equals "denied" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][0]["state"]')" "denied prerequisite never becomes absent"
+  assert_equals "absent" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][1]["state"]')" "successful not-found means absent"
+  python3 - "$home/receipt.json" <<'PY'
+import json, sys, datetime
+json.dump({'schema':'fm-system-map.evidence.v1','id':'owner-report','subjects':['console'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Owner has not tested installation.','scope':'retained owner report only','versions':{'console':'locally-built-v2'},'prerequisites':{'owner-check':'not-tested'},'provenance':{'kind':'imported-report','source':'fixture owner'}},open(sys.argv[1],'w'))
+PY
+  map "$home" evidence add example "$home/receipt.json" >/dev/null || fail "owner receipt rejected"
+  view_json "$home"
+  assert_equals "not-tested" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][4]["state"]')" "not tested differs from unknown"
+  assert_equals "reported" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["status"]')" "local artifact is a reported stage"
+  assert_equals "None" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["version"]')" "reported artifact does not create an observed deployment"
+  python3 - "$home/receipt.json" <<'PY'
+import json,sys
+p=sys.argv[1]; r=json.load(open(p)); r['id']='bad-reference'; r['prerequisites']={'typo':'present'}; json.dump(r,open(p,'w'))
+PY
+  rc=0; out=$(map "$home" evidence add example "$home/receipt.json" 2>&1) || rc=$?
+  expect_code 1 "$rc" "receipt with unknown prerequisite is rejected"
+  assert_contains "$out" "unknown prerequisite" "narrow prerequisite reference validation"
+  python3 - "$home/state/system-map/example/snapshot.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['observations']['scheduler-role-read']['checked_at']='2000-01-01T00:00:00Z'; json.dump(d,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][2]["state"]')" "old present observation becomes stale"
+  assert_equals "present" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][2]["observed_state"]')" "historical observed state remains visible"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['prerequisites'][0]['observation']='typo'; json.dump(d,open(p,'w'))
+PY
+  rc=0; out=$(map "$home" validate 2>&1) || rc=$?
+  expect_code 1 "$rc" "unknown prerequisite observation rejected"
+  assert_contains "$out" "must belong to its producer" "prerequisite observation ownership enforced"
+  pass "prerequisites distinguish coverage, denial, absence, stale, untested, authorization and lineage"
+}
+
+test_credential_full_window() {
+  local home
+  home=$(new_home cert-window)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import datetime,json,sys
+p=sys.argv[1]; m=json.load(open(p)); now=datetime.datetime.now(datetime.timezone.utc)
+iso=lambda t:t.isoformat()
+m['credentials']=[{'id':'issuer','title':'Issuer','purpose':'Test issuer','kind':'ca','not_before':iso(now-datetime.timedelta(seconds=60)),'expires':iso(now+datetime.timedelta(seconds=1800)),'expiry_basis':'observed'}, {'id':'leaf','title':'Leaf','purpose':'Test identity','kind':'tls-leaf','not_before':iso(now-datetime.timedelta(seconds=60)),'issuer':'issuer','expires':iso(now+datetime.timedelta(seconds=7200)), 'expiry_basis':'observed','full_window_seconds':3600,'restart_required':'yes','renewal_group':'shared','renewal_owner':'fixture owner'}]
+json.dump(m,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "does-not-fit" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "issuer limits remaining full window"
+  assert_equals "3600" "$(py "$home/view.json" 'd["credentials"][1]["full_window_seconds"]')" "full interval preserved"
+  python3 - "$home/view.json" <<'PY' || fail "safe-start arithmetic incorrect"
+import datetime,json,sys
+d=json.load(open(sys.argv[1])); c=d['credentials']; parse=lambda t:datetime.datetime.fromisoformat(t.replace('Z','+00:00')).timestamp()
+assert abs(parse(c[0]['expires'])-parse(c[1]['latest_safe_start'])-3600)<1
+PY
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; m=json.load(open(p)); m['credentials'][0]['expiry_basis']='inferred'; json.dump(m,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "inferred issuer cannot establish feasibility"
+  assert_equals "None" "$(py "$home/view.json" 'd["credentials"][1]["latest_safe_start"]')" "inferred issuer gives no latest safe start"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import datetime,json,sys
+p=sys.argv[1]; m=json.load(open(p)); m['credentials'][0]['expiry_basis']='observed'; m['credentials'][0]['expires']=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=7200)).isoformat(); json.dump(m,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "fits" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "entire observed chain has full interval"
+  pass "full-window timing accounts for issuer validity and inference"
+}
+
+test_delegated_active_to_idle() {
+  local home out epoch
+  home=$(new_home delegated)
+  epoch=$(date +%s)
+  printf 'kind=secondmate\n' > "$home/state/mate.meta"
+  printf 'working [at=%s]: commissioned work in progress\n' "$epoch" > "$home/state/mate.status"
+  map "$home" collect >/dev/null || fail "initial collection failed"
+  python3 - "$home/state/system-map/example/health.json" <<'PY'
+import datetime,json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['last_success_at']=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=900)).isoformat(); json.dump(d,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["stale"]')" "delegated active cadence marks delayed observations stale"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "working parent record selects active cadence"
+  printf 'paused [at=%s]: parked for authorized native work\n' "$epoch" >> "$home/state/mate.status"
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "paused mate returns cadence to idle"
+  assert_equals "False" "$(py "$home/view.json" 'd["collector"]["stale"]')" "idle cadence allows the idle observation interval"
+  mkdir -p "$home/state/pending-replies"
+  printf 'schema=fm-pending-reply.v1\ntask_id=mate\nphase=awaiting_report\ndelivered_epoch=%s\n' "$((epoch+1))" > "$home/state/pending-replies/request"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "delivered delegated request selects active"
+  printf 'schema=fm-pending-reply.v1\ntask_id=mate\nphase=resolved\ndelivered_epoch=%s\n' "$((epoch+1))" > "$home/state/pending-replies/request"
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "resolved request does not keep parked mate active"
+  out=$(map "$home" tick)
+  assert_contains "$out" 'not due (idle cadence)' "tick uses same derived activity"
+  pass "delegated work changes cadence without scanning child fleets"
+}
+
+test_proactive_prerequisites_and_lineage
+test_credential_full_window
+test_delegated_active_to_idle
 
 test_no_map_home_is_inert
 test_collect_retains_last_success_on_partial_denial

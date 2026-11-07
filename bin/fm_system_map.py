@@ -327,7 +327,7 @@ def _check_keys(obj, allowed, where):
 
 SUBJECT_FIELDS = {
     "id", "title", "kind", "group", "description", "owners", "intended", "observe",
-    "version_from", "pin", "implementation", "exception", "x", "y", "notes", "from", "to",
+    "version_from", "pin", "implementation", "exception", "x", "y", "notes", "from", "to", "lineage",
 }
 
 
@@ -362,7 +362,7 @@ def validate_manifest(manifest):
     _check_keys(manifest, {
         "schema", "project", "title", "description", "revision", "updated_at", "modes",
         "expected_mode", "groups", "components", "connections", "lifecycle", "acceptance",
-        "known_gaps", "credentials",
+        "known_gaps", "credentials", "prerequisites",
     }, "manifest")
     if manifest.get("schema") != MANIFEST_SCHEMA:
         raise MapError("manifest.schema must be %s" % MANIFEST_SCHEMA)
@@ -475,6 +475,45 @@ def validate_manifest(manifest):
     for index, phase in enumerate(lifecycle.get("phases", []) if lifecycle else []):
         if "criterion" in phase and phase["criterion"] not in criteria:
             raise MapError("manifest.lifecycle.phases[%d].criterion: unknown criterion" % index)
+    for _, subject in subjects_of(manifest).values():
+        for item in _req(subject, "lineage", "list", "subject", optional=True) or []:
+            if not isinstance(item, dict):
+                raise MapError("lineage: must contain objects")
+            _check_keys(item, {"stage", "subject", "expected", "note", "evidence"}, "lineage")
+            if item.get("stage") not in ("source", "artifact", "installed", "config"):
+                raise MapError("lineage.stage: source, artifact, installed, or config")
+            if item.get("subject") not in ids:
+                raise MapError("lineage.subject: unknown subject")
+            for key in ("expected", "note"):
+                _req(item, key, "str", "lineage", optional=True)
+            _req(item, "evidence", "id", "lineage", optional=True)
+    prerequisite_ids = set()
+    for item in _req(manifest, "prerequisites", "list", "manifest", optional=True) or []:
+        w = "manifest.prerequisites"
+        if not isinstance(item, dict):
+            raise MapError("prerequisites: must contain objects")
+        _check_keys(item, {"id", "title", "producer", "resource", "phases", "baseline", "observation", "evidence", "expected_state", "owners", "next_check", "authorization", "max_age_seconds"}, w)
+        _unique_manifest_id(item, prerequisite_ids, w)
+        for key in ("title", "resource", "next_check"):
+            _req(item, key, "str", w)
+        if item.get("producer") not in ids:
+            raise MapError("prerequisite.producer: unknown subject")
+        phases_for_item = _req(item, "phases", "list", w)
+        if not phases_for_item or any(p not in phase_ids for p in phases_for_item):
+            raise MapError("prerequisite.phases: name declared lifecycle phases")
+        if item.get("baseline") not in ("fresh", "migration", "both"):
+            raise MapError("prerequisite.baseline: fresh, migration, or both")
+        if "observation" in item:
+            producer = subjects_of(manifest)[item["producer"]][1]
+            if item["observation"] not in [o["id"] for o in producer.get("observe", [])]:
+                raise MapError("prerequisite.observation: must belong to its producer")
+        _req(item, "evidence", "id", w, optional=True)
+        _req(item, "expected_state", "str", w, optional=True)
+        _validate_owner_list(item.get("owners", []), w)
+        if item.get("authorization", "unknown") not in ("authorized", "awaiting-authorization", "denied", "unknown", "not-required"):
+            raise MapError("prerequisite.authorization: invalid state")
+        if "max_age_seconds" in item and _req(item, "max_age_seconds", "int", w) <= 0:
+            raise MapError("prerequisite.max_age_seconds: must be positive")
     gap_ids = set()
     for index, gap in enumerate(manifest.get("known_gaps", [])):
         w = "manifest.known_gaps[%d]" % index
@@ -490,15 +529,31 @@ def validate_manifest(manifest):
     credential_ids = set()
     for index, cred in enumerate(manifest.get("credentials", [])):
         w = "manifest.credentials[%d]" % index
-        _check_keys(cred, {"id", "title", "purpose", "owner", "expires", "rotation", "subjects", "kind", "note"}, w)
+        _check_keys(cred, {"id", "title", "purpose", "owner", "expires", "rotation", "subjects", "kind", "note", "issuer", "not_before", "expiry_basis", "expected_expires", "observed_at", "evidence", "renewal_group", "renewal_owner", "restart_required", "full_window_seconds"}, w)
         _unique_manifest_id(cred, credential_ids, w)
         _req(cred, "title", "str", w)
         _req(cred, "purpose", "str", w)
+        for key in ("issuer", "renewal_group"):
+            _req(cred, key, "id", w, optional=True)
+        for key in ("renewal_owner", "evidence"):
+            _req(cred, key, "str", w, optional=True)
         if "expires" in cred and parse_iso(cred["expires"]) is None:
             raise MapError("%s.expires: must be an ISO-8601 timestamp" % w)
+        for key in ("not_before", "expected_expires", "observed_at"):
+            if key in cred and parse_iso(cred[key]) is None:
+                raise MapError("%s.%s: must be an ISO-8601 timestamp" % (w, key))
+        if cred.get("expiry_basis", "unknown") not in ("observed", "inferred", "unknown"):
+            raise MapError("credential.expiry_basis: observed, inferred, or unknown")
+        if "restart_required" in cred and cred["restart_required"] not in ("yes", "no", "unknown"):
+            raise MapError("credential.restart_required: yes, no, or unknown")
+        if "full_window_seconds" in cred and _req(cred, "full_window_seconds", "int", w) <= 0:
+            raise MapError("credential.full_window_seconds: must be positive")
         for sid in cred.get("subjects", []):
             if sid not in ids:
                 raise MapError("%s.subjects: unknown subject %r" % (w, sid))
+    for cred in manifest.get("credentials", []):
+        if "issuer" in cred and (cred["issuer"] not in credential_ids or cred["issuer"] == cred["id"]):
+            raise MapError("credential.issuer: must name another credential")
     return ids
 
 
@@ -514,6 +569,9 @@ BINDING_FIELDS = {
     "aws.ecr_image": {"repository": "str", "tag": "str"},
     "git.revision": {"path": "str", "ref": "str"},
     "firstmate.task": {"task": "str"},
+    "aws.lambda_configuration": {"function_name": "str"},
+    "aws.scheduler_schedule": {"schedule_name": "str", "group_name": "str"},
+    "aws.iam_role": {"role_name": "str"},
 }
 OPTIONAL_BINDING_FIELDS = {"state_map", "state_attribute", "pin", "label"}
 
@@ -634,13 +692,13 @@ def record_evidence(home, project, record):
         raise MapError("evidence id %r already exists; records are append-only" % record["id"])
 
 
-def validate_evidence(record, subject_ids=None):
+def validate_evidence(record, subject_ids=None, prerequisite_ids=None):
     if not isinstance(record, dict):
         raise MapError("evidence must be a JSON object")
     _scan_forbidden(record, "evidence")
     _check_keys(record, {
         "schema", "id", "subjects", "criterion", "phase", "run_id", "versions", "result",
-        "recorded_at", "observed_at", "received_at", "summary", "historical", "provenance", "resource_identities",
+        "recorded_at", "observed_at", "received_at", "summary", "historical", "provenance", "resource_identities", "prerequisites", "scope",
     }, "evidence")
     if record.get("schema") != EVIDENCE_SCHEMA:
         raise MapError("evidence.schema must be %s" % EVIDENCE_SCHEMA)
@@ -676,6 +734,14 @@ def validate_evidence(record, subject_ids=None):
                 raise MapError("evidence names unknown subject %r" % sid)
     if "run_id" in record and not TASK_RE.match(str(record["run_id"])):
         raise MapError("evidence.run_id: invalid id")
+    checks = _req(record, "prerequisites", "dict", "evidence", optional=True) or {}
+    for pid, state in checks.items():
+        if not ID_RE.fullmatch(pid) or state not in ("present", "absent", "denied", "unknown", "not-tested"):
+            raise MapError("evidence.prerequisites: map prerequisite ids to present, absent, denied, unknown, or not-tested")
+        if prerequisite_ids is not None and pid not in prerequisite_ids:
+            raise MapError("evidence names unknown prerequisite %r" % pid)
+    if checks:
+        _req(record, "scope", "str", "evidence")
 
 
 def load_annotations(home, project):
@@ -753,7 +819,7 @@ def classify_aws_error(stderr):
     text = stderr or ""
     if re.search(r"AccessDenied|UnauthorizedOperation|not authorized|Forbidden|\(403\)", text):
         return ("denied", redact(text))
-    if re.search(r"NotFound|does not exist|NonExistentQueue|ResourceNotFound|NoSuchBucket|\(404\)|RepositoryNotFound|ImageNotFound", text):
+    if re.search(r"NotFound|does not exist|NonExistentQueue|ResourceNotFound|NoSuchEntity|NoSuchBucket|\(404\)|RepositoryNotFound|ImageNotFound", text):
         return ("absent", redact(text))
     if re.search(r"Unable to locate credentials|ExpiredToken|token.*expired|InvalidClientTokenId|SSO", text, re.IGNORECASE):
         return ("error", "credentials unavailable or expired: " + redact(text, 200))
@@ -975,6 +1041,49 @@ def adapt_firstmate_task(runner, b):
     return _result("ok", state="live" if live else "ended", facts=facts)
 
 
+def adapt_lambda_configuration(runner, b):
+    # Filter at the CLI boundary too: environment variables, code URLs, and
+    # payloads never enter the adapter result or persisted snapshot.
+    data, err = runner.aws_call("lambda", "get-function-configuration", [
+        "--function-name", b["function_name"], "--query",
+        "{State:State,LastUpdateStatus:LastUpdateStatus,CodeSha256:CodeSha256,Runtime:Runtime,Timeout:Timeout,Role:Role}",
+    ])
+    if err:
+        return _result(err[0], error=err[1])
+    return _result("ok", state=str(data.get("State") or "unknown").lower(),
+                   version=data.get("CodeSha256"), facts={
+                       "update_status": data.get("LastUpdateStatus"), "runtime": data.get("Runtime"),
+                       "timeout_seconds": data.get("Timeout"),
+                       "role_identity": hashlib.sha256(str(data.get("Role", "")).encode()).hexdigest() if data.get("Role") else None,
+                   })
+
+
+def adapt_scheduler_schedule(runner, b):
+    data, err = runner.aws_call("scheduler", "get-schedule", [
+        "--name", b["schedule_name"], "--group-name", b["group_name"], "--query",
+        "{State:State,ScheduleExpression:ScheduleExpression,ScheduleExpressionTimezone:ScheduleExpressionTimezone,LastModificationDate:LastModificationDate,TargetArn:Target.Arn,RoleArn:Target.RoleArn}",
+    ])
+    if err:
+        return _result(err[0], error=err[1])
+    facts = {"expression": data.get("ScheduleExpression"), "timezone": data.get("ScheduleExpressionTimezone"),
+             "modified": str(data.get("LastModificationDate", ""))}
+    for key in ("TargetArn", "RoleArn"):
+        facts[key + "_identity"] = hashlib.sha256(str(data[key]).encode()).hexdigest() if data.get(key) else None
+    version = hashlib.sha256(json.dumps(dict(facts, state=data.get("State")), sort_keys=True).encode()).hexdigest()
+    return _result("ok", state=str(data.get("State") or "unknown").lower(), facts=facts, version=version)
+
+
+def adapt_iam_role(runner, b):
+    data, err = runner.aws_call("iam", "get-role", ["--role-name", b["role_name"], "--query",
+                                                    "Role.{RoleId:RoleId,CreateDate:CreateDate,MaxSessionDuration:MaxSessionDuration}"])
+    if err:
+        return _result(err[0], error=err[1])
+    return _result("ok", state="present", version=data.get("RoleId"), facts={
+        "created": str(data.get("CreateDate", "")), "max_session_seconds": data.get("MaxSessionDuration"),
+        "limit": "Role existence only; trust and effective permissions are not tested.",
+    })
+
+
 ADAPTERS = {
     "aws.ec2_instance": adapt_ec2_instance,
     "aws.ec2_tagged_instances": adapt_ec2_tagged,
@@ -987,6 +1096,9 @@ ADAPTERS = {
     "aws.ecr_image": adapt_ecr_image,
     "git.revision": adapt_git_revision,
     "firstmate.task": adapt_firstmate_task,
+    "aws.lambda_configuration": adapt_lambda_configuration,
+    "aws.scheduler_schedule": adapt_scheduler_schedule,
+    "aws.iam_role": adapt_iam_role,
 }
 
 
@@ -1016,7 +1128,7 @@ def ingest_inbox(home, project, manifest):
         name = os.path.basename(path)
         try:
             record = read_json(path)
-            validate_evidence(record, ids)
+            validate_evidence(record, ids, {p["id"] for p in manifest.get("prerequisites", [])})
             record_evidence(home, project, record)
             os.unlink(path)
             moved.append(record["id"])
@@ -1229,6 +1341,76 @@ def live_verification(evidence, sid, version, vstate, completed_at, resource_ide
     return "unversioned" if vstate == "untracked" else True
 
 
+def prerequisite_view(manifest, subjects, evidence, observations, interval):
+    records = {r["id"]: r for r in evidence if not r.get("invalid")}
+    items = []
+    for item in manifest.get("prerequisites", []):
+        subject = subjects[item["producer"]]
+        obs = observations.get(item.get("observation"))
+        rec = records.get(item.get("evidence"))
+        state, coverage, checked, scope, provenance, detail = "unknown", "uncovered", None, None, None, "No observation or owner receipt declared."
+        if item.get("observation"):
+            coverage = "observed" if obs else "uncollected"
+            detail = "Observation has not been collected for the current manifest and bindings."
+        if obs:
+            state = "present" if obs["outcome"] == "ok" else obs["outcome"]
+            checked, scope = obs.get("checked_at"), obs.get("scope")
+            provenance = {"kind": "collector", "source": obs["adapter"]}
+            detail = obs.get("error") or "Observed state: %s" % obs.get("state")
+            if state == "present" and item.get("expected_state") and obs.get("state") != item["expected_state"]:
+                state = "mismatch"
+        elif rec and item["id"] in rec.get("prerequisites", {}):
+            state = rec["prerequisites"][item["id"]]
+            coverage, checked, scope = "imported", rec.get("observed_at", rec["recorded_at"]), rec.get("scope")
+            provenance, detail = rec["provenance"], rec["summary"]
+            if rec.get("historical"):
+                state = "stale"
+        elif item.get("evidence"):
+            coverage, detail = "missing-evidence", "Named receipt is missing or contains no assessment of this prerequisite."
+        observed_state = state
+        age = now_ts() - (parse_iso(checked) or 0) if checked else None
+        if age is not None and age > item.get("max_age_seconds", interval * 2):
+            state = "stale"
+        items.append(dict(item, state=state, observed_state=observed_state, coverage=coverage, checked_at=checked,
+                          scope=scope, provenance=provenance, detail=detail,
+                          authorization=item.get("authorization", "unknown"),
+                          owners=item.get("owners") or subject["owners"], layers=subject["layers"], lineage=subject.get("lineage", [])))
+    phases = []
+    for phase in manifest.get("lifecycle", {}).get("phases", []):
+        checks = [p for p in items if phase["id"] in p["phases"]]
+        phases.append(dict(phase, prerequisites=[p["id"] for p in checks], coverage="declared" if checks else "uncovered"))
+    return {"prerequisites": items, "phases": phases}
+
+
+def credential_view(manifest):
+    credentials = {c["id"]: c for c in manifest.get("credentials", [])}
+    result = []
+    for cred in credentials.values():
+        chain, current, seen = [], cred, set()
+        while current and current["id"] not in seen:
+            seen.add(current["id"])
+            chain.append(current)
+            current = credentials.get(current.get("issuer"))
+        cycle = current is not None
+        known = [parse_iso(c.get("expires")) for c in chain]
+        issuer_complete = all(c.get("kind") != "tls-leaf" or c.get("issuer") for c in chain)
+        validity_known = all(c.get("kind") not in ("tls-leaf", "ca") or parse_iso(c.get("not_before")) is not None for c in chain)
+        observed = not cycle and issuer_complete and validity_known and all(t is not None and c.get("expiry_basis") == "observed" for c, t in zip(chain, known))
+        window = cred.get("full_window_seconds")
+        possible = min(t for t in known if t is not None) - window if window and any(t is not None for t in known) else None
+        safe = possible if observed else None
+        valid_from = max([parse_iso(c.get("not_before")) or 0 for c in chain])
+        feasibility = "unknown"
+        if safe is not None:
+            feasibility = "fits" if valid_from <= now_ts() < safe else "does-not-fit"
+        result.append(dict(cred, issuer_chain=[c["id"] for c in chain[1:]], issuer_cycle=cycle,
+                           remaining_seconds=int(min(known) - now_ts()) if observed else None,
+                           latest_possible_start=iso(possible) if possible is not None else None,
+                           latest_safe_start=iso(safe) if safe is not None else None,
+                           full_window=feasibility))
+    return result
+
+
 def build_view(home, cfg, project):
     manifest = load_manifest(home, project)
     bindings = load_bindings(home, project)
@@ -1374,11 +1556,30 @@ def build_view(home, cfg, project):
         if mismatched:
             status = "failed"
         acceptance.append(dict(crit, status=status, evidence=quals + olds, unversioned_subjects=untracked, deployment_mismatches=mismatched, unresolved_pins=unresolved_pins))
+    for sid, (_, subject) in subjects_of(manifest).items():
+        lineage = []
+        for item in subject.get("lineage", []):
+            target = subjects[item["subject"]]
+            state = "unknown" if target["version_state"] != "observed" else "mismatch" if item.get("expected") and item["expected"] != target["version"] else "observed"
+            rec = next((r for r in evidence if r["id"] == item.get("evidence") and not r.get("invalid")), None)
+            reported = rec.get("versions", {}).get(item["subject"]) if rec else None
+            if reported and state == "unknown":
+                state = "stale" if rec.get("historical") else "reported"
+                if item.get("expected") and reported != item["expected"]:
+                    state = "mismatch"
+            lineage.append(dict(item, status=state, version=target["version"], reported_version=reported,
+                                provenance=rec.get("provenance") if rec else None, recorded_at=rec.get("recorded_at") if rec else None,
+                                resource_identity=target["resource_identity"],
+                                observations=target["observations"], layers=target["layers"]))
+        subjects[sid]["lineage"] = lineage
     timeline = build_timeline(manifest, evidence)
-    stale_after = 2 * cfg["active_interval"]
+    activity = activity_view(home)
+    interval = cfg["active_interval"] if activity["active"] else cfg["idle_interval"]
     last_ok = parse_iso(health.get("last_success_at"))
     collector = dict(health)
-    collector["stale"] = not snapshot_current or last_ok is None or (now_ts() - last_ok) > max(stale_after, cfg["idle_interval"] + cfg["active_interval"])
+    collector["stale"] = not snapshot_current or last_ok is None or (now_ts() - last_ok) > interval + cfg["active_interval"]
+    collector["activity"] = activity
+    collector["interval_seconds"] = interval
     collector["snapshot_status"] = snapshot.get("collector", {}).get("status") if snapshot_current else None
     collector["fixture"] = bool((snapshot or {}).get("collector", {}).get("fixture"))
     collector["snapshot_at"] = (snapshot or {}).get("finished_at")
@@ -1394,6 +1595,8 @@ def build_view(home, cfg, project):
         "order": {"components": [c["id"] for c in manifest["components"]], "connections": [c["id"] for c in manifest["connections"]]},
         "acceptance": acceptance,
         "timeline": timeline,
+        "readiness": prerequisite_view(manifest, subjects, evidence, observations, interval),
+        "credentials": credential_view(manifest),
         "discrepancies": sorted(ledger.values(), key=lambda d: (d.get("status") != "open", SEVERITIES.index(d.get("severity", "info")), d.get("first_seen", ""))),
         "requests": requests,
         "annotations": annotations,
@@ -1586,11 +1789,11 @@ def maybe_queue_review(home, cfg, project):
     return True
 
 
-def task_records(home):
+def task_records(home, include_secondmates=False):
     """Yield (task_id, meta-dict) for this home's ship and scout task records.
 
-    Persistent secondmates keep a record for their whole life, idle or not, so
-    they are never counted as active work or as tasks needing a map binding.
+    Persistent secondmates are excluded by default; activity_view separately
+    reconciles their parent records without treating existence as activity.
     """
     for meta in sorted(glob.glob(os.path.join(home.state_dir, "*.meta"))):
         values = {}
@@ -1602,16 +1805,62 @@ def task_records(home):
                         values.setdefault(key, value)
         except OSError:
             continue
-        if values.get("kind") == "secondmate":
+        if values.get("kind") == "secondmate" and not include_secondmates:
             continue
         yield os.path.basename(meta)[:-5], values
 
 
+def activity_view(home):
+    """Use only this home's task records, parent status, and pending replies.
+
+    A persistent mate's existence is not activity. A working parent report or
+    a delivered, open request is; a subsequent pause/terminal report parks it.
+    No endpoint, chat, child home, or backend inventory is consulted.
+    """
+    reasons = []
+    mates = {}
+    for task, values in task_records(home, include_secondmates=True):
+        if values.get("kind") != "secondmate":
+            reasons.append({"task": task, "source": "local-task"})
+            continue
+        last = None
+        try:
+            with open(os.path.join(home.state_dir, task + ".status"), "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                handle.seek(max(0, handle.tell() - 32768))
+                for line in handle.read().decode("utf-8", "replace").splitlines():
+                    match = re.match(r"^(working|paused|done|failed|blocked|needs-decision) \[at=(\d+)\]", line)
+                    if match:
+                        last = (match[1], int(match[2]))
+        except OSError:
+            pass
+        mates[task] = last
+        if last and last[0] == "working":
+            reasons.append({"task": task, "source": "parent-report", "at": iso(last[1])})
+    if not mates:
+        return {"active": bool(reasons), "reasons": reasons, "scope": "this home's task and parent records only"}
+    for path in sorted(glob.glob(os.path.join(home.state_dir, "pending-replies", "*"))):
+        if not os.path.isfile(path) or os.path.islink(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as handle:
+                values = dict(line.rstrip("\n").split("=", 1) for line in handle.read(32768).splitlines() if "=" in line)
+        except OSError:
+            continue
+        task = values.get("task_id")
+        delivered = values.get("delivered_epoch", "")
+        if values.get("schema") != "fm-pending-reply.v1" or task not in mates or values.get("phase") == "resolved" or not delivered.isdigit():
+            continue
+        last = mates[task]
+        if last and last[1] >= int(delivered) and last[0] != "working":
+            continue
+        if not any(r["task"] == task for r in reasons):
+            reasons.append({"task": task, "source": "pending-parent-request", "at": iso(int(delivered))})
+    return {"active": bool(reasons), "reasons": reasons, "scope": "this home's task and parent records only"}
+
+
 def fleet_active(home):
-    """Active means at least one ship or scout task record exists."""
-    for _ in task_records(home):
-        return True
-    return False
+    return activity_view(home)["active"]
 
 
 def task_project_name(values):
@@ -1777,7 +2026,7 @@ def cmd_evidence_add(home, cfg, args):
             record = json.load(handle)
         except ValueError as exc:
             raise MapError("evidence file is not JSON: %s" % exc)
-    validate_evidence(record, set(subjects_of(manifest)))
+    validate_evidence(record, set(subjects_of(manifest)), {p["id"] for p in manifest.get("prerequisites", [])})
     record_evidence(home, project, record)
     print("recorded evidence %s" % record["id"])
     return 0
