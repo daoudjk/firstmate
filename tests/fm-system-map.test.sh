@@ -1679,6 +1679,24 @@ PYTEST
   cp "$home/aws-state.json" "$home/trust-state.json"
   python3 - "$home" <<'PYTEST'
 import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); m['components'].append({'id':'caller-only','title':'Separate caller','observe':[{'id':'caller-role-read','adapter':'aws.iam_role','binding':'caller_role','role':'version'}],'version_from':'caller-role-read'}); i=dict(m['interactions'][0],id='caller-version-request',title='Separate caller to bucket',caller='caller-only'); i.pop('evidence',None); m['interactions'].append(i); p.write_text(json.dumps(m)); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['caller_role']={'role_name':'fixture-caller'}; p.write_text(json.dumps(b))
+PYTEST
+  map "$home" collect >/dev/null || fail "separate caller collection"
+  view_json "$home"
+  assert_equals "declared-baselines-observed" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="caller-version-request")["static_coverage"]')" "fresh separate caller qualifies declared coverage"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])/'state/system-map/example/snapshot.json'; s=json.load(open(p)); s['observations']['caller-role-read']['checked_at']='2020-01-01T00:00:00Z'; p.write_text(json.dumps(s))
+PYTEST
+  view_json "$home"
+  assert_equals "['caller-only']" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="caller-version-request")["participant_gaps"]')" "stale caller is the only unqualified participant"
+  assert_equals "[]" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="caller-version-request")["missing_dependencies"]')" "dependency baselines remain current"
+  assert_equals "gaps" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="caller-version-request")["static_coverage"]')" "stale caller invalidates declared coverage"
+  cp "$home/participant-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/participant-bindings.json" "$home/data/system-map/example/bindings.json"
+  map "$home" collect >/dev/null || fail "restore separate caller fixture"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
 h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); source=next(s for s in m['components'] if s['id']=='trust-source'); source['observe'].insert(0,{'id':'other-source-read','adapter':'aws.iam_role_access','binding':'other_source_role','role':'info'}); p.write_text(json.dumps(m)); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['other_source_role']={'role_name':'fixture-other'}; p.write_text(json.dumps(b)); p=h/'aws-state.json'; s=json.load(open(p)); base=s['responses']['get-role']; a=json.loads(json.dumps(base)); a['Arn']='arn:aws:iam::123456789012:role/fixture-source'; other=json.loads(json.dumps(base)); other['Arn']='arn:aws:iam::123456789012:role/fixture-other'; s['role_responses']={'fixture-source':a,'fixture-other':other}; s['responses']['get-role']['AssumeRolePolicyDocument']['Statement'][0]['Principal']['AWS']=other['Arn']; p.write_text(json.dumps(s))
 PYTEST
   map "$home" collect >/dev/null || fail "conflicting trust role collection"

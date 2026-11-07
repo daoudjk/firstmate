@@ -628,7 +628,7 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
                 current = False
             if current and not missing and not missing_kinds and item.get("context_complete") is True:
                 proof = {"pass": "demonstrated", "fail": "failed", "not-run": "not-demonstrated"}[rec["result"]]
-        status = "gaps" if missing or missing_kinds or item.get("context_complete") is not True else "declared-baselines-observed"
+        status = "gaps" if missing or missing_kinds or participant_gaps or item.get("context_complete") is not True else "declared-baselines-observed"
         interactions.append(dict(item, required_dependencies=required_ids, unlinked_dependencies=unlinked, unmatched_dependencies=sorted(set(required_ids) - matched), static_coverage=status, missing_dependencies=missing,
                                  missing_kinds=missing_kinds, participant_gaps=participant_gaps, assertion_digest=assertion,
                                  request_proof=proof, evidence_record=rec,
