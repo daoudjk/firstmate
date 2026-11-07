@@ -1290,6 +1290,13 @@ PY
   printf 'paused [corr=2222222222222222] [at=%s]: pending request parked\n' "$((epoch+4))" >> "$home/state/mate.status"
   view_json "$home"
   assert_equals "False" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "matching pause parks the pending request"
+  printf 'working corr=4444444444444444 [at=%s]: delegated work resumed after a resolved request\n' "$((epoch+5))" >> "$home/state/mate.status"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "unbracketed working report restores active cadence"
+  printf 'schema=fm-pending-reply.v1\ncorr_id=4444444444444444\ntask_id=mate\nphase=awaiting_report\ndelivered_epoch=%s\n' "$((epoch+5))" > "$home/state/pending-replies/request-unbracketed"
+  printf 'needs-decision corr=4444444444444444 [key=review] [at=%s]: delegated decision pending\n' "$((epoch+6))" >> "$home/state/mate.status"
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "unbracketed decision parks its correlated request"
   out=$(map "$home" tick)
   assert_contains "$out" 'not due (idle cadence)' "tick uses same derived activity"
   pass "delegated work changes cadence without scanning child fleets"

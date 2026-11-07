@@ -1839,12 +1839,11 @@ def activity_view(home):
                 handle.seek(0, os.SEEK_END)
                 handle.seek(max(0, handle.tell() - 32768))
                 for line in handle.read().decode("utf-8", "replace").splitlines():
-                    match = re.match(r"^(working|paused|done|failed|blocked|needs-decision)(?: \[(?:corr|key)=[^\[\]:]+\])* \[at=(0|[1-9]\d{0,11})\](?: \[(?:corr|key)=[^\[\]:]+\])*:", line)
+                    match = re.match(r"^(working|paused|done|failed|blocked|needs-decision)(?: (?:\[(?:corr|key)=[^\[\]:]+\]|corr=[0-9A-Fa-f]{16}))* \[at=(0|[1-9]\d{0,11})\](?: (?:\[(?:corr|key)=[^\[\]:]+\]|corr=[0-9A-Fa-f]{16}))*:", line)
                     if match:
                         last = (match[1], int(match[2]))
-                        correlation = re.search(r"\[corr=([0-9A-Fa-f]{16})\]", match[0])
-                        if correlation:
-                            reports[correlation[1].lower()] = last
+                        for token in re.findall(r"(?:^| )(\[corr=[0-9A-Fa-f]{16}\]|corr=[0-9A-Fa-f]{16})(?= |:)", match[0]):
+                            reports[token.split("=", 1)[1].rstrip("]").lower()] = last
         except OSError:
             pass
         mates[task] = last
