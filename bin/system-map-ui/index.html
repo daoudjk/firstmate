@@ -28,6 +28,7 @@
 <main class="page">
   <div class="tabs" role="tablist" aria-label="Views">
     <button role="tab" id="tab-map" aria-controls="view-map" aria-selected="true">Map</button>
+    <button role="tab" id="tab-ready" aria-controls="view-ready" aria-selected="false" tabindex="-1">Prerequisites</button>
     <button role="tab" id="tab-diff" aria-controls="view-diff" aria-selected="false" tabindex="-1">Differences <span class="count" id="diff-count"></span></button>
     <button role="tab" id="tab-life" aria-controls="view-life" aria-selected="false" tabindex="-1">Experiment timeline</button>
     <button role="tab" id="tab-accept" aria-controls="view-accept" aria-selected="false" tabindex="-1">MVP acceptance</button>
@@ -62,6 +63,12 @@
     <aside class="detail" id="detail" aria-label="Selected item" tabindex="-1"></aside>
   </section>
 
+  <section id="view-ready" role="tabpanel" aria-labelledby="tab-ready" class="view" hidden>
+    <h2 class="h2">Prerequisites and next proof</h2>
+    <p class="hint">Each phase shows resource coverage, technical observations and authorization separately. A present prerequisite does not demonstrate a phase.</p>
+    <div id="readiness"></div>
+  </section>
+
   <section id="view-diff" role="tabpanel" aria-labelledby="tab-diff" class="view" hidden>
     <div class="view__head">
       <h2 class="h2">Intended vs observed</h2>
@@ -90,7 +97,7 @@
 
   <section id="view-cred" role="tabpanel" aria-labelledby="tab-cred" class="view" hidden>
     <h2 class="h2">Credentials</h2>
-    <p class="hint">Purpose, owner and expiry only. Secret values are never recorded or shown.</p>
+    <p class="hint">Public metadata and renewal dependencies only. Full-window timing requires observed validity for the issuer chain; authorization remains separate.</p>
     <div class="tablewrap"><table class="table" id="cred-table"><thead><tr><th scope="col">Credential</th><th scope="col">Purpose</th><th scope="col">Owner</th><th scope="col">Expires</th><th scope="col">Used by</th></tr></thead><tbody></tbody></table></div>
   </section>
 </main>

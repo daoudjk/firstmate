@@ -58,13 +58,16 @@ if svc in st.get("missing", []):
 if svc in st.get("deny", []):
     sys.stderr.write("An error occurred (AccessDeniedException) when calling %s: User arn:aws:iam::123456789012:user/x is not authorized" % op); sys.exit(254)
 if svc == "sts": out({"Account": st.get("account", "123456789012")})
+if op == "get-function-configuration": out({"State": "Active", "CodeSha256": "code-v1", "LastUpdateStatus": "Successful", "Runtime": "python3.13", "Timeout": 30, "Role": "arn:aws:iam::123456789012:role/example", "Environment": {"Variables": {"EXAMPLE": "fixture-private-payload"}}})
+if op == "get-schedule": out({"State": "ENABLED", "ScheduleExpression": "at(2099-01-01T00:00:00)", "ScheduleExpressionTimezone": "UTC", "TargetArn": "arn:aws:lambda:us-east-1:123456789012:function:example", "RoleArn": "arn:aws:iam::123456789012:role/example", "Input": "fixture-private-payload"})
+if op == "get-role": out({"RoleId": "role-v1", "CreateDate": "2026-01-01T00:00:00Z", "MaxSessionDuration": 3600})
 if op == "describe-services":
     n = int(st.get("ecs_running", 0))
     out({"services": [{"status": "ACTIVE", "desiredCount": n, "runningCount": n, "pendingCount": 0, "taskDefinition": "arn:aws:ecs:us-east-1:123456789012:task-definition/example-api:7"}]})
 if op == "get-queue-url": out({"QueueUrl": "https://example.invalid/q"})
-if op == "get-queue-attributes": out({"Attributes": {"ApproximateNumberOfMessages": "0", "ApproximateNumberOfMessagesNotVisible": "0"}})
+if op == "get-queue-attributes": out({"Attributes": {"ApproximateNumberOfMessages": str(st.get("queue_visible", 0)), "ApproximateNumberOfMessagesNotVisible": "0"}})
 if op == "describe-table": out({"Table": {"TableStatus": "ACTIVE", "ItemCount": 1}})
-if op == "get-item": out({"Item": {"Halted": {"BOOL": True}, "Revision": {"N": "7"}}})
+if op == "get-item": out({"Item": {"Halted": {"BOOL": st.get("control_halted", True)}, "Revision": {"N": "7"}}})
 if op == "describe-instances":
     out({"Reservations": [{"Instances": [{"State": {"Name": st.get("instance_state", "stopped")}, "ImageId": st.get("ami", "ami-0123456789abcdef0")}]}]})
 sys.stderr.write("unhandled %s %s" % (svc, op)); sys.exit(255)
@@ -188,6 +191,8 @@ import json, sys
 path = sys.argv[1]
 with open(path) as handle: manifest = json.load(handle)
 manifest["components"] = [subject for subject in manifest["components"] if subject["id"] not in ("source", "owner")]
+next(subject for subject in manifest["components"] if subject["id"] == "console").pop("observe", None)
+manifest["prerequisites"] = [item for item in manifest["prerequisites"] if item["id"] not in ("console-source", "console-config")]
 with open(path, "w") as handle: json.dump(manifest, handle)
 PY
   map "$home" collect >/dev/null || fail "initial collection failed"
@@ -492,6 +497,7 @@ with open(manifest_path) as handle: manifest = json.load(handle)
 console = next(item for item in manifest["components"] if item["id"] == "console")
 console["intended"] = {"idle": "stopped", "active": "running"}
 console["observe"] = [{"id": "tagged-workers", "adapter": "aws.ec2_tagged_instances", "binding": "tagged_workers"}]
+manifest["prerequisites"] = [item for item in manifest["prerequisites"] if item["id"] not in ("console-source", "console-config")]
 with open(manifest_path, "w") as handle: json.dump(manifest, handle)
 with open(bindings_path) as handle: bindings = json.load(handle)
 bindings["bindings"]["tagged_workers"] = {"tag_key": "example-worker"}
@@ -911,6 +917,14 @@ PY
 test_ui_annotations_and_intent_edits() {
   local home port pid base page out
   home=$(new_home ui)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import datetime,json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); now=datetime.datetime.now(datetime.timezone.utc)
+for id,title,days in [('expired-ui','Expired certificate',-1),('soon-ui','Soon certificate',2),('future-ui','Future certificate',30)]:
+    manifest['credentials'].append({'id':id,'title':title,'purpose':'Rendering regression','owner':'Fixture owner','expires':(now+datetime.timedelta(days=days)).isoformat(),'expiry_basis':'observed'})
+manifest['credentials'].append({'id':'secondary-ui','title':'Second certificate','purpose':'Separate renewal','owner':'Second owner','renewal_owner':'Issuer team','rotation':'Manual swap','issuer':'api-cert'})
+json.dump(manifest,open(p,'w'))
+PY
   map "$home" collect >/dev/null || fail "collect failed"
   cp "$home/state/system-map/example/snapshot.json" "$home/snapshot.before"
   port=$(free_port)
@@ -936,6 +950,63 @@ PY
   assert_contains "$out" "200" "a bare local request could not read the project list"
   out=$(http GET "$base/api/state?project=example")
   assert_contains "$out" "200" "a bare local request could not read map state"
+  if command -v google-chrome >/dev/null 2>&1; then
+    google-chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage \
+      --user-data-dir="$home/chrome-profile" --virtual-time-budget=1500 --dump-dom \
+      "$base/#tab=cred" > "$home/rendered.html" 2> "$home/chrome.log" || fail "browser could not render credential view"
+    python3 - "$home/rendered.html" <<'PY' || fail "credential table rendered incorrect renewal or expiry states"
+from html.parser import HTMLParser
+import sys
+class CredentialCells(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.table = False
+        self.cell = False
+        self.row = False
+        self.column = -1
+        self.cells = []
+        self.rows = {}
+    def handle_starttag(self, tag, attrs):
+        if tag == 'table' and ('id', 'cred-table') in attrs:
+            self.table = True
+        elif self.table and tag == 'tr':
+            self.row = True
+            self.column = -1
+            self.row_cells = []
+            self.chip = None
+        elif self.table and tag == 'td':
+            self.cell = True
+            self.column += 1
+            self.cell_text = []
+        elif self.cell and self.column == 3 and tag == 'span':
+            classes = dict(attrs).get('class', '').split()
+            self.chip = next((name for name in classes if name.startswith('chip--')), self.chip)
+    def handle_endtag(self, tag):
+        if self.table and tag == 'td':
+            self.row_cells.append(''.join(self.cell_text).strip())
+            self.cell = False
+        elif self.table and tag == 'tr':
+            if self.row_cells:
+                self.rows[self.row_cells[0]] = {'chip': self.chip, 'cells': self.row_cells}
+            self.row = False
+        elif self.table and tag == 'table':
+            self.table = False
+    def handle_data(self, data):
+        if self.cell:
+            self.cells.append(data)
+            self.cell_text.append(data)
+cells = CredentialCells()
+cells.feed(open(sys.argv[1]).read())
+assert 'Mechanism: Reissue from the platform CA' in ' '.join(cells.cells)
+assert cells.rows['Expired certificate']['chip'] == 'chip--bad', cells.rows
+assert cells.rows['Soon certificate']['chip'] == 'chip--warn', cells.rows
+assert cells.rows['Future certificate']['chip'] == 'chip--ok', cells.rows
+secondary = cells.rows['Second certificate']['cells']
+assert 'Second owner' in secondary[2] and 'Renewal owner: Issuer team' in secondary[2]
+assert 'Mechanism: Manual swap' in secondary[2]
+assert 'Issuer: api-cert' in secondary[3]
+PY
+  fi
   out=$(http GET "$base/../config/system-map")
   assert_contains "$out" "404" "arbitrary paths are not served"
   out=$(http POST "$base/api/annotate" '{"project":"example","target":"api","text":"foreign origin"}' 'https://evil.example')
@@ -997,6 +1068,478 @@ test_summary_includes_later_project_requests() {
   [ "$(printf '%s\n' "$out" | wc -l)" -le 16 ] || fail "summary exceeds its line bound"
   pass "summary surfaces pending requests from every project"
 }
+
+test_proactive_prerequisites_and_lineage() {
+  local home rc out
+  home=$(new_home proactive)
+  python3 - "$home/data/system-map/example/manifest.json" "$home/data/system-map/example/bindings.json" <<'PY'
+import json, sys
+m=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2]))
+for sid, adapter, entry in [('wake-function', 'aws.lambda_configuration', {'function_name':'example-wake'}), ('stop-schedule','aws.scheduler_schedule', {'schedule_name':'example-stop','group_name':'default'}), ('scheduler-role','aws.iam_role', {'role_name':'example-stop'})]:
+    m['components'].append({'id':sid,'title':sid,'observe':[{'id':sid+'-read','binding':sid,'adapter':adapter}], 'version_from':sid+'-read'})
+    b['bindings'][sid]=entry
+m['components'][1]['lineage']=[{'stage':'source','subject':'source'}, {'stage':'installed','subject':'worker-host','expected':'ami-new'}, {'stage':'artifact','subject':'console','evidence':'owner-report'}]
+m['prerequisites']=[]
+for pid, producer, observation in [('wake-ready','wake-function','wake-function-read'),('stop-ready','stop-schedule','stop-schedule-read'),('role-ready','scheduler-role','scheduler-role-read'),('unmeasured','console',None),('owner-check','console',None)]:
+    item={'id':pid,'title':pid,'producer':producer,'resource':pid,'phases':['submit'],'baseline':'both','authorization':'awaiting-authorization','next_check':'Obtain a bounded owner receipt.'}
+    if observation: item['observation']=observation
+    if pid=='owner-check': item['evidence']='owner-report'; item['producer']='worker-host'
+    m['prerequisites'].append(item)
+json.dump(m,open(sys.argv[1],'w')); json.dump(b,open(sys.argv[2],'w'))
+PY
+  map "$home" validate >/dev/null || fail "new adapters and prerequisites invalid"
+  map "$home" collect >/dev/null || fail "fixture collection failed"
+  view_json "$home"
+  assert_equals "present" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][0]["state"]')" "successful Lambda metadata is present"
+  assert_equals "awaiting-authorization" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][0]["authorization"]')" "presence does not authorize execution"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][3]["state"]')" "unmeasured resource remains unknown"
+  assert_equals "uncovered" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][3]["coverage"]')" "missing observer is visible"
+  assert_equals "uncovered" "$(py "$home/view.json" 'd["readiness"]["phases"][1]["coverage"]')" "unmodeled phase has a coverage gap"
+  assert_equals "missing-evidence" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][4]["coverage"]')" "missing receipt is visible"
+  assert_equals "mismatch" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][1]["status"]')" "installed lineage mismatch remains explicit"
+  assert_equals "not-demonstrated" "$(py "$home/view.json" 'd["subjects"]["wake-function"]["layers"]["proof"]["status"]')" "metadata is not demonstrated proof"
+  assert_not_contains "$(cat "$home/view.json")" "123456789012" "adapter metadata omits native role ids"
+  assert_not_contains "$(cat "$home/view.json")" "fixture-private-payload" "adapters persist metadata only"
+  assert_grep "lambda get-function-configuration" "$home/aws.log" "exact Lambda metadata operation"
+  assert_grep "scheduler get-schedule" "$home/aws.log" "exact Scheduler metadata operation"
+  assert_grep "iam get-role" "$home/aws.log" "exact IAM role metadata operation"
+  aws_state "$home" '{"deny":["lambda"],"missing":["scheduler"]}'
+  map "$home" collect >/dev/null || fail "partial read failed"
+  view_json "$home"
+  assert_equals "denied" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][0]["state"]')" "denied prerequisite never becomes absent"
+  assert_equals "absent" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][1]["state"]')" "successful not-found means absent"
+  python3 - "$home/receipt.json" "$home/view.json" <<'PY'
+import json, sys, datetime
+identity=json.load(open(sys.argv[2]))['subjects']['worker-host']['resource_identity']
+json.dump({'schema':'fm-system-map.evidence.v1','id':'owner-report','subjects':['console'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Owner has not tested installation.','scope':'retained owner report only','versions':{'console':'locally-built-v2','worker-host':'ami-0123456789abcdef0'},'resource_identities':{'worker-host':identity},'prerequisites':{'owner-check':'not-tested'},'provenance':{'kind':'imported-report','source':'fixture owner'}},open(sys.argv[1],'w'))
+PY
+  map "$home" evidence add example "$home/receipt.json" >/dev/null || fail "owner receipt rejected"
+  view_json "$home"
+  assert_equals "not-tested" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][4]["state"]')" "not tested differs from unknown"
+  assert_equals "stale" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["status"]')" "unbound artifact report is not current lineage"
+  assert_equals "None" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["version"]')" "reported artifact does not create an observed deployment"
+  python3 - "$home/receipt.json" "$home/historical-lineage.json" "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+receipt=json.load(open(sys.argv[1])); receipt['id']='old-artifact'; receipt['historical']=True
+receipt.pop('prerequisites'); receipt.pop('resource_identities'); receipt.pop('scope')
+json.dump(receipt,open(sys.argv[2],'w'))
+manifest=json.load(open(sys.argv[3])); artifact=manifest['components'][1]['lineage'][2]
+artifact['evidence']='old-artifact'; artifact['expected']='locally-built-v3'
+json.dump(manifest,open(sys.argv[3],'w'))
+PY
+  map "$home" evidence add example "$home/historical-lineage.json" >/dev/null || fail "historical lineage receipt rejected"
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["status"]')" "historical artifact cannot claim a current mismatch"
+  assert_equals "locally-built-v2" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["reported_version"]')" "historical reported version remains visible"
+  python3 - "$home/data/system-map/example/bindings.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['bindings']['worker_host']['instance_id']='i-abcdef01234567890'; json.dump(d,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "resource B collection failed"
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][4]["state"]')" "resource A receipt does not assess resource B"
+  assert_equals "missing-evidence" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][4]["coverage"]')" "resource B has no qualified owner receipt"
+  python3 - "$home/data/system-map/example/bindings.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); del d['bindings']['worker_host']; json.dump(d,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][4]["state"]')" "unbound resource cannot inherit the owner assessment"
+  python3 - "$home/data/system-map/example/bindings.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['bindings']['worker_host']={'instance_id':'i-abcdef01234567890','pin':'ami-0123456789abcdef0'}; json.dump(d,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "resource B recollection failed"
+  python3 - "$home/receipt.json" <<'PY'
+import json,sys
+p=sys.argv[1]; r=json.load(open(p)); r['id']='bad-reference'; r['prerequisites']={'typo':'present'}; json.dump(r,open(p,'w'))
+PY
+  rc=0; out=$(map "$home" evidence add example "$home/receipt.json" 2>&1) || rc=$?
+  expect_code 1 "$rc" "receipt with unknown prerequisite is rejected"
+  assert_contains "$out" "unknown prerequisite" "narrow prerequisite reference validation"
+  python3 - "$home/state/system-map/example/snapshot.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['observations']['scheduler-role-read']['checked_at']='2000-01-01T00:00:00Z'; json.dump(d,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][2]["state"]')" "old present observation becomes stale"
+  assert_equals "present" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][2]["observed_state"]')" "historical observed state remains visible"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['prerequisites'][0]['observation']='typo'; json.dump(d,open(p,'w'))
+PY
+  rc=0; out=$(map "$home" validate 2>&1) || rc=$?
+  expect_code 1 "$rc" "unknown prerequisite observation rejected"
+  assert_contains "$out" "must belong to its producer" "prerequisite observation ownership enforced"
+  pass "prerequisites distinguish coverage, denial, absence, stale, untested, authorization and lineage"
+}
+
+test_lineage_report_requires_current_binding() {
+  local home
+  home=$(new_home lineage-binding)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p))
+next(c for c in manifest['components'] if c['id']=='api')['lineage']=[{'stage':'installed','subject':'worker-host','expected':'ami-new','evidence':'lineage-report'}]
+json.dump(manifest,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "lineage binding fixture collection failed"
+  view_json "$home"
+  python3 - "$home/view.json" "$home/lineage-receipt.json" <<'PY'
+import datetime,json,sys
+identity=json.load(open(sys.argv[1]))['subjects']['worker-host']['resource_identity']
+receipt={'schema':'fm-system-map.evidence.v1','id':'lineage-report','subjects':['worker-host'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Worker version reported by owner.','versions':{'worker-host':'ami-old'},'resource_identities':{'worker-host':identity},'provenance':{'kind':'imported-report','source':'fixture owner'}}
+json.dump(receipt,open(sys.argv[2],'w'))
+PY
+  map "$home" evidence add example "$home/lineage-receipt.json" >/dev/null || fail "lineage receipt rejected"
+  view_json "$home"
+  assert_equals "mismatch" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["status"]')" "observed installed version can establish a mismatch"
+  aws_state "$home" '{"deny":["ec2"]}'
+  map "$home" collect >/dev/null || fail "unobserved lineage collection failed"
+  view_json "$home"
+  assert_equals "reported" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["status"]')" "same-binding receipt cannot prove a current mismatch after denial"
+  assert_equals "None" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["version"]')" "denied read leaves the installed version unobserved"
+  assert_equals "ami-old" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["reported_version"]')" "receipt-reported version remains visible after denial"
+  assert_equals "fixture owner" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["provenance"]["source"]')" "receipt provenance remains visible after denial"
+  python3 - "$home/data/system-map/example/bindings.json" <<'PY'
+import json,sys
+p=sys.argv[1]; bindings=json.load(open(p)); bindings['bindings']['worker_host']['instance_id']='i-abcdef01234567890'; json.dump(bindings,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["status"]')" "report for previous binding cannot claim a current mismatch"
+  assert_equals "ami-old" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["reported_version"]')" "stale report keeps its version metadata"
+  pass "lineage reports retain metadata without claiming an unobserved version"
+}
+
+test_prerequisite_receipt_requires_current_version() {
+  local home rc=0 out
+  home=$(new_home prerequisite-version)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p))
+next(item for item in manifest['prerequisites'] if item['id']=='migration-worker-record')['evidence']='worker-assessment'
+json.dump(manifest,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "prerequisite version fixture collection failed"
+  view_json "$home"
+  python3 - "$home/view.json" "$home/worker-assessment.json" <<'PY'
+import datetime,json,sys
+worker=json.load(open(sys.argv[1]))['subjects']['worker-host']
+receipt={'schema':'fm-system-map.evidence.v1','id':'worker-assessment','subjects':['worker-host'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Owner assessed current worker.','scope':'example worker','versions':{'worker-host':worker['version']},'resource_identities':{'worker-host':worker['resource_identity']},'prerequisites':{'migration-worker-record':'present'},'provenance':{'kind':'imported-report','source':'fixture owner'}}
+json.dump(receipt,open(sys.argv[2],'w'))
+PY
+  map "$home" evidence add example "$home/worker-assessment.json" >/dev/null || fail "worker assessment rejected"
+  view_json "$home"
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "migration-worker-record"][0]["state"]')" "matching version and resource qualify the assessment"
+  aws_state "$home" '{"ami":"ami-abcdef01234567890"}'
+  map "$home" collect >/dev/null || fail "same-instance new-image collection failed"
+  view_json "$home"
+  assert_equals "ami-abcdef01234567890" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["version"]')" "worker image changed on the same instance"
+  assert_equals "unknown" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "migration-worker-record"][0]["state"]')" "old version assessment cannot qualify the new image"
+  assert_equals "missing-evidence" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "migration-worker-record"][0]["coverage"]')" "version mismatch stays unqualified"
+  aws_state "$home" '{"deny":["ec2"]}'
+  map "$home" collect >/dev/null || fail "denied-version collection failed"
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "migration-worker-record"][0]["state"]')" "unobserved current version cannot qualify the receipt"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); manifest['prerequisites'][0]['max_age_seconds']=86400
+json.dump(manifest,open(p,'w'))
+PY
+  out=$(map "$home" validate 2>&1) || rc=$?
+  expect_code 1 "$rc" "per-prerequisite freshness override is unsupported"
+  assert_contains "$out" "unknown field 'max_age_seconds'" "freshness uses the shared cadence"
+  pass "prerequisite receipts require current observed versions and shared freshness"
+}
+
+test_sample_lifecycle_coverage() {
+  local home
+  home=$(new_home sample-lifecycle)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); next(item for item in manifest['prerequisites'] if item['id']=='console-config')['evidence']='console-install-report'; json.dump(manifest,open(p,'w'))
+PY
+  map "$home" validate >/dev/null || fail "sample lifecycle is invalid"
+  view_json "$home"
+  python3 - "$home/view.json" <<'PY' || fail "sample lifecycle coverage or proof state is wrong"
+import json, sys
+view = json.load(open(sys.argv[1]))
+phases = {phase['id']: phase for phase in view['readiness']['phases']}
+required = {'submit', 'wake', 'enroll', 'launch', 'score', 'cleanup', 'stop'}
+assert required <= phases.keys()
+assert all(phases[phase]['coverage'] == 'declared' for phase in required)
+assert len(view['acceptance']) == 9
+assert all(criterion['status'] == 'not-demonstrated' for criterion in view['acceptance'])
+checks = {item['id']: item for item in view['readiness']['prerequisites']}
+assert checks['migration-worker-record']['baseline'] == 'migration'
+assert checks['worker-host']['baseline'] == 'both'
+assert view['credentials'][0]['expiry_basis'] == 'unknown'
+assert view['credentials'][0]['latest_safe_start'] is None
+assert 'latest_possible_start' not in view['credentials'][0]
+PY
+  mkdir -p "$home/projects/example-platform/console-config-checkout"
+  git -C "$home/projects/example-platform/console-config-checkout" init -q || fail "source checkout fixture could not initialize"
+  git -C "$home/projects/example-platform/console-config-checkout" -c user.name=Fixture -c user.email=fixture@example.invalid commit --allow-empty -qm source || fail "source checkout fixture could not commit"
+  aws_state "$home" '{"queue_visible":1,"control_halted":false,"ecs_running":1}'
+  map "$home" collect >/dev/null || fail "queued-work collection failed"
+  view_json "$home"
+  assert_equals "running" "$(py "$home/view.json" 'd["subjects"]["api"]["observations"][0]["current"]["state"]')" "fixture represents the post-submit API"
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "submission-api"][0]["state"]')" "post-submit running state does not contradict API availability"
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "api-stop"][0]["state"]')" "pre-stop running state does not contradict API availability"
+  assert_equals "holding" "$(py "$home/view.json" 'd["subjects"]["queue"]["observations"][0]["current"]["state"]')" "fixture represents queued work"
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "wake-queue"][0]["state"]')" "queued work does not contradict the wake prerequisite"
+  assert_equals "open" "$(py "$home/view.json" 'd["subjects"]["control-switch"]["observations"][0]["current"]["state"]')" "fixture represents the post-enrollment lift"
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "enroll-control"][0]["state"]')" "post-enrollment lift does not imply enrollment mismatch"
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "console-source"][0]["state"]')" "checkout establishes source availability"
+  assert_equals "unknown" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "console-config"][0]["state"]')" "source checkout does not establish installation"
+  python3 - "$home/view.json" "$home/console-receipt.json" <<'PY'
+import datetime,json,sys
+view_path,receipt_path=sys.argv[1:]
+view=json.load(open(view_path))
+identity=view['subjects']['console']['observations'][0]['current']['binding_digest']
+receipt={'schema':'fm-system-map.evidence.v1','id':'console-install-report','subjects':['console'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Source checkout alone does not prove installation.','scope':'example console checkout','resource_identities':{'console':identity},'prerequisites':{'console-config':'present'},'provenance':{'kind':'imported-report','source':'fixture owner'}}
+json.dump(receipt,open(receipt_path,'w'))
+PY
+  map "$home" evidence add example "$home/console-receipt.json" >/dev/null || fail "source-scoped console receipt rejected"
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "console-config"][0]["state"]')" "source-scoped receipt cannot qualify installed configuration"
+  assert_equals "missing-evidence" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "console-config"][0]["coverage"]')" "installed configuration still lacks bound evidence"
+  pass "sample covers lifecycle prerequisites without manufacturing proof or issuer validity"
+}
+
+test_credential_full_window() {
+  local home
+  home=$(new_home cert-window)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import datetime,json,sys
+p=sys.argv[1]; m=json.load(open(p)); now=datetime.datetime.now(datetime.timezone.utc)
+iso=lambda t:t.isoformat()
+m['credentials']=[{'id':'issuer','title':'Issuer','purpose':'Test issuer','kind':'ca','not_before':iso(now-datetime.timedelta(seconds=60)),'expires':iso(now+datetime.timedelta(seconds=1800)),'expiry_basis':'observed'}, {'id':'leaf','title':'Leaf','purpose':'Test identity','kind':'tls-leaf','not_before':iso(now-datetime.timedelta(seconds=60)),'issuer':'issuer','expires':iso(now+datetime.timedelta(seconds=7200)), 'expiry_basis':'observed','full_window_seconds':3600,'restart_required':'yes','renewal_owner':'fixture owner'}]
+json.dump(m,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "does-not-fit" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "issuer limits remaining full window"
+  assert_equals "3600" "$(py "$home/view.json" 'd["credentials"][1]["full_window_seconds"]')" "full interval preserved"
+  python3 - "$home/view.json" <<'PY' || fail "safe-start arithmetic incorrect"
+import datetime,json,sys
+d=json.load(open(sys.argv[1])); c=d['credentials']; parse=lambda t:datetime.datetime.fromisoformat(t.replace('Z','+00:00')).timestamp()
+assert abs(parse(c[0]['expires'])-parse(c[1]['latest_safe_start'])-3600)<1
+PY
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; m=json.load(open(p)); issuer=m['credentials'][0]; issuer['expiry_basis']='inferred'; issuer['expected_expires']=issuer.pop('expires'); json.dump(m,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "inferred issuer cannot establish feasibility"
+  assert_equals "None" "$(py "$home/view.json" 'd["credentials"][1]["latest_safe_start"]')" "inferred issuer gives no latest safe start"
+  assert_equals "False" "$(py "$home/view.json" '"latest_possible_start" in d["credentials"][1]')" "unknown timing has no speculative upper bound"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; m=json.load(open(p)); issuer=m['credentials'][0]; issuer['expiry_basis']='observed'; issuer['expires']=issuer.pop('expected_expires'); issuer.pop('not_before'); issuer.pop('kind'); json.dump(m,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "unlabeled issuer without validity cannot qualify safe timing"
+  assert_equals "None" "$(py "$home/view.json" 'd["credentials"][1]["latest_safe_start"]')" "unlabeled issuer has no safe start"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; m=json.load(open(p)); m['credentials'][0]['kind']='intermediate'; json.dump(m,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "alternative issuer kind cannot bypass missing validity"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import datetime,json,sys
+p=sys.argv[1]; m=json.load(open(p)); m['credentials'][0]['kind']='ca'; m['credentials'][0]['not_before']=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=60)).isoformat(); m['credentials'][0]['expires']=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=7200)).isoformat(); json.dump(m,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "fits" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "entire observed chain has full interval"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); manifest['credentials'][1]['renewal_group']='shared'
+json.dump(manifest,open(p,'w'))
+PY
+  local rc=0 out
+  out=$(map "$home" validate 2>&1) || rc=$?
+  expect_code 1 "$rc" "renewal grouping is unsupported"
+  assert_contains "$out" "unknown field 'renewal_group'" "each credential owns its renewal metadata"
+  pass "full-window timing accounts for issuer validity and inference"
+}
+
+test_inferred_expiry_does_not_alert() {
+  local home rc out
+  home=$(new_home inferred-expiry)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import datetime,json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); expired=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(days=1)).isoformat()
+manifest['credentials']=[{'id':'inferred-cert','title':'Inferred certificate','kind':'tls-leaf','purpose':'Test identity','expiry_basis':'inferred','expected_expires':expired,'subjects':['api'],'full_window_seconds':3600}]
+json.dump(manifest,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "inferred-expiry fixture collection failed"
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" 'any(g["kind"] == "credential" for g in d["discrepancies"])')" "inferred expiry cannot create an observed expiry alert"
+  assert_equals "None" "$(py "$home/view.json" 'd["credentials"][0]["latest_safe_start"]')" "inferred expiry cannot establish safe start"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); cred=manifest['credentials'][0]; cred['expires']=cred['expected_expires']; json.dump(manifest,open(p,'w'))
+PY
+  rc=0; out=$(map "$home" validate 2>&1) || rc=$?
+  expect_code 1 "$rc" "inferred date in observed expiry field is rejected"
+  assert_contains "$out" "put inferred dates in expected_expires" "inferred expiry uses its separate field"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); cred=manifest['credentials'][0]; cred['expiry_basis']='observed'; cred.pop('expected_expires'); json.dump(manifest,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "observed-expiry fixture collection failed"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'any(g["kind"] == "credential" and "expired" in g["title"] for g in d["discrepancies"])')" "observed expiry still creates an alert"
+  pass "inferred expiry stays separate from observed alerts and timing"
+}
+
+test_legacy_expiry_basis_retains_observed_dates() {
+  local home
+  home=$(new_home legacy-expiry)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import datetime,json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); now=datetime.datetime.now(datetime.timezone.utc)
+date=lambda days:(now+datetime.timedelta(days=days)).isoformat()
+base={'kind':'ca','purpose':'Test identity','not_before':date(-30),'full_window_seconds':3600,'subjects':['api']}
+manifest['credentials']=[dict(base,id='old-expired',title='Old expired',expires=date(-1)),
+                         dict(base,id='old-expiring',title='Old expiring',expires=date(1)),
+                         dict(base,id='old-future',title='Old future',expires=date(30)),
+                         dict(base,id='unlabeled-window',title='Unlabeled window',expires=date(30),not_before=None),
+                         dict(base,id='alternative-window',title='Alternative window',expires=date(30),not_before=None,kind='intermediate'),
+                         dict(base,id='unknown-date',title='Unknown date',expires=date(-1),expiry_basis='unknown'),
+                         dict(base,id='inferred-date',title='Inferred date',expected_expires=date(-1),expiry_basis='inferred')]
+for cred in manifest['credentials']:
+    if cred['id'] in ('unlabeled-window','alternative-window'):
+        cred.pop('not_before')
+        if cred['id']=='unlabeled-window': cred.pop('kind')
+json.dump(manifest,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "legacy expiry fixture collection failed"
+  view_json "$home"
+  python3 - "$home/view.json" <<'PY' || fail "legacy and explicit expiry bases were classified incorrectly"
+import json,sys
+view=json.load(open(sys.argv[1])); creds={c['id']:c for c in view['credentials']}
+alerts={d['title'] for d in view['discrepancies'] if d['status']=='open' and d['kind']=='credential'}
+assert alerts=={'Old expired has expired','Old expiring expires within 7 days'},alerts
+assert creds['old-expired']['remaining_seconds']<0
+assert creds['old-expiring']['remaining_seconds']>0
+assert creds['old-future']['full_window']=='fits'
+assert creds['old-future']['latest_safe_start'] is not None
+for id in ('unlabeled-window','alternative-window'):
+    assert creds[id]['full_window']=='unknown'
+    assert creds[id]['latest_safe_start'] is None
+assert creds['unknown-date']['full_window']=='unknown'
+assert creds['unknown-date']['latest_safe_start'] is None
+assert creds['inferred-date']['full_window']=='unknown'
+assert creds['inferred-date']['latest_safe_start'] is None
+PY
+  pass "legacy expires retain alerts and safe timing while explicit unknown and inferred do not"
+}
+
+test_historical_imported_assessment() {
+  local home
+  home=$(new_home historical-import)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); next(item for item in manifest['prerequisites'] if item['id']=='migration-worker-record')['evidence']='historical-owner-report'; json.dump(manifest,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "historical assessment fixture collection failed"
+  view_json "$home"
+  python3 - "$home/view.json" "$home/historical-receipt.json" <<'PY'
+import datetime,json,sys
+identity=json.load(open(sys.argv[1]))['subjects']['worker-host']['resource_identity']
+receipt={'schema':'fm-system-map.evidence.v1','id':'historical-owner-report','subjects':['worker-host'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Earlier bound worker assessment.','scope':'example worker','historical':True,'versions':{'worker-host':'ami-0123456789abcdef0'},'resource_identities':{'worker-host':identity},'prerequisites':{'migration-worker-record':'present'},'provenance':{'kind':'imported-report','source':'fixture owner'}}
+json.dump(receipt,open(sys.argv[2],'w'))
+PY
+  map "$home" evidence add example "$home/historical-receipt.json" >/dev/null || fail "historical receipt rejected"
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "migration-worker-record"][0]["state"]')" "historical assessment is stale"
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "migration-worker-record"][0]["observed_state"]')" "historical receipt retains its assessed state"
+  python3 - "$home/historical-receipt.json" "$home/future-receipt.json" <<'PY'
+import datetime,json,sys
+receipt=json.load(open(sys.argv[1])); receipt['id']='future-owner-report'
+receipt['historical']=False
+receipt['observed_at']=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=1)).isoformat()
+json.dump(receipt,open(sys.argv[2],'w'))
+PY
+  local rc=0 out
+  out=$(map "$home" evidence add example "$home/future-receipt.json" 2>&1) || rc=$?
+  expect_code 1 "$rc" "future-dated prerequisite assessment is rejected"
+  assert_contains "$out" "assessment time is in the future" "intake explains the unqualified assessment"
+  python3 - "$home/future-receipt.json" <<'PY'
+import json,sys
+p=sys.argv[1]; receipt=json.load(open(p)); receipt['id']='future-recorded-report'
+receipt['recorded_at']=receipt.pop('observed_at'); json.dump(receipt,open(p,'w'))
+PY
+  rc=0; out=$(map "$home" evidence add example "$home/future-receipt.json" 2>&1) || rc=$?
+  expect_code 1 "$rc" "future recorded time cannot qualify a prerequisite"
+  assert_contains "$out" "assessment time is in the future" "recorded time is checked when observed time is absent"
+  pass "historical owner receipts retain assessed state separately from freshness"
+}
+
+test_delegated_active_to_idle() {
+  local home out epoch
+  home=$(new_home delegated)
+  epoch=$(date +%s)
+  printf 'kind=secondmate\n' > "$home/state/mate.meta"
+  printf 'working [at=%s]: commissioned work in progress\n' "$epoch" > "$home/state/mate.status"
+  map "$home" collect >/dev/null || fail "initial collection failed"
+  python3 - "$home/state/system-map/example/health.json" <<'PY'
+import datetime,json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['last_success_at']=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=900)).isoformat(); json.dump(d,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["stale"]')" "delegated active cadence marks delayed observations stale"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "working parent record selects active cadence"
+  printf 'paused [at=%s]: parked for authorized native work\n' "$epoch" >> "$home/state/mate.status"
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "paused mate returns cadence to idle"
+  assert_equals "False" "$(py "$home/view.json" 'd["collector"]["stale"]')" "idle cadence allows the idle observation interval"
+  mkdir -p "$home/state/pending-replies"
+  printf 'schema=fm-pending-reply.v1\ntask_id=mate\nphase=awaiting_report\ndelivered_epoch=%s\n' "$((epoch+1))" > "$home/state/pending-replies/request"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "delivered delegated request selects active"
+  printf 'schema=fm-pending-reply.v1\ntask_id=mate\nphase=resolved\ndelivered_epoch=%s\n' "$((epoch+1))" > "$home/state/pending-replies/request"
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "resolved request does not keep parked mate active"
+  printf 'working [corr=0123456789abcdef] [at=%s]: delegated work resumed\n' "$((epoch+2))" >> "$home/state/mate.status"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "correlated working report restores active cadence"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["stale"]')" "correlated working report tightens freshness"
+  printf 'paused [at=%s] [corr=0123456789abcdef]: delegated work parked\n' "$((epoch+3))" >> "$home/state/mate.status"
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "correlated pause returns to idle cadence"
+  printf 'schema=fm-pending-reply.v1\ncorr_id=2222222222222222\ntask_id=mate\nphase=awaiting_report\ndelivered_epoch=%s\n' "$((epoch+3))" > "$home/state/pending-replies/request-new"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "same-second unrelated pause cannot park a new request"
+  printf 'paused [corr=3333333333333333] [at=%s]: another request parked\n' "$((epoch+4))" >> "$home/state/mate.status"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "later unrelated pause cannot park the pending request"
+  printf 'paused [corr=2222222222222222] [at=%s]: pending request parked\n' "$((epoch+4))" >> "$home/state/mate.status"
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "matching pause parks the pending request"
+  printf 'working corr=4444444444444444 [at=%s]: delegated work resumed after a resolved request\n' "$((epoch+5))" >> "$home/state/mate.status"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "unbracketed working report restores active cadence"
+  printf 'schema=fm-pending-reply.v1\ncorr_id=4444444444444444\ntask_id=mate\nphase=awaiting_report\ndelivered_epoch=%s\n' "$((epoch+5))" > "$home/state/pending-replies/request-unbracketed"
+  printf 'needs-decision corr=4444444444444444 [key=review] [at=%s]: delegated decision pending\n' "$((epoch+6))" >> "$home/state/mate.status"
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "unbracketed decision parks its correlated request"
+  out=$(map "$home" tick)
+  assert_contains "$out" 'not due (idle cadence)' "tick uses same derived activity"
+  pass "delegated work changes cadence without scanning child fleets"
+}
+
+test_proactive_prerequisites_and_lineage
+test_lineage_report_requires_current_binding
+test_prerequisite_receipt_requires_current_version
+test_sample_lifecycle_coverage
+test_credential_full_window
+test_inferred_expiry_does_not_alert
+test_legacy_expiry_basis_retains_observed_dates
+test_historical_imported_assessment
+test_delegated_active_to_idle
 
 test_no_map_home_is_inert
 test_collect_retains_last_success_on_partial_denial

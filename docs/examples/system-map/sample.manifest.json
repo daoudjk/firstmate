@@ -4,73 +4,604 @@
   "title": "Example platform",
   "description": "A generic job platform: an operator submits work, a service wakes, one isolated worker runs it, results are stored, and compute returns to zero.",
   "revision": 1,
-  "modes": ["idle", "active"],
+  "modes": [
+    "idle",
+    "active"
+  ],
   "expected_mode": "idle",
   "groups": [
-    {"id": "operator", "title": "Operator"},
-    {"id": "control", "title": "Control plane"},
-    {"id": "workers", "title": "Worker range"},
-    {"id": "firstmate", "title": "Firstmate ownership"}
+    {
+      "id": "operator",
+      "title": "Operator"
+    },
+    {
+      "id": "control",
+      "title": "Control plane"
+    },
+    {
+      "id": "workers",
+      "title": "Worker range"
+    },
+    {
+      "id": "firstmate",
+      "title": "Firstmate ownership"
+    }
   ],
   "components": [
-    {"id": "console", "title": "Operator console", "kind": "ui", "group": "operator", "x": 0, "y": 0,
-     "description": "Submits a job from idle.",
-     "implementation": {"state": "built", "note": "Declared by the owner; replace with a completion record once a bound task lands."}},
-    {"id": "api", "title": "API service", "kind": "service", "group": "control", "x": 1, "y": 0,
-     "description": "Accepts jobs and wakes the worker.",
-     "owners": [{"role": "owner", "task": "example-owner"}],
-     "intended": {"idle": "zero", "active": "running"},
-     "observe": [{"id": "api-ecs", "adapter": "aws.ecs_service", "binding": "api_service"}],
-     "version_from": "api-ecs"},
-    {"id": "queue", "title": "Job queue", "kind": "queue", "group": "control", "x": 1, "y": 1,
-     "intended": {"idle": "empty", "active": "holding"},
-     "observe": [{"id": "queue-sqs", "adapter": "aws.sqs_queue", "binding": "job_queue"}]},
-    {"id": "control-switch", "title": "Kill switch", "kind": "control", "group": "control", "x": 1, "y": 2,
-     "intended": {"idle": "halted", "active": "open"},
-     "observe": [{"id": "control-item", "adapter": "aws.dynamodb_item", "binding": "control_item"}]},
-    {"id": "results", "title": "Results table", "kind": "table", "group": "control", "x": 2, "y": 2,
-     "intended": {"idle": "present", "active": "present"},
-     "observe": [{"id": "results-ddb", "adapter": "aws.dynamodb_table", "binding": "results_table"}]},
-    {"id": "worker-host", "title": "Worker host", "kind": "compute", "group": "workers", "x": 3, "y": 0,
-     "description": "One isolated worker per job; stopped when idle.",
-     "intended": {"idle": "stopped", "active": "running"},
-     "observe": [{"id": "worker-ec2", "adapter": "aws.ec2_instance", "binding": "worker_host"}],
-     "version_from": "worker-ec2", "pin": {"binding": "worker_host", "field": "pin"}},
-    {"id": "source", "title": "Platform source", "kind": "repository", "group": "control", "x": 2, "y": 0,
-     "observe": [{"id": "source-git", "adapter": "git.revision", "binding": "platform_source", "role": "version"}],
-     "version_from": "source-git"},
-    {"id": "owner", "title": "Platform owner", "kind": "owner", "group": "firstmate", "x": 0, "y": 2,
-     "observe": [{"id": "owner-task", "adapter": "firstmate.task", "binding": "owner_task", "role": "info"}]}
+    {
+      "id": "console",
+      "title": "Operator console",
+      "kind": "ui",
+      "group": "operator",
+      "x": 0,
+      "y": 0,
+      "description": "Submits a job from idle.",
+      "observe": [
+        {
+          "id": "console-source-git",
+          "adapter": "git.revision",
+          "binding": "console_source"
+        }
+      ],
+      "implementation": {
+        "state": "built",
+        "note": "Declared by the owner; replace with a completion record once a bound task lands."
+      }
+    },
+    {
+      "id": "api",
+      "title": "API service",
+      "kind": "service",
+      "group": "control",
+      "x": 1,
+      "y": 0,
+      "description": "Accepts jobs and wakes the worker.",
+      "owners": [
+        {
+          "role": "owner",
+          "task": "example-owner"
+        }
+      ],
+      "intended": {
+        "idle": "zero",
+        "active": "running"
+      },
+      "observe": [
+        {
+          "id": "api-ecs",
+          "adapter": "aws.ecs_service",
+          "binding": "api_service"
+        }
+      ],
+      "version_from": "api-ecs"
+    },
+    {
+      "id": "queue",
+      "title": "Job queue",
+      "kind": "queue",
+      "group": "control",
+      "x": 1,
+      "y": 1,
+      "intended": {
+        "idle": "empty",
+        "active": "holding"
+      },
+      "observe": [
+        {
+          "id": "queue-sqs",
+          "adapter": "aws.sqs_queue",
+          "binding": "job_queue"
+        }
+      ]
+    },
+    {
+      "id": "control-switch",
+      "title": "Kill switch",
+      "kind": "control",
+      "group": "control",
+      "x": 1,
+      "y": 2,
+      "intended": {
+        "idle": "halted",
+        "active": "open"
+      },
+      "observe": [
+        {
+          "id": "control-item",
+          "adapter": "aws.dynamodb_item",
+          "binding": "control_item"
+        }
+      ]
+    },
+    {
+      "id": "results",
+      "title": "Results table",
+      "kind": "table",
+      "group": "control",
+      "x": 2,
+      "y": 2,
+      "intended": {
+        "idle": "present",
+        "active": "present"
+      },
+      "observe": [
+        {
+          "id": "results-ddb",
+          "adapter": "aws.dynamodb_table",
+          "binding": "results_table"
+        }
+      ]
+    },
+    {
+      "id": "worker-host",
+      "title": "Worker host",
+      "kind": "compute",
+      "group": "workers",
+      "x": 3,
+      "y": 0,
+      "description": "One isolated worker per job; stopped when idle.",
+      "intended": {
+        "idle": "stopped",
+        "active": "running"
+      },
+      "observe": [
+        {
+          "id": "worker-ec2",
+          "adapter": "aws.ec2_instance",
+          "binding": "worker_host"
+        }
+      ],
+      "version_from": "worker-ec2",
+      "pin": {
+        "binding": "worker_host",
+        "field": "pin"
+      }
+    },
+    {
+      "id": "source",
+      "title": "Platform source",
+      "kind": "repository",
+      "group": "control",
+      "x": 2,
+      "y": 0,
+      "observe": [
+        {
+          "id": "source-git",
+          "adapter": "git.revision",
+          "binding": "platform_source",
+          "role": "version"
+        }
+      ],
+      "version_from": "source-git"
+    },
+    {
+      "id": "owner",
+      "title": "Platform owner",
+      "kind": "owner",
+      "group": "firstmate",
+      "x": 0,
+      "y": 2,
+      "observe": [
+        {
+          "id": "owner-task",
+          "adapter": "firstmate.task",
+          "binding": "owner_task",
+          "role": "info"
+        }
+      ]
+    }
   ],
   "connections": [
-    {"id": "console-submits", "title": "Console submits job", "from": "console", "to": "api"},
-    {"id": "api-enqueues", "title": "API enqueues job", "from": "api", "to": "queue"},
-    {"id": "queue-wakes-worker", "title": "Queued job wakes worker", "from": "queue", "to": "worker-host",
-     "implementation": {"state": "not-started", "note": "Example of a declared gap."}},
-    {"id": "control-gates-worker", "title": "Kill switch gates worker", "from": "control-switch", "to": "worker-host"},
-    {"id": "worker-writes-results", "title": "Worker writes results", "from": "worker-host", "to": "results"}
+    {
+      "id": "console-submits",
+      "title": "Console submits job",
+      "from": "console",
+      "to": "api"
+    },
+    {
+      "id": "api-enqueues",
+      "title": "API enqueues job",
+      "from": "api",
+      "to": "queue"
+    },
+    {
+      "id": "queue-wakes-worker",
+      "title": "Queued job wakes worker",
+      "from": "queue",
+      "to": "worker-host",
+      "implementation": {
+        "state": "not-started",
+        "note": "Example of a declared gap."
+      }
+    },
+    {
+      "id": "control-gates-worker",
+      "title": "Kill switch gates worker",
+      "from": "control-switch",
+      "to": "worker-host"
+    },
+    {
+      "id": "worker-writes-results",
+      "title": "Worker writes results",
+      "from": "worker-host",
+      "to": "results"
+    }
   ],
   "lifecycle": {
     "title": "Job lifecycle",
     "phases": [
-      {"id": "submit", "title": "Submit from idle", "subjects": ["console", "api"], "criterion": "mvp-submit"},
-      {"id": "run", "title": "Run isolated job", "subjects": ["worker-host"], "criterion": "mvp-run"},
-      {"id": "zero", "title": "Return to zero", "subjects": ["api", "worker-host"], "criterion": "mvp-zero"}
+      {
+        "id": "submit",
+        "title": "Submit from idle",
+        "subjects": [
+          "console",
+          "api"
+        ],
+        "criterion": "mvp-submit"
+      },
+      {
+        "id": "wake",
+        "title": "Wake control plane",
+        "subjects": [
+          "api",
+          "queue"
+        ],
+        "criterion": "mvp-wake"
+      },
+      {
+        "id": "enroll",
+        "title": "Enroll worker",
+        "subjects": [
+          "worker-host",
+          "control-switch"
+        ],
+        "criterion": "mvp-enroll"
+      },
+      {
+        "id": "launch",
+        "title": "Launch isolated job",
+        "subjects": [
+          "worker-host",
+          "queue"
+        ],
+        "criterion": "mvp-launch"
+      },
+      {
+        "id": "run",
+        "title": "Run isolated job",
+        "subjects": [
+          "worker-host"
+        ],
+        "criterion": "mvp-run"
+      },
+      {
+        "id": "score",
+        "title": "Score result",
+        "subjects": [
+          "results"
+        ],
+        "criterion": "mvp-score"
+      },
+      {
+        "id": "cleanup",
+        "title": "Clean up job resources",
+        "subjects": [
+          "results",
+          "worker-host"
+        ],
+        "criterion": "mvp-cleanup"
+      },
+      {
+        "id": "stop",
+        "title": "Stop worker",
+        "subjects": [
+          "worker-host",
+          "control-switch"
+        ],
+        "criterion": "mvp-stop"
+      },
+      {
+        "id": "zero",
+        "title": "Return to zero",
+        "subjects": [
+          "api",
+          "worker-host"
+        ],
+        "criterion": "mvp-zero"
+      }
     ]
   },
   "acceptance": [
-    {"id": "mvp-submit", "title": "Console submits from idle", "phase": "submit", "subjects": ["console", "api"]},
-    {"id": "mvp-run", "title": "Isolated job runs on the pinned image", "phase": "run", "subjects": ["worker-host"]},
-    {"id": "mvp-zero", "title": "Compute returns to zero", "phase": "zero", "subjects": ["api", "worker-host"]}
+    {
+      "id": "mvp-submit",
+      "title": "Console submits from idle",
+      "phase": "submit",
+      "subjects": [
+        "console",
+        "api"
+      ]
+    },
+    {
+      "id": "mvp-wake",
+      "title": "Queued job wakes the control plane",
+      "phase": "wake",
+      "subjects": [
+        "api",
+        "queue"
+      ]
+    },
+    {
+      "id": "mvp-enroll",
+      "title": "Worker is enrolled under the kill switch",
+      "phase": "enroll",
+      "subjects": [
+        "worker-host",
+        "control-switch"
+      ]
+    },
+    {
+      "id": "mvp-launch",
+      "title": "Isolated job launches",
+      "phase": "launch",
+      "subjects": [
+        "worker-host",
+        "queue"
+      ]
+    },
+    {
+      "id": "mvp-run",
+      "title": "Isolated job runs on the pinned image",
+      "phase": "run",
+      "subjects": [
+        "worker-host"
+      ]
+    },
+    {
+      "id": "mvp-score",
+      "title": "Result is scored and stored",
+      "phase": "score",
+      "subjects": [
+        "results"
+      ]
+    },
+    {
+      "id": "mvp-cleanup",
+      "title": "Job resources are cleaned up",
+      "phase": "cleanup",
+      "subjects": [
+        "results",
+        "worker-host"
+      ]
+    },
+    {
+      "id": "mvp-stop",
+      "title": "Worker is stopped",
+      "phase": "stop",
+      "subjects": [
+        "worker-host",
+        "control-switch"
+      ]
+    },
+    {
+      "id": "mvp-zero",
+      "title": "Compute returns to zero",
+      "phase": "zero",
+      "subjects": [
+        "api",
+        "worker-host"
+      ]
+    }
+  ],
+  "prerequisites": [
+    {
+      "id": "submission-api",
+      "title": "Submission API",
+      "producer": "api",
+      "resource": "Named API service",
+      "phases": [
+        "submit"
+      ],
+      "baseline": "both",
+      "observation": "api-ecs",
+      "authorization": "awaiting-authorization",
+      "next_check": "Verify the API was at zero before submission, then obtain scoped submission proof from the owner.",
+      "owners": [
+        {
+          "role": "owner",
+          "task": "example-owner"
+        }
+      ]
+    },
+    {
+      "id": "console-source",
+      "title": "Console configuration source",
+      "producer": "console",
+      "resource": "Local console configuration checkout",
+      "phases": [
+        "submit"
+      ],
+      "baseline": "both",
+      "observation": "console-source-git",
+      "authorization": "unknown",
+      "next_check": "Confirm this checkout is the intended source; assess installation separately.",
+      "owners": [
+        {
+          "role": "owner",
+          "task": "example-owner"
+        }
+      ]
+    },
+    {
+      "id": "console-config",
+      "title": "Installed console configuration",
+      "producer": "console",
+      "resource": "Installed console configuration",
+      "phases": [
+        "submit"
+      ],
+      "baseline": "both",
+      "authorization": "unknown",
+      "next_check": "Identify and bind the installed configuration resource, then obtain a matching scoped owner receipt; checkout presence is only source evidence.",
+      "owners": [
+        {
+          "role": "owner",
+          "task": "example-owner"
+        }
+      ]
+    },
+    {
+      "id": "wake-queue",
+      "title": "Job queue",
+      "producer": "queue",
+      "resource": "Named job queue",
+      "phases": [
+        "wake",
+        "launch"
+      ],
+      "baseline": "both",
+      "observation": "queue-sqs",
+      "authorization": "unknown",
+      "owners": [
+        {
+          "role": "owner",
+          "task": "example-owner"
+        }
+      ],
+      "next_check": "Check queue state and obtain a wake receipt."
+    },
+    {
+      "id": "enroll-control",
+      "title": "Worker enrollment control",
+      "producer": "control-switch",
+      "resource": "Kill-switch record",
+      "phases": [
+        "enroll",
+        "stop"
+      ],
+      "baseline": "both",
+      "observation": "control-item",
+      "authorization": "unknown",
+      "owners": [
+        {
+          "role": "owner",
+          "task": "example-owner"
+        }
+      ],
+      "next_check": "Verify the switch stayed halted through enrollment, then record its lift afterward in a scoped owner receipt."
+    },
+    {
+      "id": "worker-host",
+      "title": "Worker host",
+      "producer": "worker-host",
+      "resource": "Named worker host",
+      "phases": [
+        "enroll",
+        "launch",
+        "run",
+        "cleanup",
+        "stop",
+        "zero"
+      ],
+      "baseline": "both",
+      "observation": "worker-ec2",
+      "authorization": "unknown",
+      "owners": [
+        {
+          "role": "owner",
+          "task": "example-owner"
+        }
+      ],
+      "next_check": "Check worker state and obtain phase-specific run evidence."
+    },
+    {
+      "id": "results-store",
+      "title": "Results store",
+      "producer": "results",
+      "resource": "Named results table",
+      "phases": [
+        "score",
+        "cleanup"
+      ],
+      "baseline": "both",
+      "observation": "results-ddb",
+      "expected_state": "present",
+      "authorization": "unknown",
+      "owners": [
+        {
+          "role": "owner",
+          "task": "example-owner"
+        }
+      ],
+      "next_check": "Check table metadata and obtain scoring and cleanup receipts."
+    },
+    {
+      "id": "api-stop",
+      "title": "API stop state",
+      "producer": "api",
+      "resource": "Named API service",
+      "phases": [
+        "stop",
+        "zero"
+      ],
+      "baseline": "both",
+      "observation": "api-ecs",
+      "authorization": "unknown",
+      "owners": [
+        {
+          "role": "owner",
+          "task": "example-owner"
+        }
+      ],
+      "next_check": "After the stop phase, check that API scaling returned to zero and obtain a scoped stop receipt."
+    },
+    {
+      "id": "migration-worker-record",
+      "title": "Migrated worker identity",
+      "producer": "worker-host",
+      "resource": "Prior worker identity for migration reconciliation",
+      "phases": [
+        "enroll"
+      ],
+      "baseline": "migration",
+      "authorization": "unknown",
+      "owners": [
+        {
+          "role": "owner",
+          "task": "example-owner"
+        }
+      ],
+      "next_check": "Ask the owner for the migration inventory; fresh commissioning does not require this record."
+    }
   ],
   "known_gaps": [
-    {"id": "wake-gap", "title": "A queued job does not wake the worker yet", "severity": "high",
-     "detail": "Example of an explicit intended-versus-built gap.", "subjects": ["queue-wakes-worker"],
-     "owners": [{"role": "owner", "task": "example-owner"}]}
+    {
+      "id": "wake-gap",
+      "title": "A queued job does not wake the worker yet",
+      "severity": "high",
+      "detail": "Example of an explicit intended-versus-built gap.",
+      "subjects": [
+        "queue-wakes-worker"
+      ],
+      "owners": [
+        {
+          "role": "owner",
+          "task": "example-owner"
+        }
+      ]
+    }
   ],
   "credentials": [
-    {"id": "api-cert", "title": "API certificate", "kind": "tls-leaf", "purpose": "Service identity for the API.",
-     "owner": "Platform owner", "expires": "2099-01-01T00:00:00Z", "rotation": "Reissue from the platform CA",
-     "subjects": ["api"]}
+    {
+      "id": "api-cert",
+      "title": "API certificate",
+      "kind": "tls-leaf",
+      "purpose": "Service identity for the API.",
+      "owner": "Platform owner",
+      "rotation": "Reissue from the platform CA",
+      "subjects": [
+        "api"
+      ],
+      "expiry_basis": "unknown"
+    }
   ]
 }

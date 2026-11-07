@@ -77,6 +77,7 @@
     severity: { high: "bad", medium: "warn", low: "info", info: "quiet" },
     collector: { ok: "ok", partial: "warn", failed: "bad" }
   };
+  TONES.prerequisite = { present: "info", absent: "absent", denied: "bad", unknown: "unknown", stale: "warn", "not-tested": "quiet", mismatch: "bad", error: "bad", observed: "info" };
   var LABELS = {
     "as-intended": "as intended", "not-observed": "not observed", unobserved: "not observed",
     "not-demonstrated": "not demonstrated", "in-progress": "in progress", "not-started": "not started", "not-run": "not run",
@@ -163,6 +164,7 @@
     renderDiff();
     renderTimeline();
     renderAcceptance();
+    renderReadiness();
     renderCredentials();
     showTab(state.tab, false);
   }
@@ -179,6 +181,7 @@
     var verified = scope.account_verified === true ? "account verified" : scope.account_verified === false ? "account NOT verified" : "account unverified";
     if (scope.region || scope.account_label) append(el, h("span", { text: [scope.account_label, scope.region].filter(Boolean).join(" · ") + " · " + verified }));
     append(el, h("span", { text: "intent r" + v.manifest.revision }));
+    if (c.activity) append(el, h("span", { title: c.activity.reasons.map(function (r) { return r.task + ": " + r.source; }).join(", "), text: (c.activity.active ? "active" : "idle") + " cadence · " + Math.round(c.interval_seconds / 60) + "m" }));
     if (state.collecting) append(el, h("span", { class: "chip chip--info", text: "collecting…" }));
     if (state.loadedAt) append(el, h("span", { title: state.loadedAt.toLocaleString(), text: "page loaded " + ago(state.loadedAt.toISOString()) }));
   }
@@ -417,6 +420,7 @@
     row("Runtime", "runtime", { status: L.runtime.status, detail: "Observed: " + (L.runtime.observed || "nothing yet") + " · intended (" + v.manifest.expected_mode + "): " + (L.runtime.intended || "none declared") });
     row("Proof", "proof", L.proof);
     append(el, dl);
+    if (sub.lineage && sub.lineage.length) append(el, lineageList(sub.lineage));
     if (sub.live_verified !== null && sub.live_verified !== undefined) {
       append(el, h("p", { class: sub.live_verified === true ? "muted" : "callout" }, sub.live_verified === true ? "Landed work on this subject is live-verified by later passing evidence at the current version."
         : sub.live_verified === "unversioned" ? "Landed work on this subject has later passing evidence, but the subject declares no version source, so it is not live-verified across deployments."
@@ -505,7 +509,7 @@
     return g ? g.title : id;
   }
   function credItem(c) {
-    var exp = parseTime(c.expires), soon = exp !== null && exp - Date.now() < 7 * 86400000;
+    var exp = (c.expiry_basis || "observed") === "observed" ? parseTime(c.expires) : null, soon = exp !== null && exp - Date.now() < 7 * 86400000;
     return h("li", { class: "item" }, h("div", { class: "item__head" }, h("strong", { text: c.title }), c.kind ? h("span", { class: "muted", text: c.kind }) : null,
       exp === null ? h("span", { class: "chip chip--unknown", text: "expiry not recorded" }) : h("span", { class: "chip chip--" + (exp < Date.now() ? "bad" : soon ? "warn" : "ok"), text: exp < Date.now() ? "expired" : "expires " + ago(c.expires) })),
       h("div", { text: c.purpose }), h("div", { class: "item__foot", text: "Owner: " + (c.owner || "not recorded") + (c.rotation ? " · Rotation: " + c.rotation : "") + (c.note ? " · " + c.note : "") }));
@@ -666,25 +670,65 @@
     });
   }
 
+  function lineageList(items) {
+    return h("details", null, h("summary", { text: "Source, artifact and installed lineage" }), h("ul", { class: "list" }, items.map(function (item) {
+      return h("li", { class: "item" }, h("strong", { text: item.stage + " · " + item.subject }), " ", chip("prerequisite", item.status),
+        h("div", { class: "cell-sum", text: "Observed version: " + (item.version || "unknown") }),
+        item.reported_version ? h("div", { class: "cell-sum", text: "Reported version: " + item.reported_version + " · " + (item.recorded_at || "time unknown") }) : null,
+        item.provenance ? provenance(item.provenance) : null,
+        item.expected ? h("div", { class: "cell-sum", text: "Expected: " + item.expected }) : null,
+        item.note ? h("div", { class: "muted", text: item.note }) : null);
+    })));
+  }
+
+  function renderReadiness() {
+    var el = clear($("readiness")), v = state.view;
+    if (!v) return;
+    var readiness = v.readiness || { phases: [], prerequisites: [] };
+    if (!readiness.phases.length) append(el, h("p", { class: "muted", text: "Declare lifecycle phases and prerequisites in the intended design to expose coverage." }));
+    readiness.phases.forEach(function (phase) {
+      append(el, h("h3", { class: "h3", text: phase.title }));
+      var checks = readiness.prerequisites.filter(function (p) { return phase.prerequisites.indexOf(p.id) >= 0; });
+      if (!checks.length) { append(el, h("p", { class: "callout", text: "Coverage gap: no prerequisites declared for this phase. Next check: identify its required producers and resources with the phase owner." })); return; }
+      var table = h("table", { class: "table prerequisite-table" }, h("thead", null, h("tr", null,
+        ["Resource / baseline", "Observation / coverage", "Authorization", "Layers", "Owner / next check"].map(function (title) { return h("th", { scope: "col", text: title }); }))));
+      var body = h("tbody");
+      checks.forEach(function (p) {
+        body.appendChild(h("tr", null,
+          h("td", null, h("button", { class: "link", text: p.title, onclick: function () { showTab("map", false); select(p.producer, true); } }), h("span", { class: "cell-sum", text: p.resource }), h("span", { class: "cell-sum muted", text: "Required for: " + p.baseline + " · producer " + p.producer })),
+          h("td", null, chip("prerequisite", p.state), h("span", { class: "cell-sum muted", text: p.coverage + (p.observed_state !== p.state ? " · last state " + p.observed_state : "") }), stamp(p.checked_at),
+            h("details", null, h("summary", { text: "Scope and evidence" }), h("p", { text: p.detail }), h("p", { text: typeof p.scope === "string" ? p.scope : JSON.stringify(p.scope || {}) }), p.provenance ? provenance(p.provenance) : h("p", { class: "muted", text: "No evidence source." }))),
+          h("td", null, h("span", { class: "chip chip--" + (p.authorization === "authorized" || p.authorization === "not-required" ? "info" : "unknown"), text: p.authorization.replace(/-/g, " ") })),
+          h("td", null, Object.keys(p.layers).map(function (key) { return h("span", { class: "cell-sum" }, key + " ", chip(key, p.layers[key].status)); }), p.lineage.length ? lineageList(p.lineage) : null),
+          h("td", null, h("strong", { text: p.owners.map(function (o) { return (o.name || o.role || "owner") + (o.task ? " · " + o.task : ""); }).join(", ") || "Owner not recorded" }), h("span", { class: "cell-sum", text: p.next_check }))));
+      });
+      append(table, body); append(el, h("div", { class: "tablewrap", tabindex: "0", role: "region", "aria-label": phase.title + " prerequisites; scroll for all columns" }, table));
+    });
+  }
+
   function renderCredentials() {
     var v = state.view, body = $("cred-table").tBodies[0];
     clear(body);
     if (!v) return;
-    var creds = v.manifest.credentials || [];
+    var creds = v.credentials || v.manifest.credentials || [];
     if (!creds.length) body.appendChild(h("tr", null, h("td", { colspan: "5", class: "muted", text: "No credentials described." })));
     creds.forEach(function (c) {
-      var exp = parseTime(c.expires);
+      var exp = (c.expiry_basis || "observed") === "observed" ? parseTime(c.expires) : null, soon = exp !== null && exp - Date.now() < 7 * 86400000;
       body.appendChild(h("tr", null,
         h("td", null, h("strong", { text: c.title }), c.kind ? h("span", { class: "cell-sum muted", text: c.kind }) : null),
         h("td", { text: c.purpose }),
-        h("td", { text: c.owner || "not recorded" }),
-        h("td", null, exp === null ? h("span", { class: "chip chip--unknown", text: "not recorded" }) : [h("span", { class: "chip chip--" + (exp < Date.now() ? "bad" : exp - Date.now() < 7 * 86400000 ? "warn" : "ok"), text: exp < Date.now() ? "expired" : ago(c.expires) }), h("span", { class: "cell-sum", text: c.expires })]),
+        h("td", null, c.owner || "not recorded", h("span", { class: "cell-sum", text: "Renewal owner: " + (c.renewal_owner || c.owner || "unknown") }), h("span", { class: "cell-sum", text: "Mechanism: " + (c.rotation || "unknown") }), h("span", { class: "cell-sum", text: "Restart required: " + (c.restart_required || "unknown") })),
+        h("td", null, exp === null ? h("span", { class: "chip chip--unknown", text: "not recorded" }) : [h("span", { class: "chip chip--" + (exp < Date.now() ? "bad" : soon ? "warn" : "ok"), text: exp < Date.now() ? "expired" : ago(c.expires) }), h("span", { class: "cell-sum", text: c.expires + " · " + (c.expiry_basis || "observed") })],
+          h("span", { class: "cell-sum", text: "Issuer: " + (c.issuer || "not recorded") }), c.expected_expires ? h("span", { class: "cell-sum", text: "Inferred expiry: " + c.expected_expires }) : null,
+          c.full_window_seconds ? h("span", { class: "cell-sum", text: "Full window: " + (c.full_window || "unknown") + " · " + c.full_window_seconds + " seconds" }) : null,
+          c.full_window_seconds ? h("span", { class: "cell-sum", text: "Latest safe start (strictly before): " + (c.latest_safe_start || "unknown") }) : null,
+          c.note ? h("details", null, h("summary", { text: "Evidence and limits" }), h("p", { text: c.note })) : null),
         h("td", { text: (c.subjects || []).map(function (sid) { return (v.subjects[sid] || {}).title || sid; }).join(", ") })));
     });
   }
 
   // ---------------------------------------------------------------- tabs
-  var TABS = { map: "tab-map", diff: "tab-diff", life: "tab-life", accept: "tab-accept", cred: "tab-cred" };
+  var TABS = { map: "tab-map", ready: "tab-ready", diff: "tab-diff", life: "tab-life", accept: "tab-accept", cred: "tab-cred" };
   function showTab(name, focus) {
     if (!TABS[name]) name = "map";
     state.tab = name; writeHash();

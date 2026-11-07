@@ -14,7 +14,7 @@
 #   tick                       Scheduled entry point (user timer). Collects each
 #                              configured project when its cadence is due
 #                              (active_interval while a ship or scout task record
-#                              exists; persistent secondmate records never count;
+#                              exists or parent records show delegated activity;
 #                              idle_interval otherwise) and queues the daily
 #                              review request. Never starts a supervisor.
 #   collect [project]          Collect now. Exit 75 when another collection holds
@@ -25,7 +25,8 @@
 #   status                     Collector health, scheduler units, watcher check.
 #   view [project] [--compact] Print the derived read-only view as JSON: per
 #                              subject implementation, deployment, runtime, and
-#                              proof layers, discrepancies, acceptance, timeline.
+#                              proof layers, prerequisites, lineage, credential
+#                              timing, discrepancies, acceptance, timeline.
 #   validate [project]         Validate manifest, bindings, and evidence. Exit 1
 #                              when a binding or evidence record is unusable.
 #   serve                      Serve the UI on 127.0.0.1 at the configured port.

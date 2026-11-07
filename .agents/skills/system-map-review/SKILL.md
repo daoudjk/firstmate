@@ -25,6 +25,7 @@ It adds no supervisor, no task ledger, and no cloud action: every follow-up goes
 ## Daily review and discrepancy wakes
 
 1. Compare the intended design, the latest observations, and the evidence records for each open discrepancy.
+   Inspect the prerequisite view for uncovered phases, uncollected or denied observations, missing evidence, and owner or next-check gaps even when no discrepancy has opened; `docs/system-map.md` owns those states.
 2. Read what changed since the previous review: new completion records, newly opened or resolved discrepancies, the bound tasks' current state through `bin/fm-crew-state.sh`, and recent merges in the bound projects.
 3. For each open discrepancy, decide one of:
    - it is already owned: link it to the existing backlog task with `bin/fm-system-map.sh link <project> <discrepancy> <task>`;
@@ -32,6 +33,7 @@ It adds no supervisor, no task ledger, and no cloud action: every follow-up goes
    - it is an intended-design error: propose the edit to the captain; change intent only on the captain's word, with `intent set` or `intent replace`;
    - it is an accepted exception: leave it open and visible, and make sure its exception text names the approver and the end condition.
 4. Suggest only fixes the evidence supports, and name that evidence.
+   For a prerequisite gap without a discrepancy, use its owner and next check to route ordinary work or surface an intended-design decision; do not imply that prerequisite presence proves the phase.
 5. Record the review with `bin/fm-system-map.sh review-done <project> --note "<one line>"`.
    Acknowledge a single request without a full review only with `ack <project> <key>`.
 6. Report to the captain only exceptions under `AGENTS.md` section 9: a new high-severity discrepancy, an expiring credential, a collector that keeps failing, or a decision the map exposed.

@@ -9,6 +9,7 @@
                      "state_attribute": "Halted", "state_map": {"true": "halted", "false": "open"}},
     "results_table": {"table": "example-results"},
     "worker_host": {"instance_id": "i-0123456789abcdef0", "pin": "ami-0123456789abcdef0", "label": "worker host"},
+    "console_source": {"path": "projects/example-platform/console-config-checkout", "ref": "HEAD"},
     "platform_source": {"path": "projects/example-platform", "ref": "HEAD"},
     "owner_task": {"task": "example-owner"}
   }
