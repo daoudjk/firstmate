@@ -544,6 +544,8 @@ def validate_manifest(manifest):
                 raise MapError("%s.%s: must be an ISO-8601 timestamp" % (w, key))
         if cred.get("expiry_basis", "unknown") not in ("observed", "inferred", "unknown"):
             raise MapError("credential.expiry_basis: observed, inferred, or unknown")
+        if "expires" in cred and cred.get("expiry_basis") == "inferred":
+            raise MapError("credential.expires: put inferred dates in expected_expires")
         if "restart_required" in cred and cred["restart_required"] not in ("yes", "no", "unknown"):
             raise MapError("credential.restart_required: yes, no, or unknown")
         if "full_window_seconds" in cred and _req(cred, "full_window_seconds", "int", w) <= 0:
@@ -1692,6 +1694,8 @@ def derive_discrepancies(home, cfg, project):
         subject = (gap.get("subjects") or ["design"])[0]
         add("gap", subject, gap["id"], gap["title"], gap.get("detail", ""), gap.get("severity", "medium"), gap.get("owners", []))
     for cred in manifest.get("credentials", []):
+        if cred.get("expiry_basis") != "observed":
+            continue
         expires = parse_iso(cred.get("expires"))
         if expires is None:
             continue

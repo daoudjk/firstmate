@@ -509,7 +509,7 @@
     return g ? g.title : id;
   }
   function credItem(c) {
-    var exp = parseTime(c.expires), soon = exp !== null && exp - Date.now() < 7 * 86400000;
+    var exp = c.expiry_basis === "observed" ? parseTime(c.expires) : null, soon = exp !== null && exp - Date.now() < 7 * 86400000;
     return h("li", { class: "item" }, h("div", { class: "item__head" }, h("strong", { text: c.title }), c.kind ? h("span", { class: "muted", text: c.kind }) : null,
       exp === null ? h("span", { class: "chip chip--unknown", text: "expiry not recorded" }) : h("span", { class: "chip chip--" + (exp < Date.now() ? "bad" : soon ? "warn" : "ok"), text: exp < Date.now() ? "expired" : "expires " + ago(c.expires) })),
       h("div", { text: c.purpose }), h("div", { class: "item__foot", text: "Owner: " + (c.owner || "not recorded") + (c.rotation ? " · Rotation: " + c.rotation : "") + (c.note ? " · " + c.note : "") }));
@@ -719,7 +719,7 @@
     });
     if (!creds.length) body.appendChild(h("tr", null, h("td", { colspan: "5", class: "muted", text: "No credentials described." })));
     creds.forEach(function (c) {
-      var exp = parseTime(c.expires);
+      var exp = c.expiry_basis === "observed" ? parseTime(c.expires) : null;
       body.appendChild(h("tr", null,
         h("td", null, h("strong", { text: c.title }), c.kind ? h("span", { class: "cell-sum muted", text: c.kind }) : null),
         h("td", { text: c.purpose }),

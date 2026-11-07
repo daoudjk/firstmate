@@ -37,6 +37,7 @@ Without that file every integration point is a silent no-op, so a home that neve
 2. Prepare a manifest file for the intended design, then install it with `bin/fm-system-map.sh intent init <project> <file>`; write private resource names to `data/system-map/<project>/bindings.json`.
    The tracked [sample manifest](examples/system-map/sample.manifest.json) and [sample bindings](examples/system-map/sample.bindings.json) show both shapes.
    The sample declares prerequisites for submit, wake, enroll, launch, score, cleanup, and stop, plus run and return to zero; its nine acceptance criteria require separate proof.
+   Its console checkout observation establishes source availability; installed configuration remains unknown until a separate deployment resource and matching evidence are bound.
    Private project manifests, resource identifiers, and activation proposals stay in that project's local data rather than this repository; installing a proposal remains an operator decision.
 3. Run `bin/fm-system-map.sh validate <project>` until it reports no binding problems, then `collect <project>` once.
 4. On a host with a working systemd user manager, run `bin/fm-system-map.sh install` to install the collector timer, the UI service, and the watcher check.
@@ -123,7 +124,7 @@ A subject with no `version_from` cannot carry version-bound proof: a pass on it 
 
 Manifests, bindings, and evidence refuse fields or values that look like credential material.
 Credential records extend purpose, owner, `expires`, and `rotation` with optional `issuer` (another credential ID), `not_before`, `expiry_basis` (`observed`, `inferred`, or `unknown`), `expected_expires`, `observed_at`, `evidence`, `renewal_group`, `renewal_owner`, `restart_required` (`yes`, `no`, or `unknown`), and positive `full_window_seconds`.
-`expected_expires` records an inference without substituting it for an observed expiry.
+`expected_expires` records an inference without substituting it for an observed expiry; inferred dates cannot be stored in `expires`, and only `expires` with `expiry_basis: observed` drives expiry alerts or safe timing.
 The credential view groups renewal dependencies while retaining each identity's expiry, renewal mechanism, owner, and limits, including identities outside a group.
 For a full run the start must be strictly before the earliest chain expiry minus the entire support interval, and after every known not-before time.
 `latest_safe_start`, remaining seconds and `fits`/`does-not-fit` require observed expiries throughout the issuer chain and known not-before dates for certificates; missing validity, an inferred expiry or a cycle leaves feasibility unknown.

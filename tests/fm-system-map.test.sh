@@ -192,7 +192,7 @@ path = sys.argv[1]
 with open(path) as handle: manifest = json.load(handle)
 manifest["components"] = [subject for subject in manifest["components"] if subject["id"] not in ("source", "owner")]
 next(subject for subject in manifest["components"] if subject["id"] == "console").pop("observe", None)
-manifest["prerequisites"] = [item for item in manifest["prerequisites"] if item["id"] != "console-config"]
+manifest["prerequisites"] = [item for item in manifest["prerequisites"] if item["id"] not in ("console-source", "console-config")]
 with open(path, "w") as handle: json.dump(manifest, handle)
 PY
   map "$home" collect >/dev/null || fail "initial collection failed"
@@ -497,7 +497,7 @@ with open(manifest_path) as handle: manifest = json.load(handle)
 console = next(item for item in manifest["components"] if item["id"] == "console")
 console["intended"] = {"idle": "stopped", "active": "running"}
 console["observe"] = [{"id": "tagged-workers", "adapter": "aws.ec2_tagged_instances", "binding": "tagged_workers"}]
-manifest["prerequisites"] = [item for item in manifest["prerequisites"] if item["id"] != "console-config"]
+manifest["prerequisites"] = [item for item in manifest["prerequisites"] if item["id"] not in ("console-source", "console-config")]
 with open(manifest_path, "w") as handle: json.dump(manifest, handle)
 with open(bindings_path) as handle: bindings = json.load(handle)
 bindings["bindings"]["tagged_workers"] = {"tag_key": "example-worker"}
@@ -1130,6 +1130,10 @@ PY
 test_sample_lifecycle_coverage() {
   local home
   home=$(new_home sample-lifecycle)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); next(item for item in manifest['prerequisites'] if item['id']=='console-config')['evidence']='console-install-report'; json.dump(manifest,open(p,'w'))
+PY
   map "$home" validate >/dev/null || fail "sample lifecycle is invalid"
   view_json "$home"
   python3 - "$home/view.json" <<'PY' || fail "sample lifecycle coverage or proof state is wrong"
@@ -1148,34 +1152,33 @@ assert view['credentials'][0]['expiry_basis'] == 'unknown'
 assert view['credentials'][0]['latest_safe_start'] is None
 assert 'latest_possible_start' not in view['credentials'][0]
 PY
-  aws_state "$home" '{"queue_visible":1,"control_halted":false}'
+  mkdir -p "$home/projects/example-platform/console-config-checkout"
+  git -C "$home/projects/example-platform/console-config-checkout" init -q || fail "source checkout fixture could not initialize"
+  git -C "$home/projects/example-platform/console-config-checkout" -c user.name=Fixture -c user.email=fixture@example.invalid commit --allow-empty -qm source || fail "source checkout fixture could not commit"
+  aws_state "$home" '{"queue_visible":1,"control_halted":false,"ecs_running":1}'
   map "$home" collect >/dev/null || fail "queued-work collection failed"
   view_json "$home"
+  assert_equals "running" "$(py "$home/view.json" 'd["subjects"]["api"]["observations"][0]["current"]["state"]')" "fixture represents the post-submit API"
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "submission-api"][0]["state"]')" "post-submit running state does not contradict API availability"
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "api-stop"][0]["state"]')" "pre-stop running state does not contradict API availability"
   assert_equals "holding" "$(py "$home/view.json" 'd["subjects"]["queue"]["observations"][0]["current"]["state"]')" "fixture represents queued work"
   assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "wake-queue"][0]["state"]')" "queued work does not contradict the wake prerequisite"
   assert_equals "open" "$(py "$home/view.json" 'd["subjects"]["control-switch"]["observations"][0]["current"]["state"]')" "fixture represents the post-enrollment lift"
   assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "enroll-control"][0]["state"]')" "post-enrollment lift does not imply enrollment mismatch"
-  python3 - "$home/data/system-map/example/manifest.json" "$home/view.json" "$home/console-receipt.json" <<'PY'
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "console-source"][0]["state"]')" "checkout establishes source availability"
+  assert_equals "unknown" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "console-config"][0]["state"]')" "source checkout does not establish installation"
+  python3 - "$home/view.json" "$home/console-receipt.json" <<'PY'
 import datetime,json,sys
-manifest_path,view_path,receipt_path=sys.argv[1:]
-manifest=json.load(open(manifest_path)); view=json.load(open(view_path))
-manifest['revision']+=1
-next(p for p in manifest['prerequisites'] if p['id']=='console-config')['evidence']='console-install-report'
-json.dump(manifest,open(manifest_path,'w'))
+view_path,receipt_path=sys.argv[1:]
+view=json.load(open(view_path))
 identity=view['subjects']['console']['observations'][0]['current']['binding_digest']
-receipt={'schema':'fm-system-map.evidence.v1','id':'console-install-report','subjects':['console'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Owner assessment of the bound checkout.','scope':'example console checkout','resource_identities':{'console':identity},'prerequisites':{'console-config':'present'},'provenance':{'kind':'imported-report','source':'fixture owner'}}
+receipt={'schema':'fm-system-map.evidence.v1','id':'console-install-report','subjects':['console'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Source checkout alone does not prove installation.','scope':'example console checkout','resource_identities':{'console':identity},'prerequisites':{'console-config':'present'},'provenance':{'kind':'imported-report','source':'fixture owner'}}
 json.dump(receipt,open(receipt_path,'w'))
 PY
-  map "$home" evidence add example "$home/console-receipt.json" >/dev/null || fail "bound console receipt rejected"
+  map "$home" evidence add example "$home/console-receipt.json" >/dev/null || fail "source-scoped console receipt rejected"
   view_json "$home"
-  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "console-config"][0]["state"]')" "bound console receipt qualifies without a current observation"
-  assert_equals "imported" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "console-config"][0]["coverage"]')" "bound console assessment retains imported provenance"
-  python3 - "$home/data/system-map/example/bindings.json" <<'PY'
-import json,sys
-p=sys.argv[1]; bindings=json.load(open(p)); bindings['bindings']['console_config']['path']='projects/example-platform/replacement-config-checkout'; json.dump(bindings,open(p,'w'))
-PY
-  view_json "$home"
-  assert_equals "unknown" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "console-config"][0]["state"]')" "old checkout receipt cannot assess a replacement checkout"
+  assert_equals "unknown" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "console-config"][0]["state"]')" "source-scoped receipt cannot qualify installed configuration"
+  assert_equals "missing-evidence" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "console-config"][0]["coverage"]')" "installed configuration still lacks bound evidence"
   pass "sample covers lifecycle prerequisites without manufacturing proof or issuer validity"
 }
 
@@ -1199,7 +1202,7 @@ assert abs(parse(c[0]['expires'])-parse(c[1]['latest_safe_start'])-3600)<1
 PY
   python3 - "$home/data/system-map/example/manifest.json" <<'PY'
 import json,sys
-p=sys.argv[1]; m=json.load(open(p)); m['credentials'][0]['expiry_basis']='inferred'; json.dump(m,open(p,'w'))
+p=sys.argv[1]; m=json.load(open(p)); issuer=m['credentials'][0]; issuer['expiry_basis']='inferred'; issuer['expected_expires']=issuer.pop('expires'); json.dump(m,open(p,'w'))
 PY
   view_json "$home"
   assert_equals "unknown" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "inferred issuer cannot establish feasibility"
@@ -1207,7 +1210,7 @@ PY
   assert_equals "False" "$(py "$home/view.json" '"latest_possible_start" in d["credentials"][1]')" "unknown timing has no speculative upper bound"
   python3 - "$home/data/system-map/example/manifest.json" <<'PY'
 import json,sys
-p=sys.argv[1]; m=json.load(open(p)); issuer=m['credentials'][0]; issuer['expiry_basis']='observed'; issuer.pop('not_before'); issuer.pop('kind'); json.dump(m,open(p,'w'))
+p=sys.argv[1]; m=json.load(open(p)); issuer=m['credentials'][0]; issuer['expiry_basis']='observed'; issuer['expires']=issuer.pop('expected_expires'); issuer.pop('not_before'); issuer.pop('kind'); json.dump(m,open(p,'w'))
 PY
   view_json "$home"
   assert_equals "unknown" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "unlabeled issuer without validity cannot qualify safe timing"
@@ -1225,6 +1228,36 @@ PY
   view_json "$home"
   assert_equals "fits" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "entire observed chain has full interval"
   pass "full-window timing accounts for issuer validity and inference"
+}
+
+test_inferred_expiry_does_not_alert() {
+  local home rc out
+  home=$(new_home inferred-expiry)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import datetime,json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); expired=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(days=1)).isoformat()
+manifest['credentials']=[{'id':'inferred-cert','title':'Inferred certificate','kind':'tls-leaf','purpose':'Test identity','expiry_basis':'inferred','expected_expires':expired,'subjects':['api'],'full_window_seconds':3600}]
+json.dump(manifest,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "inferred-expiry fixture collection failed"
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" 'any(g["kind"] == "credential" for g in d["discrepancies"])')" "inferred expiry cannot create an observed expiry alert"
+  assert_equals "None" "$(py "$home/view.json" 'd["credentials"][0]["latest_safe_start"]')" "inferred expiry cannot establish safe start"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); cred=manifest['credentials'][0]; cred['expires']=cred['expected_expires']; json.dump(manifest,open(p,'w'))
+PY
+  rc=0; out=$(map "$home" validate 2>&1) || rc=$?
+  expect_code 1 "$rc" "inferred date in observed expiry field is rejected"
+  assert_contains "$out" "put inferred dates in expected_expires" "inferred expiry uses its separate field"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); cred=manifest['credentials'][0]; cred['expiry_basis']='observed'; cred.pop('expected_expires'); json.dump(manifest,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "observed-expiry fixture collection failed"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'any(g["kind"] == "credential" and "expired" in g["title"] for g in d["discrepancies"])')" "observed expiry still creates an alert"
+  pass "inferred expiry stays separate from observed alerts and timing"
 }
 
 test_historical_imported_assessment() {
@@ -1305,6 +1338,7 @@ PY
 test_proactive_prerequisites_and_lineage
 test_sample_lifecycle_coverage
 test_credential_full_window
+test_inferred_expiry_does_not_alert
 test_historical_imported_assessment
 test_delegated_active_to_idle
 

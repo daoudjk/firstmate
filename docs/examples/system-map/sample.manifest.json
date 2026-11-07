@@ -38,9 +38,9 @@
       "description": "Submits a job from idle.",
       "observe": [
         {
-          "id": "console-config-git",
+          "id": "console-source-git",
           "adapter": "git.revision",
-          "binding": "console_config"
+          "binding": "console_source"
         }
       ],
       "implementation": {
@@ -403,9 +403,27 @@
       ],
       "baseline": "both",
       "observation": "api-ecs",
-      "expected_state": "zero",
       "authorization": "awaiting-authorization",
-      "next_check": "Obtain current configuration and console submission proof from the owner.",
+      "next_check": "Verify the API was at zero before submission, then obtain scoped submission proof from the owner.",
+      "owners": [
+        {
+          "role": "owner",
+          "task": "example-owner"
+        }
+      ]
+    },
+    {
+      "id": "console-source",
+      "title": "Console configuration source",
+      "producer": "console",
+      "resource": "Local console configuration checkout",
+      "phases": [
+        "submit"
+      ],
+      "baseline": "both",
+      "observation": "console-source-git",
+      "authorization": "unknown",
+      "next_check": "Confirm this checkout is the intended source; assess installation separately.",
       "owners": [
         {
           "role": "owner",
@@ -415,16 +433,15 @@
     },
     {
       "id": "console-config",
-      "title": "Console configuration",
+      "title": "Installed console configuration",
       "producer": "console",
-      "resource": "Local console configuration checkout",
+      "resource": "Installed console configuration",
       "phases": [
         "submit"
       ],
       "baseline": "both",
-      "observation": "console-config-git",
       "authorization": "unknown",
-      "next_check": "Match an owner receipt to this checkout and verify the installed configuration; source alone does not establish installation.",
+      "next_check": "Identify and bind the installed configuration resource, then obtain a matching scoped owner receipt; checkout presence is only source evidence.",
       "owners": [
         {
           "role": "owner",
@@ -528,7 +545,6 @@
       ],
       "baseline": "both",
       "observation": "api-ecs",
-      "expected_state": "zero",
       "authorization": "unknown",
       "owners": [
         {
@@ -536,7 +552,7 @@
           "task": "example-owner"
         }
       ],
-      "next_check": "Check service scaling and obtain a stop receipt."
+      "next_check": "After the stop phase, check that API scaling returned to zero and obtain a scoped stop receipt."
     },
     {
       "id": "migration-worker-record",
