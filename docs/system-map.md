@@ -37,7 +37,7 @@ Without that file every integration point is a silent no-op, so a home that neve
 2. Prepare a manifest file for the intended design, then install it with `bin/fm-system-map.sh intent init <project> <file>`; write private resource names to `data/system-map/<project>/bindings.json`.
    The tracked [sample manifest](examples/system-map/sample.manifest.json) and [sample bindings](examples/system-map/sample.bindings.json) show both shapes.
    The sample declares prerequisites for submit, wake, enroll, launch, score, cleanup, and stop, plus run and return to zero; its nine acceptance criteria require separate proof.
-   Its console checkout observation establishes source availability; installed configuration remains unknown until a separate deployment resource and matching evidence are bound.
+   Its console checkout observation establishes source availability; installed configuration remains unknown until a separate deployment resource is observed, and its proof requires matching evidence.
    Private project manifests, resource identifiers, and activation proposals stay in that project's local data rather than this repository; installing a proposal remains an operator decision.
 3. Run `bin/fm-system-map.sh validate <project>` until it reports no binding problems, then `collect <project>` once.
 4. On a host with a working systemd user manager, run `bin/fm-system-map.sh install` to install the collector timer, the UI service, and the watcher check.
@@ -61,7 +61,7 @@ Without that file every integration point is a silent no-op, so a home that neve
 | Path | Owner | Content |
 | --- | --- | --- |
 | `config/system-map` | captain | Opt-in and cadences. |
-| `data/system-map/<project>/manifest.json` | intended design | Groups, components, connections, intended state per mode, owners, observation declarations, version and pin sources, lifecycle phases, acceptance criteria, known gaps, credential metadata. |
+| `data/system-map/<project>/manifest.json` | intended design | Groups, components, connections, intended state per mode, owners, observations, version and pin sources, lifecycle phases, prerequisites, lineage, acceptance criteria, known gaps, credential metadata. |
 | `data/system-map/<project>/bindings.json` | private | Region, account label, optional expected account, CLI profile name, and per-binding resource names; `firstmate_projects` names the Firstmate projects whose tasks need a map reference. |
 | `data/system-map/<project>/evidence/` | append-only | One version-bound evidence record per file. |
 | `data/system-map/<project>/inbox/` | drop box | Receipts the next collection validates and moves into `evidence/`; invalid ones move to `inbox/rejected/`. |
@@ -92,14 +92,14 @@ Snapshots and successful reads carry a canonical digest of the validated binding
 
 Optional manifest `prerequisites` is a list of `{id, title, producer, resource, phases, baseline, next_check}` records.
 `producer` names an existing subject, `phases` is a nonempty list of declared lifecycle phase IDs, and `baseline` is `fresh`, `migration`, or `both`.
-Optional `observation` must belong to that producer; optional `evidence` names an existing evidence ID whose `prerequisites` map assesses this prerequisite.
+Optional `observation` must belong to that producer; optional `evidence` names a receipt ID whose `prerequisites` map assesses this prerequisite, with a missing receipt shown as missing evidence.
 Optional `expected_state` tests the observation's resource state, `owners` uses the existing owner/task shape, and `authorization` is independently `authorized`, `awaiting-authorization`, `denied`, `unknown` (default), or `not-required`.
 A successful read yields `present` or `mismatch`; `absent`, `denied`, `error`, `unknown`, `not-tested` and `stale` remain separate.
 Freshness follows twice the current collection interval; stale records retain their earlier `observed_state` and time.
 The view distinguishes `observed`, `imported`, `uncovered`, `uncollected` and `missing-evidence` coverage, and flags phases with no prerequisites declared.
 An observation takes precedence over an imported assessment, including when it fails; neither presence nor authorization grants phase proof.
 Imported assessments carry a `prerequisites` map from prerequisite ID to `present`, `absent`, `denied`, `unknown`, or `not-tested` on an ordinary evidence record, plus a required textual `scope`.
-An imported assessment qualifies only when its existing `resource_identities` entry for the producer matches the current bound observation digest, or the producer's current version identity when no observation is declared, and its `versions` entry matches the producer's current observed version; missing or mismatched versions, bindings or identities leave it unknown with missing evidence coverage.
+An imported assessment qualifies only when its `resource_identities` entry for the producer matches the currently bound prerequisite observation digest, or the producer's current version observation identity when the prerequisite declares no observation, and its `versions` entry matches the producer's current observed version; missing or mismatched versions, bindings or identities leave it unknown with missing evidence coverage.
 They retain that record's observed/recorded time and provenance and never become collector observations; future-dated prerequisite assessments are rejected at intake.
 Only the new prerequisite references are validated at intake; the existing deferred criterion/phase receipt-validation work remains separate.
 
@@ -107,7 +107,8 @@ Optional subject `lineage` is a list of `{stage, subject, expected?, evidence?, 
 `stage` is `source`, `artifact`, `installed`, or `config`, and `subject` names the independently tracked subject for that stage.
 The view carries its current observed version, resource identity, observations and four layers; `expected` yields an explicit mismatch only when the current observed version differs.
 An optional evidence ID can supply a separately labeled `reported_version` from that receipt's `versions[subject]` when no version is observed.
-Reported or historical lineage never changes deployment or qualifies as live proof; receipt-reported lineage without a matching current resource binding stays stale, and a source revision or built artifact alone establishes no installed version.
+Reported or historical lineage never changes deployment or qualifies as live proof; receipt-reported lineage without a matching current resource binding stays stale, while a matching binding identifies the resource but cannot establish its current installed version.
+Source revisions and built artifacts alone establish no installed version.
 Stages with no observed version or receipt remain unknown; unqualified receipt reports remain visible as stale.
 
 An evidence record (`fm-system-map.evidence.v1`) names its subjects, optional criterion, phase and run id, the exact `versions` it covers, a `pass`, `fail`, or `not-run` result, timestamps, a summary, and provenance.
@@ -127,7 +128,7 @@ Credential records extend purpose, owner, `expires`, and `rotation` with optiona
 `expected_expires` records an inference without substituting it for an observed expiry; inferred dates cannot be stored in `expires`, and `expires` drives expiry alerts or safe timing when `expiry_basis` is `observed` or omitted for compatibility with existing manifests.
 The credential view shows each identity's expiry, renewal mechanism, owner, issuer, and limits.
 For a full run the start must be strictly before the earliest chain expiry minus the entire support interval, and after every known not-before time.
-`latest_safe_start`, remaining seconds and `fits`/`does-not-fit` require observed expiries throughout the issuer chain and known not-before dates for certificates; missing validity, an inferred expiry or a cycle leaves feasibility unknown.
+`latest_safe_start`, remaining seconds and `fits`/`does-not-fit` require observed expiries and known not-before dates throughout the issuer chain; missing validity, an inferred expiry or a cycle leaves feasibility unknown.
 An expiry within seven days opens a discrepancy under its existing stable credential ID.
 
 ## Supervision integration
