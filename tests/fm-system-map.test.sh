@@ -57,6 +57,9 @@ if svc in st.get("missing", []):
     sys.stderr.write("ResourceNotFoundException: resource does not exist"); sys.exit(254)
 if svc in st.get("deny", []):
     sys.stderr.write("An error occurred (AccessDeniedException) when calling %s: User arn:aws:iam::123456789012:user/x is not authorized" % op); sys.exit(254)
+if op == "get-role" and "--role-name" in args:
+    role_name = args[args.index("--role-name") + 1]
+    if role_name in st.get("role_responses", {}): out(st["role_responses"][role_name])
 if op in st.get("responses", {}): out(st["responses"][op])
 if op == "describe-task-definition" and "--include" not in args: sys.exit(23)
 if svc == "sts": out({"Account": st.get("account", "123456789012"), "Arn": "arn:aws:iam::123456789012:user/fixture", "UserId": "fixture"})
@@ -1673,6 +1676,23 @@ PYTEST
   assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "identical refreshed checks preserve exact receipt binding"
   cp "$home/data/system-map/example/manifest.json" "$home/participant-manifest.json"
   cp "$home/data/system-map/example/bindings.json" "$home/participant-bindings.json"
+  cp "$home/aws-state.json" "$home/trust-state.json"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); source=next(s for s in m['components'] if s['id']=='trust-source'); source['observe'].insert(0,{'id':'other-source-read','adapter':'aws.iam_role_access','binding':'other_source_role','role':'info'}); p.write_text(json.dumps(m)); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['other_source_role']={'role_name':'fixture-other'}; p.write_text(json.dumps(b)); p=h/'aws-state.json'; s=json.load(open(p)); base=s['responses']['get-role']; a=json.loads(json.dumps(base)); a['Arn']='arn:aws:iam::123456789012:role/fixture-source'; other=json.loads(json.dumps(base)); other['Arn']='arn:aws:iam::123456789012:role/fixture-other'; s['role_responses']={'fixture-source':a,'fixture-other':other}; s['responses']['get-role']['AssumeRolePolicyDocument']['Statement'][0]['Principal']['AWS']=other['Arn']; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "conflicting trust role collection"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); snap=json.load(open(h/'state/system-map/example/snapshot.json')); facts=snap['observations']['access-trust']['facts']; p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); dep=next(d for d in m['access_dependencies'] if d['id']=='trust-check'); dep['baseline'].update({k:facts[k] for k in ('format','complete','sha256','raw_sha256','relationships_sha256')}); p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "wrong-reference" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "unrelated successful role read cannot satisfy trust reference"
+  assert_equals "insufficient-evidence" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["comparison"]')" "matching trust baseline cannot hide wrong referenced resource"
+  cp "$home/participant-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/participant-bindings.json" "$home/data/system-map/example/bindings.json"
+  cp "$home/trust-state.json" "$home/aws-state.json"
+  map "$home" collect >/dev/null || fail "restore trust references"
   python3 - "$home" <<'PYTEST'
 import json,sys,pathlib
 h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); bucket=next(s for s in m['components'] if s['id']=='access-bucket'); bucket['observe'].append({'id':'other-bucket-read','adapter':'aws.s3_policy','binding':'other_bucket','role':'info'}); check=next(d for d in m['access_dependencies'] if d['id']=='bucket-check'); m['access_dependencies'].append(dict(check,id='other-bucket-check',title='Other bucket policy',observation='other-bucket-read')); i=dict(m['interactions'][0],id='wrong-bound-resource',title='Wrong bound bucket policy',evidence='wrong-bound-request'); i['dependencies']=['other-bucket-check' if d=='bucket-check' else d for d in i['dependencies']]; m['interactions'].append(i); p.write_text(json.dumps(m)); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['other_bucket']={'bucket':'other-fixture'}; p.write_text(json.dumps(b))

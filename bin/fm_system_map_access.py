@@ -495,7 +495,7 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
         d["unobserved_policy_documents"] = [pid for pid in required if pid not in observed_policies]
         d["reference_states"] = []
         for sid in d.get("references", []):
-            role_observations = [observations.get(o["id"], {}) for o in declarations[sid].get("observe", []) if o["adapter"] == "aws.iam_role_access"]
+            role_observations = [observations.get(o["id"], {}) for o in declarations[sid].get("observe", []) if o["adapter"] == "aws.iam_role_access" and same_resource(sid, o)]
             candidate = next((o for o in role_observations if o.get("outcome") == "ok"), role_observations[0] if role_observations else {})
             state = candidate.get("outcome", "unobserved")
             if state == "ok":
