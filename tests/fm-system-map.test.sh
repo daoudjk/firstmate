@@ -1082,7 +1082,7 @@ PY
   map "$home" evidence add example "$home/receipt.json" >/dev/null || fail "owner receipt rejected"
   view_json "$home"
   assert_equals "not-tested" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][4]["state"]')" "not tested differs from unknown"
-  assert_equals "reported" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["status"]')" "local artifact is a reported stage"
+  assert_equals "stale" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["status"]')" "unbound artifact report is not current lineage"
   assert_equals "None" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["version"]')" "reported artifact does not create an observed deployment"
   python3 - "$home/receipt.json" "$home/historical-lineage.json" "$home/data/system-map/example/manifest.json" <<'PY'
 import json,sys
@@ -1138,6 +1138,38 @@ PY
   expect_code 1 "$rc" "unknown prerequisite observation rejected"
   assert_contains "$out" "must belong to its producer" "prerequisite observation ownership enforced"
   pass "prerequisites distinguish coverage, denial, absence, stale, untested, authorization and lineage"
+}
+
+test_lineage_report_requires_current_binding() {
+  local home
+  home=$(new_home lineage-binding)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p))
+next(c for c in manifest['components'] if c['id']=='api')['lineage']=[{'stage':'installed','subject':'worker-host','expected':'ami-new','evidence':'lineage-report'}]
+json.dump(manifest,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "lineage binding fixture collection failed"
+  view_json "$home"
+  python3 - "$home/view.json" "$home/lineage-receipt.json" <<'PY'
+import datetime,json,sys
+identity=json.load(open(sys.argv[1]))['subjects']['worker-host']['resource_identity']
+receipt={'schema':'fm-system-map.evidence.v1','id':'lineage-report','subjects':['worker-host'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Worker version reported by owner.','versions':{'worker-host':'ami-old'},'resource_identities':{'worker-host':identity},'provenance':{'kind':'imported-report','source':'fixture owner'}}
+json.dump(receipt,open(sys.argv[2],'w'))
+PY
+  map "$home" evidence add example "$home/lineage-receipt.json" >/dev/null || fail "lineage receipt rejected"
+  aws_state "$home" '{"deny":["ec2"]}'
+  map "$home" collect >/dev/null || fail "unobserved lineage collection failed"
+  view_json "$home"
+  assert_equals "mismatch" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["status"]')" "report for current binding can describe a mismatch"
+  python3 - "$home/data/system-map/example/bindings.json" <<'PY'
+import json,sys
+p=sys.argv[1]; bindings=json.load(open(p)); bindings['bindings']['worker_host']['instance_id']='i-abcdef01234567890'; json.dump(bindings,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["status"]')" "report for previous binding cannot claim a current mismatch"
+  assert_equals "ami-old" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["reported_version"]')" "stale report keeps its version metadata"
+  pass "lineage reports require the current resource binding"
 }
 
 test_sample_lifecycle_coverage() {
@@ -1284,8 +1316,14 @@ base={'kind':'ca','purpose':'Test identity','not_before':date(-30),'full_window_
 manifest['credentials']=[dict(base,id='old-expired',title='Old expired',expires=date(-1)),
                          dict(base,id='old-expiring',title='Old expiring',expires=date(1)),
                          dict(base,id='old-future',title='Old future',expires=date(30)),
+                         dict(base,id='unlabeled-window',title='Unlabeled window',expires=date(30),not_before=None),
+                         dict(base,id='alternative-window',title='Alternative window',expires=date(30),not_before=None,kind='intermediate'),
                          dict(base,id='unknown-date',title='Unknown date',expires=date(-1),expiry_basis='unknown'),
                          dict(base,id='inferred-date',title='Inferred date',expected_expires=date(-1),expiry_basis='inferred')]
+for cred in manifest['credentials']:
+    if cred['id'] in ('unlabeled-window','alternative-window'):
+        cred.pop('not_before')
+        if cred['id']=='unlabeled-window': cred.pop('kind')
 json.dump(manifest,open(p,'w'))
 PY
   map "$home" collect >/dev/null || fail "legacy expiry fixture collection failed"
@@ -1299,6 +1337,9 @@ assert creds['old-expired']['remaining_seconds']<0
 assert creds['old-expiring']['remaining_seconds']>0
 assert creds['old-future']['full_window']=='fits'
 assert creds['old-future']['latest_safe_start'] is not None
+for id in ('unlabeled-window','alternative-window'):
+    assert creds[id]['full_window']=='unknown'
+    assert creds[id]['latest_safe_start'] is None
 assert creds['unknown-date']['full_window']=='unknown'
 assert creds['unknown-date']['latest_safe_start'] is None
 assert creds['inferred-date']['full_window']=='unknown'
@@ -1326,6 +1367,25 @@ PY
   view_json "$home"
   assert_equals "stale" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "migration-worker-record"][0]["state"]')" "historical assessment is stale"
   assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "migration-worker-record"][0]["observed_state"]')" "historical receipt retains its assessed state"
+  python3 - "$home/historical-receipt.json" "$home/future-receipt.json" <<'PY'
+import datetime,json,sys
+receipt=json.load(open(sys.argv[1])); receipt['id']='future-owner-report'
+receipt['historical']=False
+receipt['observed_at']=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=1)).isoformat()
+json.dump(receipt,open(sys.argv[2],'w'))
+PY
+  local rc=0 out
+  out=$(map "$home" evidence add example "$home/future-receipt.json" 2>&1) || rc=$?
+  expect_code 1 "$rc" "future-dated prerequisite assessment is rejected"
+  assert_contains "$out" "assessment time is in the future" "intake explains the unqualified assessment"
+  python3 - "$home/future-receipt.json" <<'PY'
+import json,sys
+p=sys.argv[1]; receipt=json.load(open(p)); receipt['id']='future-recorded-report'
+receipt['recorded_at']=receipt.pop('observed_at'); json.dump(receipt,open(p,'w'))
+PY
+  rc=0; out=$(map "$home" evidence add example "$home/future-receipt.json" 2>&1) || rc=$?
+  expect_code 1 "$rc" "future recorded time cannot qualify a prerequisite"
+  assert_contains "$out" "assessment time is in the future" "recorded time is checked when observed time is absent"
   pass "historical owner receipts retain assessed state separately from freshness"
 }
 
@@ -1383,6 +1443,7 @@ PY
 }
 
 test_proactive_prerequisites_and_lineage
+test_lineage_report_requires_current_binding
 test_sample_lifecycle_coverage
 test_credential_full_window
 test_inferred_expiry_does_not_alert

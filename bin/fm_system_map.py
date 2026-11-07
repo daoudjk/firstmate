@@ -744,6 +744,8 @@ def validate_evidence(record, subject_ids=None, prerequisite_ids=None):
             raise MapError("evidence names unknown prerequisite %r" % pid)
     if checks:
         _req(record, "scope", "str", "evidence")
+        if parse_iso(record.get("observed_at", record["recorded_at"])) > now_ts():
+            raise MapError("evidence.prerequisites: assessment time is in the future")
 
 
 def load_annotations(home, project):
@@ -1406,11 +1408,11 @@ def credential_view(manifest):
         cycle = current is not None
         known = [parse_iso(c.get("expires")) for c in chain]
         issuer_complete = all(c.get("kind") != "tls-leaf" or c.get("issuer") for c in chain)
-        validity_known = all(parse_iso(c.get("not_before")) is not None for c in chain if len(chain) > 1 or c.get("kind") in ("tls-leaf", "ca"))
+        validity_known = all(parse_iso(c.get("not_before")) is not None for c in chain)
         observed = not cycle and issuer_complete and validity_known and all(t is not None and c.get("expiry_basis", "observed") == "observed" for c, t in zip(chain, known))
         window = cred.get("full_window_seconds")
         safe = min(known) - window if observed and window else None
-        valid_from = max([parse_iso(c.get("not_before")) or 0 for c in chain])
+        valid_from = max(parse_iso(c["not_before"]) for c in chain) if validity_known else None
         feasibility = "unknown"
         if safe is not None:
             feasibility = "fits" if valid_from <= now_ts() < safe else "does-not-fit"
@@ -1574,8 +1576,17 @@ def build_view(home, cfg, project):
             rec = next((r for r in evidence if r["id"] == item.get("evidence") and not r.get("invalid")), None)
             reported = rec.get("versions", {}).get(item["subject"]) if rec else None
             if reported and state == "unknown":
-                state = "stale" if rec.get("historical") else "reported"
-                if not rec.get("historical") and item.get("expected") and reported != item["expected"]:
+                identity = target["resource_identity"]
+                if not identity:
+                    declared = subjects_of(manifest)[item["subject"]][1]
+                    version_source = next((o for o in declared.get("observe", []) if o["id"] == declared.get("version_from")), None)
+                    if version_source:
+                        entry = bindings.get("bindings", {}).get(version_source["binding"])
+                        if not binding_problem(version_source["adapter"], entry):
+                            identity = observation_binding_digest(version_source, bindings)
+                current_report = bool(not rec.get("historical") and identity and rec.get("resource_identities", {}).get(item["subject"]) == identity)
+                state = "reported" if current_report else "stale"
+                if current_report and item.get("expected") and reported != item["expected"]:
                     state = "mismatch"
             lineage.append(dict(item, status=state, version=target["version"], reported_version=reported,
                                 provenance=rec.get("provenance") if rec else None, recorded_at=rec.get("recorded_at") if rec else None,
