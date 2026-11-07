@@ -939,6 +939,37 @@ PY
   assert_contains "$out" "200" "a bare local request could not read the project list"
   out=$(http GET "$base/api/state?project=example")
   assert_contains "$out" "200" "a bare local request could not read map state"
+  if command -v google-chrome >/dev/null 2>&1; then
+    google-chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage \
+      --user-data-dir="$home/chrome-profile" --virtual-time-budget=1500 --dump-dom \
+      "$base/#tab=cred" > "$home/rendered.html" 2> "$home/chrome.log" || fail "browser could not render credential view"
+    python3 - "$home/rendered.html" <<'PY' || fail "ungrouped credential renewal mechanism is hidden"
+from html.parser import HTMLParser
+import sys
+class CredentialCells(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.table = False
+        self.cell = False
+        self.cells = []
+    def handle_starttag(self, tag, attrs):
+        if tag == 'table' and ('id', 'cred-table') in attrs:
+            self.table = True
+        elif self.table and tag == 'td':
+            self.cell = True
+    def handle_endtag(self, tag):
+        if self.table and tag == 'td':
+            self.cell = False
+        elif self.table and tag == 'table':
+            self.table = False
+    def handle_data(self, data):
+        if self.cell:
+            self.cells.append(data)
+cells = CredentialCells()
+cells.feed(open(sys.argv[1]).read())
+assert 'Mechanism: Reissue from the platform CA' in ' '.join(cells.cells)
+PY
+  fi
   out=$(http GET "$base/../config/system-map")
   assert_contains "$out" "404" "arbitrary paths are not served"
   out=$(http POST "$base/api/annotate" '{"project":"example","target":"api","text":"foreign origin"}' 'https://evil.example')
@@ -1073,6 +1104,29 @@ PY
   pass "prerequisites distinguish coverage, denial, absence, stale, untested, authorization and lineage"
 }
 
+test_sample_lifecycle_coverage() {
+  local home
+  home=$(new_home sample-lifecycle)
+  map "$home" validate >/dev/null || fail "sample lifecycle is invalid"
+  view_json "$home"
+  python3 - "$home/view.json" <<'PY' || fail "sample lifecycle coverage or proof state is wrong"
+import json, sys
+view = json.load(open(sys.argv[1]))
+phases = {phase['id']: phase for phase in view['readiness']['phases']}
+required = {'submit', 'wake', 'enroll', 'launch', 'score', 'cleanup', 'stop'}
+assert required <= phases.keys()
+assert all(phases[phase]['coverage'] == 'declared' for phase in required)
+assert len(view['acceptance']) == 9
+assert all(criterion['status'] == 'not-demonstrated' for criterion in view['acceptance'])
+checks = {item['id']: item for item in view['readiness']['prerequisites']}
+assert checks['migration-worker-record']['baseline'] == 'migration'
+assert checks['worker-host']['baseline'] == 'both'
+assert view['credentials'][0]['expiry_basis'] == 'unknown'
+assert view['credentials'][0]['latest_safe_start'] is None
+PY
+  pass "sample covers lifecycle prerequisites without manufacturing proof or issuer validity"
+}
+
 test_credential_full_window() {
   local home
   home=$(new_home cert-window)
@@ -1138,6 +1192,7 @@ PY
 }
 
 test_proactive_prerequisites_and_lineage
+test_sample_lifecycle_coverage
 test_credential_full_window
 test_delegated_active_to_idle
 

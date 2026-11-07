@@ -723,7 +723,7 @@
       body.appendChild(h("tr", null,
         h("td", null, h("strong", { text: c.title }), c.kind ? h("span", { class: "cell-sum muted", text: c.kind }) : null),
         h("td", { text: c.purpose }),
-        h("td", null, c.owner || "not recorded", h("span", { class: "cell-sum", text: "Renewal: " + (c.renewal_owner || "unknown") }), h("span", { class: "cell-sum", text: "Restart required: " + (c.restart_required || "unknown") })),
+        h("td", null, c.owner || "not recorded", h("span", { class: "cell-sum", text: "Renewal owner: " + (c.renewal_owner || c.owner || "unknown") }), h("span", { class: "cell-sum", text: "Mechanism: " + (c.rotation || "unknown") }), h("span", { class: "cell-sum", text: "Restart required: " + (c.restart_required || "unknown") })),
         h("td", null, exp === null ? h("span", { class: "chip chip--unknown", text: "not recorded" }) : [h("span", { class: "chip chip--" + (exp < Date.now() ? "bad" : "warn"), text: exp < Date.now() ? "expired" : ago(c.expires) }), h("span", { class: "cell-sum", text: c.expires + " · " + (c.expiry_basis || "basis unknown") })],
           h("span", { class: "cell-sum", text: "Issuer: " + (c.issuer || "not recorded") }), c.expected_expires ? h("span", { class: "cell-sum", text: "Inferred expiry: " + c.expected_expires }) : null,
           c.full_window_seconds ? h("span", { class: "cell-sum", text: "Full window: " + (c.full_window || "unknown") + " · " + c.full_window_seconds + " seconds" }) : null,
