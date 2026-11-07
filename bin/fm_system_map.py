@@ -1377,7 +1377,7 @@ def prerequisite_view(manifest, bindings, subjects, evidence, observations, inte
                 coverage, detail = "missing-evidence", "Named receipt has no assessment for the current bound resource."
         elif item.get("evidence"):
             coverage, detail = "missing-evidence", "Named receipt is missing or contains no assessment of this prerequisite."
-        observed_state = state
+        observed_state = rec["prerequisites"][item["id"]] if coverage == "imported" else state
         age = now_ts() - (parse_iso(checked) or 0) if checked else None
         if age is not None and age > item.get("max_age_seconds", interval * 2):
             state = "stale"
@@ -1837,7 +1837,7 @@ def activity_view(home):
                 handle.seek(0, os.SEEK_END)
                 handle.seek(max(0, handle.tell() - 32768))
                 for line in handle.read().decode("utf-8", "replace").splitlines():
-                    match = re.match(r"^(working|paused|done|failed|blocked|needs-decision) \[at=(\d+)\]", line)
+                    match = re.match(r"^(working|paused|done|failed|blocked|needs-decision)(?: \[(?:corr|key)=[^\[\]:]+\])* \[at=(0|[1-9]\d{0,11})\](?: \[(?:corr|key)=[^\[\]:]+\])*:", line)
                     if match:
                         last = (match[1], int(match[2]))
         except OSError:

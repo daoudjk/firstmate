@@ -36,6 +36,13 @@
       "x": 0,
       "y": 0,
       "description": "Submits a job from idle.",
+      "observe": [
+        {
+          "id": "console-config-git",
+          "adapter": "git.revision",
+          "binding": "console_config"
+        }
+      ],
       "implementation": {
         "state": "built",
         "note": "Declared by the owner; replace with a completion record once a bound task lands."
@@ -410,13 +417,14 @@
       "id": "console-config",
       "title": "Console configuration",
       "producer": "console",
-      "resource": "Installed console configuration",
+      "resource": "Local console configuration checkout",
       "phases": [
         "submit"
       ],
       "baseline": "both",
+      "observation": "console-config-git",
       "authorization": "unknown",
-      "next_check": "Import an owner receipt for the installed configuration; source alone does not establish installation.",
+      "next_check": "Match an owner receipt to this checkout and verify the installed configuration; source alone does not establish installation.",
       "owners": [
         {
           "role": "owner",
@@ -455,7 +463,6 @@
       ],
       "baseline": "both",
       "observation": "control-item",
-      "expected_state": "halted",
       "authorization": "unknown",
       "owners": [
         {
@@ -463,7 +470,7 @@
           "task": "example-owner"
         }
       ],
-      "next_check": "Check control state and owner enrollment proof."
+      "next_check": "Verify the switch stayed halted through enrollment, then record its lift afterward in a scoped owner receipt."
     },
     {
       "id": "worker-host",

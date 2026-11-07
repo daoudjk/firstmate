@@ -67,7 +67,7 @@ if op == "describe-services":
 if op == "get-queue-url": out({"QueueUrl": "https://example.invalid/q"})
 if op == "get-queue-attributes": out({"Attributes": {"ApproximateNumberOfMessages": str(st.get("queue_visible", 0)), "ApproximateNumberOfMessagesNotVisible": "0"}})
 if op == "describe-table": out({"Table": {"TableStatus": "ACTIVE", "ItemCount": 1}})
-if op == "get-item": out({"Item": {"Halted": {"BOOL": True}, "Revision": {"N": "7"}}})
+if op == "get-item": out({"Item": {"Halted": {"BOOL": st.get("control_halted", True)}, "Revision": {"N": "7"}}})
 if op == "describe-instances":
     out({"Reservations": [{"Instances": [{"State": {"Name": st.get("instance_state", "stopped")}, "ImageId": st.get("ami", "ami-0123456789abcdef0")}]}]})
 sys.stderr.write("unhandled %s %s" % (svc, op)); sys.exit(255)
@@ -191,6 +191,8 @@ import json, sys
 path = sys.argv[1]
 with open(path) as handle: manifest = json.load(handle)
 manifest["components"] = [subject for subject in manifest["components"] if subject["id"] not in ("source", "owner")]
+next(subject for subject in manifest["components"] if subject["id"] == "console").pop("observe", None)
+manifest["prerequisites"] = [item for item in manifest["prerequisites"] if item["id"] != "console-config"]
 with open(path, "w") as handle: json.dump(manifest, handle)
 PY
   map "$home" collect >/dev/null || fail "initial collection failed"
@@ -495,6 +497,7 @@ with open(manifest_path) as handle: manifest = json.load(handle)
 console = next(item for item in manifest["components"] if item["id"] == "console")
 console["intended"] = {"idle": "stopped", "active": "running"}
 console["observe"] = [{"id": "tagged-workers", "adapter": "aws.ec2_tagged_instances", "binding": "tagged_workers"}]
+manifest["prerequisites"] = [item for item in manifest["prerequisites"] if item["id"] != "console-config"]
 with open(manifest_path, "w") as handle: json.dump(manifest, handle)
 with open(bindings_path) as handle: bindings = json.load(handle)
 bindings["bindings"]["tagged_workers"] = {"tag_key": "example-worker"}
@@ -1145,11 +1148,34 @@ assert view['credentials'][0]['expiry_basis'] == 'unknown'
 assert view['credentials'][0]['latest_safe_start'] is None
 assert 'latest_possible_start' not in view['credentials'][0]
 PY
-  aws_state "$home" '{"queue_visible":1}'
+  aws_state "$home" '{"queue_visible":1,"control_halted":false}'
   map "$home" collect >/dev/null || fail "queued-work collection failed"
   view_json "$home"
   assert_equals "holding" "$(py "$home/view.json" 'd["subjects"]["queue"]["observations"][0]["current"]["state"]')" "fixture represents queued work"
   assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "wake-queue"][0]["state"]')" "queued work does not contradict the wake prerequisite"
+  assert_equals "open" "$(py "$home/view.json" 'd["subjects"]["control-switch"]["observations"][0]["current"]["state"]')" "fixture represents the post-enrollment lift"
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "enroll-control"][0]["state"]')" "post-enrollment lift does not imply enrollment mismatch"
+  python3 - "$home/data/system-map/example/manifest.json" "$home/view.json" "$home/console-receipt.json" <<'PY'
+import datetime,json,sys
+manifest_path,view_path,receipt_path=sys.argv[1:]
+manifest=json.load(open(manifest_path)); view=json.load(open(view_path))
+manifest['revision']+=1
+next(p for p in manifest['prerequisites'] if p['id']=='console-config')['evidence']='console-install-report'
+json.dump(manifest,open(manifest_path,'w'))
+identity=view['subjects']['console']['observations'][0]['current']['binding_digest']
+receipt={'schema':'fm-system-map.evidence.v1','id':'console-install-report','subjects':['console'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Owner assessment of the bound checkout.','scope':'example console checkout','resource_identities':{'console':identity},'prerequisites':{'console-config':'present'},'provenance':{'kind':'imported-report','source':'fixture owner'}}
+json.dump(receipt,open(receipt_path,'w'))
+PY
+  map "$home" evidence add example "$home/console-receipt.json" >/dev/null || fail "bound console receipt rejected"
+  view_json "$home"
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "console-config"][0]["state"]')" "bound console receipt qualifies without a current observation"
+  assert_equals "imported" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "console-config"][0]["coverage"]')" "bound console assessment retains imported provenance"
+  python3 - "$home/data/system-map/example/bindings.json" <<'PY'
+import json,sys
+p=sys.argv[1]; bindings=json.load(open(p)); bindings['bindings']['console_config']['path']='projects/example-platform/replacement-config-checkout'; json.dump(bindings,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "console-config"][0]["state"]')" "old checkout receipt cannot assess a replacement checkout"
   pass "sample covers lifecycle prerequisites without manufacturing proof or issuer validity"
 }
 
@@ -1188,6 +1214,28 @@ PY
   pass "full-window timing accounts for issuer validity and inference"
 }
 
+test_historical_imported_assessment() {
+  local home
+  home=$(new_home historical-import)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); next(item for item in manifest['prerequisites'] if item['id']=='migration-worker-record')['evidence']='historical-owner-report'; json.dump(manifest,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "historical assessment fixture collection failed"
+  view_json "$home"
+  python3 - "$home/view.json" "$home/historical-receipt.json" <<'PY'
+import datetime,json,sys
+identity=json.load(open(sys.argv[1]))['subjects']['worker-host']['resource_identity']
+receipt={'schema':'fm-system-map.evidence.v1','id':'historical-owner-report','subjects':['worker-host'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Earlier bound worker assessment.','scope':'example worker','historical':True,'resource_identities':{'worker-host':identity},'prerequisites':{'migration-worker-record':'present'},'provenance':{'kind':'imported-report','source':'fixture owner'}}
+json.dump(receipt,open(sys.argv[2],'w'))
+PY
+  map "$home" evidence add example "$home/historical-receipt.json" >/dev/null || fail "historical receipt rejected"
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "migration-worker-record"][0]["state"]')" "historical assessment is stale"
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "migration-worker-record"][0]["observed_state"]')" "historical receipt retains its assessed state"
+  pass "historical owner receipts retain assessed state separately from freshness"
+}
+
 test_delegated_active_to_idle() {
   local home out epoch
   home=$(new_home delegated)
@@ -1213,6 +1261,13 @@ PY
   printf 'schema=fm-pending-reply.v1\ntask_id=mate\nphase=resolved\ndelivered_epoch=%s\n' "$((epoch+1))" > "$home/state/pending-replies/request"
   view_json "$home"
   assert_equals "False" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "resolved request does not keep parked mate active"
+  printf 'working [corr=0123456789abcdef] [at=%s]: delegated work resumed\n' "$((epoch+2))" >> "$home/state/mate.status"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "correlated working report restores active cadence"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["stale"]')" "correlated working report tightens freshness"
+  printf 'paused [at=%s] [corr=0123456789abcdef]: delegated work parked\n' "$((epoch+3))" >> "$home/state/mate.status"
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "correlated pause returns to idle cadence"
   out=$(map "$home" tick)
   assert_contains "$out" 'not due (idle cadence)' "tick uses same derived activity"
   pass "delegated work changes cadence without scanning child fleets"
@@ -1221,6 +1276,7 @@ PY
 test_proactive_prerequisites_and_lineage
 test_sample_lifecycle_coverage
 test_credential_full_window
+test_historical_imported_assessment
 test_delegated_active_to_idle
 
 test_no_map_home_is_inert
