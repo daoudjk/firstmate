@@ -31,7 +31,6 @@
     <button role="tab" id="tab-access" aria-controls="view-access" aria-selected="false" tabindex="-1">Access coverage</button>
     <button role="tab" id="tab-ready" aria-controls="view-ready" aria-selected="false" tabindex="-1">Prerequisites</button>
     <button role="tab" id="tab-diff" aria-controls="view-diff" aria-selected="false" tabindex="-1">Differences <span class="count" id="diff-count"></span></button>
-    <button role="tab" id="tab-verify" aria-controls="view-verify" aria-selected="false" tabindex="-1">Verification</button>
     <button role="tab" id="tab-life" aria-controls="view-life" aria-selected="false" tabindex="-1">Experiment timeline</button>
     <button role="tab" id="tab-accept" aria-controls="view-accept" aria-selected="false" tabindex="-1">MVP acceptance</button>
     <button role="tab" id="tab-cred" aria-controls="view-cred" aria-selected="false" tabindex="-1">Identity &amp; Access</button>
@@ -98,12 +97,6 @@
     <div id="diff-extra"></div>
   </section>
 
-  <section id="view-verify" role="tabpanel" aria-labelledby="tab-verify" class="view" hidden>
-    <h2 class="h2">Missing observation &amp; current proof</h2>
-    <p class="hint">Unverified is not failed. Denied collector reads establish observation limits, not denial of service requests. MVP criteria and actual request proof keep their existing qualification rules.</p>
-    <div id="verification" class="difference-list"></div>
-  </section>
-
   <section id="view-life" role="tabpanel" aria-labelledby="tab-life" class="view" hidden>
     <h2 class="h2" id="life-title">Experiment timeline</h2>
     <p class="hint" id="life-desc"></p>
@@ -121,6 +114,8 @@
     <p class="hint">Shared identities, roles, policies and certificates remain single records. Find their consuming components here; operation and context unknowns remain in Access coverage.</p>
     <label class="field">Find an identity, policy or certificate<input id="identity-query" type="search"></label>
     <div id="identity-inventory"></div>
+    <h3 class="h3">Identity connections</h3>
+    <div id="identity-connections"></div>
     <h3 class="h3">Credential validity &amp; renewal</h3>
     <div id="credential-differences" class="difference-list"></div>
     <p class="hint">Public metadata and renewal dependencies only. Full-window timing requires observed validity for the issuer chain; authorization remains separate.</p>

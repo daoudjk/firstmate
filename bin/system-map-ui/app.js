@@ -647,23 +647,22 @@
     if (!v) return;
     var concerns = v.presentation.differences;
     var open = concerns.filter(function (d) { return d.status === "open"; });
-    var defaults = open.filter(function (d) { return d.category === "implementation" || d.urgent; });
+    var defaults = open.filter(function (d) { return d.in_overview; });
     $("diff-count").textContent = String(defaults.length);
     document.querySelectorAll("[data-dfilter]").forEach(function (b) { b.setAttribute("aria-checked", String(b.dataset.dfilter === state.dfilter)); });
     var category = clear($("diff-category"));
     Object.keys(CATEGORIES).forEach(function (key) {
-      var count = open.filter(function (d) { return key === "all" || (key === "default" ? d.category === "implementation" || d.urgent : d.category === key); }).length;
+      var count = open.filter(function (d) { return key === "all" || (key === "default" ? d.in_overview : d.category === key); }).length;
       append(category, h("option", { value: key, text: CATEGORIES[key] + " (" + count + " open)" }));
     });
     category.value = state.dcategory;
     var rows = concerns.filter(function (d) {
       return (state.dfilter === "all" || d.status === state.dfilter) &&
-        (state.dcategory === "all" || (state.dcategory === "default" ? d.category === "implementation" || d.urgent : d.category === state.dcategory)) &&
+        (state.dcategory === "all" || (state.dcategory === "default" ? d.in_overview : d.category === state.dcategory)) &&
         (!state.dquery || JSON.stringify(d).toLowerCase().indexOf(state.dquery.toLowerCase()) >= 0);
     });
     $("diff-summary").textContent = rows.length + " concerns shown · " + open.length + " total open · " + (open.length - defaults.length) + " open outside the default view. Category counts overlap urgent alerts; selecting All retains every concern.";
     append(clear($("diff-list")), rows.length ? differenceGroups(rows) : h("p", { text: "No concerns match this view. Other categories and unverified evidence remain available." }));
-    append(clear($("verification")), differenceGroups(open.filter(function (d) { return d.category === "verification"; })));
     append(clear($("credential-differences")), differenceGroups(open.filter(function (d) { return d.category === "maintenance"; })));
     var extra = clear($("diff-extra"));
     if (v.invalid_evidence && v.invalid_evidence.length) {
@@ -869,6 +868,18 @@
           h("p", { text: "Used by: " + consumers.map(function (i) { return i.title; }).join(", ") }), h("ul", { class: "list" }, accessDependency(d))));
       }))));
     append(inventory, h("p", { class: "hint", text: "Validity alerts below retain all open credential concerns, independently of this inventory search." }));
+    var connections = (v.presentation.access_connections || []).filter(function (sid) {
+      var edge = v.subjects[sid];
+      return !query || JSON.stringify(edge).toLowerCase().indexOf(query) >= 0 ||
+        JSON.stringify(v.subjects[edge.from] || {}).toLowerCase().indexOf(query) >= 0 ||
+        JSON.stringify(v.subjects[edge.to] || {}).toLowerCase().indexOf(query) >= 0;
+    });
+    append(clear($("identity-connections")), h("ul", { class: "list" }, connections.map(function (sid) {
+      var edge = v.subjects[sid];
+      return h("li", { class: "identity-record" }, h("button", { type: "button", class: "btn btn--link", text: edge.title,
+        onclick: function () { openSubject(sid); } }), " · ", (v.subjects[edge.from] || {}).title || edge.from,
+        " → ", (v.subjects[edge.to] || {}).title || edge.to);
+    })));
     var creds = (v.credentials || v.manifest.credentials || []).filter(function (c) { return !query || JSON.stringify(c).toLowerCase().indexOf(query) >= 0; });
     if (!creds.length) body.appendChild(h("tr", null, h("td", { colspan: "5", class: "muted", text: "No credentials described." })));
     creds.forEach(function (c) {
@@ -887,7 +898,7 @@
   }
 
   // ---------------------------------------------------------------- tabs
-  var TABS = { map: "tab-map", access: "tab-access", ready: "tab-ready", diff: "tab-diff", verify: "tab-verify", life: "tab-life", accept: "tab-accept", cred: "tab-cred" };
+  var TABS = { map: "tab-map", access: "tab-access", ready: "tab-ready", diff: "tab-diff", life: "tab-life", accept: "tab-accept", cred: "tab-cred" };
   function showTab(name, focus) {
     if (!TABS[name]) name = "map";
     state.tab = name; writeHash();

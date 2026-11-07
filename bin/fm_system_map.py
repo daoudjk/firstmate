@@ -351,7 +351,10 @@ def validate_presentation(item, where, subject=False):
         _check_keys(hints, {"section", "runtime"}, where + ".x-presentation")
         if hints.get("section", "component") not in ("component", "access"):
             raise MapError("%s.x-presentation.section: component or access" % where)
-        validate_presentation({"x-presentation": hints.get("runtime", {})}, where + ".runtime")
+        runtime = hints.get("runtime", {})
+        validate_presentation({"x-presentation": runtime}, where + ".runtime")
+        if "category" in runtime:
+            raise MapError("%s.x-presentation.runtime: unknown field 'category'" % where)
         return
     _check_keys(hints, {"category", "group", "expected", "impact", "next_action", "detail", "urgent"}, where + ".x-presentation")
     if hints.get("category", "review") not in PRESENTATION_CATEGORIES:
@@ -1713,8 +1716,9 @@ def presentation_view(view, manifest):
                 "identity-policy", "trust", "role-existence", "permissions-boundary", "session-policy", "pass-role"):
             access_ids.add(sid)
     components = [sid for sid in view["order"]["components"] if sid not in access_ids]
-    connections = [sid for sid in view["order"]["connections"]
-                   if view["subjects"][sid]["from"] not in access_ids and view["subjects"][sid]["to"] not in access_ids]
+    access_connections = [sid for sid in view["order"]["connections"]
+                          if view["subjects"][sid]["from"] in access_ids or view["subjects"][sid]["to"] in access_ids]
+    connections = [sid for sid in view["order"]["connections"] if sid not in access_connections]
     related = {}
     for sid in view["subjects"]:
         related[sid] = [i["id"] for i in access_view["interactions"] if sid in (i["caller"], i["target"], i["identity"]) or
@@ -1742,7 +1746,6 @@ def presentation_view(view, manifest):
         if kind == "runtime":
             hints = declared.get(sid, {}).get("x-presentation", {}).get("runtime", {})
         category, impact, action = defaults.get(kind, ("review", "This declared gap has no presentation classification yet.", "Classify this gap from its source evidence; do not infer a failure from unknown state."))
-        # Runtime observations cannot become implementation defects through a hint.
         category = "operational" if kind == "runtime" else hints.get("category", category) if kind == "gap" else category
         if kind == "gap" and category != "review":
             impact, action = {
@@ -1761,14 +1764,15 @@ def presentation_view(view, manifest):
         credential = credential_sources.get(item["id"])
         owners = item.get("owners") or ([{"name": credential.get("renewal_owner") or credential.get("owner")}] if credential and
                                        (credential.get("renewal_owner") or credential.get("owner")) else subject.get("owners", []))
+        urgent = (hints.get("urgent", False) or
+                  (kind == "runtime" and subject.get("layers", {}).get("proof", {}).get("status") == "failed") or
+                  (kind != "runtime" and item["severity"] == "high" and category in ("implementation", "maintenance", "review")))
         differences.append(dict(item, category=category, group=group, expected=expected, owners=owners,
                                 impact=hints.get("impact", impact), next_action=hints.get("next_action", action),
                                 disposition=hints.get("detail"),
-                                # Classified coverage unknowns are not observed failures.
-                                # Unclassified severe gaps remain visible until an owner classifies them.
-                                urgent=hints.get("urgent", False) or (item["severity"] == "high" and category in
-                                        ("implementation", "operational", "maintenance", "review"))))
-    return {"components": components, "connections": connections, "access_subjects": [sid for sid in view["order"]["components"] if sid in access_ids],
+                                urgent=urgent, in_overview=category in ("implementation", "review") or urgent))
+    return {"components": components, "connections": connections, "access_connections": access_connections,
+            "access_subjects": [sid for sid in view["order"]["components"] if sid in access_ids],
             "component_access": related, "differences": differences}
 
 

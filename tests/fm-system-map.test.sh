@@ -2094,7 +2094,7 @@ import datetime, json, sys
 p, b = sys.argv[1:]; m = json.load(open(p)); bindings = json.load(open(b))
 owner = [{"name": "Example owner", "task": "example-owner"}]
 queue = next(c for c in m["components"] if c["id"] == "queue")
-queue["x-presentation"] = {"runtime": {"category": "implementation", "group": "Retained abandoned job", "detail": "A specifically abandoned job remains unclosed; queue message retained by decision.", "next_action": "Owner must decide disposition; no automatic acknowledgment."}}
+queue["x-presentation"] = {"runtime": {"group": "Retained abandoned job", "detail": "A specifically abandoned job remains unclosed; queue message retained by decision.", "next_action": "Owner must decide disposition; no automatic acknowledgment."}}
 m["known_gaps"] = [
  {"id": "required-consumption", "title": "Required queue consumption is not implemented", "subjects": ["queue"], "severity": "medium", "owners": owner, "x-presentation": {"category": "implementation", "expected": "Consumer processes admitted jobs", "impact": "Required jobs cannot progress", "next_action": "Implement consumer then prove runtime consumption"}},
  {"id": "retained-job", "title": "Abandoned job remains unclosed", "subjects": ["queue"], "severity": "medium", "x-presentation": {"category": "operational", "group": "Retained abandoned job"}},
@@ -2106,6 +2106,7 @@ m["known_gaps"] = [
 expires = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2)).isoformat()
 m["credentials"] = [{"id": "cert-%d" % i, "title": "Example leaf %d" % i, "purpose": "Synthetic transport", "owner": "Example renewal owner", "subjects": ["api"], "expires": expires, "not_before": "2026-01-01T00:00:00Z", "rotation": "Owner rotation", "note": "Issuer validity is unknown"} for i in range(6)]
 m["components"] += [{"id": "example-role", "title": "Neutral name", "observe": [{"id": "role-observation", "adapter": "aws.iam_role", "binding": "role-binding"}], "owners": owner}, {"id": "shared-policy", "title": "Shared policy", "x-presentation": {"section": "access"}, "owners": owner}]
+m["connections"].append({"id": "api-role", "title": "API assumes example role", "from": "api", "to": "example-role", "owners": owner})
 bindings["bindings"]["role-binding"] = {"role_name": "synthetic-role"}
 json.dump(m, open(p, "w")); json.dump(bindings, open(b, "w"))
 PYFIXTURE
@@ -2122,10 +2123,12 @@ v = json.load(open(sys.argv[1])); p = v["presentation"]; ds = p["differences"]
 assert len(ds) == len(v["discrepancies"])
 assert {d["id"] for d in ds} == {d["id"] for d in v["discrepancies"]}
 assert "example-role" in p["access_subjects"] and "shared-policy" in p["access_subjects"]
+assert "api-role" in p["access_connections"] and "api-role" not in p["connections"]
+assert v["subjects"]["api-role"]["from"] == "api" and v["subjects"]["api-role"]["to"] == "example-role"
 assert "queue" in p["components"] and "api" in p["components"]
 assert len(p["access_subjects"]) == len(set(p["access_subjects"]))
 runtime = next(d for d in ds if d["kind"] == "runtime" and d["subject"] == "queue")
-assert runtime["category"] == "operational" and runtime["urgent"]
+assert runtime["category"] == "operational" and not runtime["urgent"] and not runtime["in_overview"]
 assert "abandoned" in runtime["disposition"]
 assert runtime["group"] == next(d for d in ds if d["title"] == "Abandoned job remains unclosed")["group"]
 required = next(d for d in ds if d["title"] == "Required queue consumption is not implemented")
@@ -2141,6 +2144,7 @@ assert v["subjects"]["results"]["observations"][0]["current"]["outcome"] == "abs
 assert next(d for d in ds if d["title"] == "Exact operation and context unknown")["urgent"] is False
 assert next(d for d in ds if d["title"] == "Cleanup obligations need current census")["urgent"] is True
 assert next(d for d in ds if d["title"] == "Unknown source requirement")["category"] == "review"
+assert next(d for d in ds if d["title"] == "Unknown source requirement")["in_overview"]
 assert v["subjects"]["api"]["layers"]["proof"]["status"] == "not-demonstrated"
 assert not any(a["status"] == "passed" for a in v["acceptance"])
 print("presentation categories retain distinct evidence and urgent obligations")
@@ -2153,12 +2157,19 @@ PYFIXTURE
   map "$home" collect >/dev/null || fail "normal queue collection failed"
   view_json "$home"
   assert_equals "0" "$(py "$home/view.json" 'sum(d["category"] == "implementation" and d["subject"] == "queue" and d["status"] == "open" for d in d["presentation"]["differences"])')" "nonempty queue does not imply missing consumption implementation"
+  assert_equals "0" "$(py "$home/view.json" 'sum(d["in_overview"] for d in d["presentation"]["differences"] if d["kind"] == "runtime" and d["subject"] == "queue")')" "routine queue deviation stays outside overview"
   python3 - "$home/data/system-map/example/manifest.json" <<'PYFIXTURE'
 import json, sys
 p = sys.argv[1]; m = json.load(open(p)); m["components"][0]["x-presentation"] = {"section": "arbitrary"}; json.dump(m, open(p, "w"))
 PYFIXTURE
   map "$home" validate >"$home/invalid-presentation.txt" 2>&1 && fail "invalid presentation section accepted"
   assert_grep 'section: component or access' "$home/invalid-presentation.txt" "presentation hints are validated"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PYFIXTURE'
+import json, sys
+p = sys.argv[1]; m = json.load(open(p)); m["components"][0]["x-presentation"] = {"runtime": {"category": "implementation"}}; json.dump(m, open(p, "w"))
+PYFIXTURE
+  map "$home" validate >"$home/invalid-runtime-category.txt" 2>&1 && fail "ignored runtime category accepted"
+  assert_grep "runtime: unknown field 'category'" "$home/invalid-runtime-category.txt" "runtime classification setting is rejected"
   pass "presentation groups expiry and separates implementation, operations, coverage and verification"
 }
 
