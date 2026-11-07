@@ -25,7 +25,7 @@ It adds no supervisor, no task ledger, and no cloud action: every follow-up goes
 ## Daily review and discrepancy wakes
 
 1. Compare the intended design, the latest observations, and the evidence records for each open discrepancy.
-   Inspect the prerequisite view for uncovered phases, uncollected or denied observations, missing evidence, and owner or next-check gaps even when no discrepancy has opened; `docs/system-map.md` owns those states.
+   Inspect the access coverage and prerequisite views for uncovered phases, uncollected or denied observations, missing evidence, and owner or next-check gaps even when no discrepancy has opened; `docs/system-map.md` owns those states.
 2. Read what changed since the previous review: new completion records, newly opened or resolved discrepancies, the bound tasks' current state through `bin/fm-crew-state.sh`, and recent merges in the bound projects.
 3. For each open discrepancy, decide one of:
    - it is already owned: link it to the existing backlog task with `bin/fm-system-map.sh link <project> <discrepancy> <task>`;

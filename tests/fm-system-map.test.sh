@@ -47,7 +47,7 @@ st = json.load(open(os.environ["FAKE_AWS_STATE"])) if os.path.exists(os.environ.
 args = sys.argv[1:]
 svc, op = args[0], args[1]
 with open(os.environ["FAKE_AWS_LOG"], "a") as log:
-    log.write(" ".join(args[:2]) + "\n")
+    log.write(" ".join(args) + "\n")
 time.sleep(float(st.get("sleep", 0)))
 def out(o):
     print(json.dumps(o)); sys.exit(0)
@@ -57,7 +57,9 @@ if svc in st.get("missing", []):
     sys.stderr.write("ResourceNotFoundException: resource does not exist"); sys.exit(254)
 if svc in st.get("deny", []):
     sys.stderr.write("An error occurred (AccessDeniedException) when calling %s: User arn:aws:iam::123456789012:user/x is not authorized" % op); sys.exit(254)
-if svc == "sts": out({"Account": st.get("account", "123456789012")})
+if op in st.get("responses", {}): out(st["responses"][op])
+if op == "describe-task-definition" and "--include" not in args: sys.exit(23)
+if svc == "sts": out({"Account": st.get("account", "123456789012"), "Arn": "arn:aws:iam::123456789012:user/fixture", "UserId": "fixture"})
 if op == "get-function-configuration": out({"State": "Active", "CodeSha256": "code-v1", "LastUpdateStatus": "Successful", "Runtime": "python3.13", "Timeout": 30, "Role": "arn:aws:iam::123456789012:role/example", "Environment": {"Variables": {"EXAMPLE": "fixture-private-payload"}}})
 if op == "get-schedule": out({"State": "ENABLED", "ScheduleExpression": "at(2099-01-01T00:00:00)", "ScheduleExpressionTimezone": "UTC", "TargetArn": "arn:aws:lambda:us-east-1:123456789012:function:example", "RoleArn": "arn:aws:iam::123456789012:role/example", "Input": "fixture-private-payload"})
 if op == "get-role": out({"RoleId": "role-v1", "CreateDate": "2026-01-01T00:00:00Z", "MaxSessionDuration": 3600})
@@ -1530,6 +1532,161 @@ PY
   assert_contains "$out" 'not due (idle cadence)' "tick uses same derived activity"
   pass "delegated work changes cadence without scanning child fleets"
 }
+
+test_access_relationships_and_conservative_comparison() {
+  local home out
+  home=$(new_home access)
+  python3 - "$home" <<'PYTEST'
+import json,sys,hashlib
+from pathlib import Path
+h=Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p))
+def sha(v): return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+policy={"Version":"2012-10-17","Statement":[{"Effect":"Deny","Principal":{"AWS":["arn:aws:iam::123456789012:role/a","arn:aws:iam::123456789012:role/b"]},"Action":["s3:GetObject","s3:PutObject"],"Resource":["arn:aws:s3:::fixture/*"],"Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}
+# The fixture baseline is already canonical by the declared normalization.
+base={"format":"policy","complete":True,"sha256":sha(policy),"raw_sha256":sha(json.dumps(policy)),"source":"sanitized owner fixture","observed_at":"2026-01-01T00:00:00Z"}
+owners=[{"name":"fixture owner"}]
+components=m['components']
+components.append({"id":"access-role","title":"Access role","observe":[{"id":"access-trust","adapter":"aws.iam_role_access","binding":"access_role","role":"version"}],"version_from":"access-trust"})
+components.append({"id":"trust-source","title":"Required trust principal","observe":[{"id":"source-role","adapter":"aws.iam_role_access","binding":"source_role","role":"version"}],"version_from":"source-role"})
+for oid,adapter,binding in [('access-bucket','aws.s3_policy','access_bucket'),('access-inline','aws.iam_inline_policy','access_inline'),('access-managed','aws.iam_managed_policy','access_managed'),('access-queue','aws.sqs_policy','access_queue'),('access-table','aws.dynamodb_policy','access_table'),('access-key','aws.kms_policy','access_kms'),('access-tags','aws.ecs_task_metadata','access_tags')]:
+ components.append({'id':oid,'title':oid,'observe':[{'id':oid+'-read','adapter':adapter,'binding':binding,'role':'version'}],'version_from':oid+'-read'})
+deps=[]
+for did,kind,subject in [('bucket-check','resource-policy','access-bucket'),('trust-check','trust','access-role'),('role-check','role-existence','trust-source'),('inline-check','identity-policy','access-inline'),('key-check','key-policy','access-key'),('tags-check','tags','access-tags')]:
+ d={'id':did,'title':did,'kind':kind,'subject':subject,'observation':next(c for c in components if c['id']==subject)['observe'][0]['id'],'baseline':dict(base),'owners':owners,'next_check':'Read exact configured metadata with existing identity.'}
+ if did=='trust-check': d['references']=['trust-source']
+ if did=='tags-check': d['baseline']={'format':'tags','complete':False,'source':'retained request omitted include=TAGS','observed_at':'2026-01-01T00:00:00Z'}
+ deps.append(d)
+for kind in ['permissions-boundary','session-policy','organization-policy','endpoint-policy']:
+ deps.append({'id':kind,'title':kind,'kind':kind,'subject':'access-role','owners':owners,'next_check':'Owner must supply restriction evidence.'})
+m['access_dependencies']=deps
+m['interactions']=[{'id':'console-request','title':'Console to exact bucket','caller':'access-role','identity':'access-role','target':'access-bucket','operations':['s3:GetObject'],'phases':[m['lifecycle']['phases'][0]['id']],'dependencies':[d['id'] for d in deps],'context':{'transport':'TLS','unknown_condition_context':'explicitly unobserved'},'analysis_scope':'Exact configured action and target; no effective IAM evaluation.','owners':owners,'next_check':'Owner supplies actual current-version request receipt.'}]
+p.write_text(json.dumps(m))
+p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['scope']['expected_account']='123456789012'; b['bindings'].update({'access_role':{'role_name':'fixture-target'},'source_role':{'role_name':'fixture-source'},'access_bucket':{'bucket':'fixture'},'access_inline':{'role_name':'fixture-target','policy_name':'fixture-inline'},'access_managed':{'policy_arn':'arn:aws:iam::123456789012:policy/fixture'},'access_queue':{'queue_url':'https://sqs.us-east-1.amazonaws.com/123456789012/fixture'},'access_table':{'resource_arn':'arn:aws:dynamodb:us-east-1:123456789012:table/fixture'},'access_kms':{'key_id':'fixture-key'},'access_tags':{'task_definition':'fixture:1'}}); p.write_text(json.dumps(b))
+reordered=json.loads(json.dumps(policy)); reordered['Statement'][0]['Principal']['AWS'].reverse(); reordered['Statement'][0]['Action'].reverse()
+responses={'get-bucket-policy':{'Policy':json.dumps(reordered)},'get-role-policy':{'PolicyDocument':policy},'get-policy':{'DefaultVersionId':'v7'},'get-policy-version':{'PolicyDocument':policy},'get-queue-attributes':{'Attributes':{'Policy':json.dumps(policy),'ApproximateNumberOfMessages':'0','ApproximateNumberOfMessagesNotVisible':'0'}},'get-resource-policy':{'Policy':json.dumps(policy)},'get-key-policy':{'Policy':json.dumps(policy)},'describe-task-definition':{'taskDefinition':{'taskDefinitionArn':'arn:aws:ecs:us-east-1:123456789012:task-definition/fixture:1','revision':1},'tags':[{'key':'Owner','value':'fixture'}]},'get-role':{'RoleId':'fixture-role-id','Arn':'arn:aws:iam::123456789012:role/fixture-source','CreateDate':'2026-01-01T00:00:00Z','PermissionsBoundary':None,'AssumeRolePolicyDocument':{'Statement':[{'Effect':'Allow','Principal':{'AWS':'arn:aws:iam::123456789012:role/fixture-source'},'Action':'sts:AssumeRole'}]}},'list-attached-role-policies':{'AttachedPolicies':[],'IsTruncated':False},'list-role-policies':{'PolicyNames':[],'IsTruncated':False}}
+(h/'aws-state.json').write_text(json.dumps({'responses':responses})); (h/'access-original.json').write_text(json.dumps({'responses':responses}))
+PYTEST
+  out=$(map "$home" collect) || fail "access collection: $out"
+  view_json "$home"
+  assert_equals "representation-only" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="bucket-check")["comparison"]')" "principal/action order is representational"
+  assert_equals "incomplete-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="tags-check")["comparison"]')" "unrequested historical tags are incomplete"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["access"]["interactions"][0]["effective_access"]')" "observed policy does not imply effective permission"
+  assert_equals "not-demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "request proof stays separate"
+  assert_equals "4" "$(py "$home/view.json" 'len([g for g in d["access"]["gaps"] if g.get("state")=="unobserved"])')" "all independent restriction gaps appear together"
+  assert_equals "observed" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "exact trust reference is observed"
+  assert_grep 'include TAGS' "$home/aws.log" "tag collector explicitly requests tags"
+  assert_equals "v7" "$(py "$home/view.json" 'd["subjects"]["access-managed"]["observations"][0]["current"]["facts"]["policy_version"]')" "managed policy default version retained"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'aws-state.json'; s=json.load(open(p)); policy=json.loads(s['responses']['get-bucket-policy']['Policy']); policy['Statement'][0]['Condition']['Bool']['aws:SecureTransport']='true'; s['responses']['get-bucket-policy']['Policy']=json.dumps(policy); del s['responses']['describe-task-definition']['tags']; s['responses']['get-role']['Arn']='arn:aws:iam::123456789012:role/wrong-source'; s['responses']['list-role-policies']={'PolicyNames':['hidden-policy'],'IsTruncated':True,'Marker':'more'}; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "independent partial sweep"
+  view_json "$home"
+  assert_equals "policy-drift" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="bucket-check")["comparison"]')" "condition change is true drift"
+  assert_equals "wrong-reference" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "existing but wrong trust principal is distinct"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["subjects"]["access-tags"]["observations"][0]["current"]["outcome"]')" "missing tags member is unknown"
+  assert_equals "False" "$(py "$home/view.json" 'd["subjects"]["access-role"]["observations"][0]["current"]["facts"]["complete"]')" "truncated policy list cannot become complete"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'aws-state.json'; s=json.load(open(p)); s['responses']['list-role-policies']={'PolicyNames':['hidden-policy'],'IsTruncated':False};p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "unread policy inventory"
+  view_json "$home"
+  assert_equals "1" "$(py "$home/view.json" 'len(next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["unobserved_policy_documents"])')" "an attachment list cannot substitute for a policy document"
+  aws_state "$home" '{"deny":["iam"]}'
+  map "$home" collect >/dev/null || fail "denial collection"
+  view_json "$home"
+  assert_equals "denied" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["state"]')" "denied role checks remain denied"
+  assert_equals "ok" "$(py "$home/view.json" 'd["subjects"]["queue"]["observations"][0]["current"]["outcome"]')" "denial never stops independent configured reads"
+  assert_equals "denied" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "unobserved principal not inferred from historical role"
+  aws_state "$home" '{"missing":["iam"]}'
+  map "$home" collect >/dev/null || fail "authoritative role absence"
+  view_json "$home"
+  assert_equals "absent" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "authoritatively missing role remains distinct"
+  assert_no_grep 'sts assume-role' "$home/aws.log" "collector never pivots to retry a denied or absent read"
+  # Current immutable read receipts remain separate from original baselines.
+  [ -n "$(find "$home/state/system-map/example/reads" -name '*.json' -print -quit)" ] || fail "private raw read provenance absent"
+  # Complete only the synthetic declared baselines, then record an actual
+  # fixture request through public evidence intake. No AWS request is sent.
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); (h/'aws-state.json').write_text((h/'access-original.json').read_text())
+p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); m['interactions'][0]['evidence']='fixture-request'; m['interactions'][0]['context_complete']=True; m['interactions'][0]['context']={'transport':'TLS','resource_prefix':'fixture/*'}; p.write_text(json.dumps(m))
+PYTEST
+  map "$home" collect >/dev/null || fail "restore synthetic observations"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); snap=json.load(open(h/'state/system-map/example/snapshot.json'))
+for dep in m['access_dependencies']:
+ if dep.get('observation'):
+  facts=snap['observations'][dep['observation']]['facts']; dep['baseline']={'format':facts['format'],'complete':True,'sha256':facts['sha256'],'raw_sha256':facts['raw_sha256'],'source':'fixture exact read','observed_at':snap['finished_at']}
+ else:
+  dep['applicability']='not-applicable'; dep['reason']='Synthetic fixture with no restriction in this declared class; no production claim.'
+p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "declared-baselines-observed" "$(py "$home/view.json" 'd["access"]["interactions"][0]["static_coverage"]')" "complete declared coverage is separate from permission"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib,datetime
+h=pathlib.Path(sys.argv[1]); v=json.load(open(h/'view.json')); i=v['access']['interactions'][0]; ids=['access-role','access-bucket']; at=datetime.datetime.now(datetime.timezone.utc).isoformat()
+r={'schema':'fm-system-map.evidence.v1','id':'fixture-request','subjects':ids,'versions':{s:v['subjects'][s]['version'] for s in ids},'resource_identities':{s:v['subjects'][s]['resource_identity'] for s in ids},'result':'pass','recorded_at':at,'observed_at':at,'scope':'sanitized fixture request; no native execution','summary':'Fixture owner request receipt','provenance':{'kind':'receipt','source':'fixture owner'},'access_requests':{i['id']:i['assertion_digest']}}
+(h/'request.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/request.json" >/dev/null || fail "valid request receipt"
+  view_json "$home"
+  assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "exact current-version request qualifies"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["access"]["interactions"][0]["effective_access"]')" "one request never proves general effective access"
+  map "$home" collect >/dev/null || fail "repeat identical read"
+  view_json "$home"
+  assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "identical refreshed checks preserve exact receipt binding"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib,datetime
+h=pathlib.Path(sys.argv[1]);p=h/'data/system-map/example/manifest.json';m=json.load(open(p));d=next(d for d in m['access_dependencies'] if d['id']=='endpoint-policy');d.pop('applicability');d.pop('reason');d['evidence']='fixture-owner-check';d['baseline']={'format':'configuration','complete':True,'sha256':'0'*64,'raw_sha256':'0'*64,'source':'fixture owner endpoint policy hash','observed_at':datetime.datetime.now(datetime.timezone.utc).isoformat()};p.write_text(json.dumps(m))
+v=json.load(open(h/'view.json'));subject=v['subjects']['access-role'];at=datetime.datetime.now(datetime.timezone.utc).isoformat()
+r={'schema':'fm-system-map.evidence.v1','id':'fixture-owner-check','subjects':['access-role'],'versions':{'access-role':subject['version']},'resource_identities':{'access-role':subject['resource_identity']},'result':'pass','recorded_at':at,'observed_at':at,'scope':'fixture existing owner endpoint policy read; no native call','summary':'Fixture owner supplies current bounded policy metadata','provenance':{'kind':'receipt','source':'fixture owner'},'access_checks':{'endpoint-policy':{'outcome':'ok','binding_digest':subject['resource_identity'],'observer_identity':'1'*64,'version':'endpoint-v1','facts':{'format':'configuration','complete':True,'sha256':'0'*64,'raw_sha256':'0'*64}}}}
+(h/'owner-check.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/owner-check.json" >/dev/null || fail "owner check intake"
+  view_json "$home"
+  assert_equals "imported" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="endpoint-policy")["coverage"]')" "qualified owner check is labeled imported"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="endpoint-policy")["comparison"]')" "owner check preserves exact baseline digest"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]);p=h/'owner-check.json';r=json.load(open(p));r['id']='fixture-wrong-binding';r['access_checks']['endpoint-policy']['binding_digest']='2'*64;p.write_text(json.dumps(r));p=h/'data/system-map/example/manifest.json';m=json.load(open(p));next(d for d in m['access_dependencies'] if d['id']=='endpoint-policy')['evidence']='fixture-wrong-binding';p.write_text(json.dumps(m))
+PYTEST
+  map "$home" evidence add example "$home/owner-check.json" >/dev/null || fail "unqualified check is retained"
+  view_json "$home"
+  assert_equals "missing-evidence" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="endpoint-policy")["coverage"]')" "owner check with wrong binding remains unqualified"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'state/system-map/example/snapshot.json'; s=json.load(open(p)); s['observations']['access-trust']['checked_at']='2020-01-01T00:00:00Z'; p.write_text(json.dumps(s))
+PYTEST
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "stale dependency invalidates request proof"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['access_bucket']['bucket']='other-fixture'; p.write_text(json.dumps(b))
+PYTEST
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "changed binding invalidates request proof"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'request.json'; r=json.load(open(p));r['id']='unknown-request';r['access_requests']={'missing-interaction':'0'*64};p.write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/request.json" >"$home/rejected.txt" 2>&1 && fail "unknown interaction receipt accepted"
+  assert_grep 'unknown interaction' "$home/rejected.txt" "request receipt reference validation"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['access_bucket']['bucket']='fixture';p.write_text(json.dumps(b));p=h/'aws-state.json';s=json.load(open(p));s['responses']['get-role']['AssumeRolePolicyDocument']['Statement'][0]['Effect']='Deny';p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "changed trust check"
+  view_json "$home"
+  assert_equals "policy-drift" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["comparison"]')" "changed trust denial is semantic drift"
+  assert_equals "unobserved" "$(py "$home/view.json" 'd["access"]["interactions"][0]["propagation"]')" "matching GetRole never proves downstream propagation"
+  pass "access view batches gaps, classifies policy/tag drift, and qualifies exact trust dependencies"
+}
+
+test_access_relationships_and_conservative_comparison
 
 test_proactive_prerequisites_and_lineage
 test_lineage_report_requires_current_binding

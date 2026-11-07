@@ -13,6 +13,7 @@
     // Unsaved note and intent drafts, keyed "<target>|<field>". They survive
     // reloads and auto-refresh until saved or explicitly discarded.
     drafts: {},
+    accessPhase: "all", accessQuery: "",
     zoom: 1
   };
   function draftKeys(prefix) { return Object.keys(state.drafts).filter(function (k) { return k.indexOf(prefix) === 0; }); }
@@ -165,6 +166,7 @@
     renderTimeline();
     renderAcceptance();
     renderReadiness();
+    renderAccess();
     renderCredentials();
     showTab(state.tab, false);
   }
@@ -420,6 +422,9 @@
     row("Runtime", "runtime", { status: L.runtime.status, detail: "Observed: " + (L.runtime.observed || "nothing yet") + " · intended (" + v.manifest.expected_mode + "): " + (L.runtime.intended || "none declared") });
     row("Proof", "proof", L.proof);
     append(el, dl);
+    var access = v.access || { interactions: [], dependencies: [] };
+    var related = access.interactions.filter(function (i) { return i.caller === sub.id || i.target === sub.id || i.identity === sub.id || i.dependencies.some(function (id) { return access.dependencies.some(function (d) { return d.id === id && d.subject === sub.id; }); }); });
+    if (related.length) append(el, [h("h3", { class: "h3", text: "Required access" }), accessList(related), h("button", { type: "button", class: "btn", text: "Open consolidated access coverage", onclick: function () { showTab("access", true); } })]);
     if (sub.lineage && sub.lineage.length) append(el, lineageList(sub.lineage));
     if (sub.live_verified !== null && sub.live_verified !== undefined) {
       append(el, h("p", { class: sub.live_verified === true ? "muted" : "callout" }, sub.live_verified === true ? "Landed work on this subject is live-verified by later passing evidence at the current version."
@@ -706,6 +711,73 @@
     });
   }
 
+  function accessList(items) {
+    var v = state.view, access = v.access;
+    function subjectLink(sid) {
+      return v.subjects[sid] ? h("button", { type: "button", class: "btn btn--link", text: v.subjects[sid].title, onclick: function () { showTab("map", false); select(sid, true); } }) : h("span", { text: sid });
+    }
+    return h("ul", { class: "list access-list" }, items.map(function (i) {
+      var deps = i.dependencies.map(function (id) { return access.dependencies.find(function (d) { return d.id === id; }); });
+      return h("li", { class: "item" }, h("h3", { class: "h3", text: i.title }),
+        h("p", null, subjectLink(i.caller), " through ", subjectLink(i.identity), " to ", subjectLink(i.target)),
+        h("p", { class: "mono", text: i.operations.join(", ") }),
+        h("p", null, h("strong", { text: "Static coverage: " }), i.static_coverage.replace(/-/g, " "), " · Request: ", i.request_proof.replace(/-/g, " ")),
+        h("p", { class: "muted", text: "Phases: " + i.phases.join(", ") + " · Effective access: unknown · Propagation: unobserved" }),
+        i.missing_kinds.length ? h("p", { class: "callout", text: "Unmapped checks: " + i.missing_kinds.join(", ") }) : null,
+        h("details", null, h("summary", { text: "Policy, trust and configuration checks (" + deps.length + ")" }),
+          h("ul", { class: "list" }, deps.map(function (d) {
+            return h("li", { class: "item" }, h("strong", { text: d.title }), " · ", d.kind,
+              h("p", null, chip("prerequisite", d.state), " · ", d.comparison.replace(/-/g, " "), " · ", d.coverage),
+              h("p", { text: d.reason || d.error || "Baseline observation only; no effective permission conclusion." }),
+              h("p", { class: "muted", text: "Source: " + (d.source || "uncollected") + " · Resource: " + d.subject }), stamp(d.checked_at),
+              h("p", { text: "Scope / observing identity: " + JSON.stringify(d.scope || {}) }),
+              h("p", { class: "mono", text: "Version: " + (d.version || "unknown") }),
+              h("details", null, h("summary", { text: "Observed policy / configuration metadata" }), h("pre", { class: "access-context", text: JSON.stringify(d.facts, null, 2) }), d.reads.map(function (r) { return h("p", { class: "mono", text: r.service + ":" + r.operation + " · " + r.observed_at + " · response " + r.response_sha256 + " · private source " + r.path }); })),
+              d.provenance ? provenance(d.provenance) : null,
+              d.baseline ? h("p", { class: "muted", text: "Baseline: " + d.baseline.source + " · " + d.baseline.observed_at + " · " + (d.baseline.complete ? "complete" : "incomplete") }) : null,
+              d.reference_states.length ? h("p", { text: "Trust references: " + d.reference_states.map(function (r) { return r.subject + ": " + r.state + " · created " + (r.created_at || "unknown") + " · propagation unobserved"; }).join("; ") }) : null,
+              d.unobserved_policy_documents.length ? h("p", { class: "callout", text: d.unobserved_policy_documents.length + " attached or inline policy documents are unobserved." }) : null,
+              h("p", { text: "Owner: " + d.owners.map(function (o) { return o.name || o.task || o.role; }).join(", ") + " · Next: " + d.next_check }));
+          }))),
+        h("details", null, h("summary", { text: "Request context, scope and proof binding" }),
+          h("p", { text: i.analysis_scope + " Context coverage: " + i.context_coverage }), h("pre", { class: "access-context", text: JSON.stringify(i.context, null, 2) }),
+          h("p", { class: "mono", text: "Assertion digest: " + i.assertion_digest }),
+          i.evidence_record ? [h("p", { text: i.evidence_record.summary }), provenance(i.evidence_record.provenance)] : h("p", { text: "No actual request receipt recorded." })),
+        h("p", { class: "muted", text: "Owner: " + i.owners.map(function (o) { return o.name || o.task || o.role; }).join(", ") + " · Next: " + i.next_check }));
+    }));
+  }
+
+  function renderAccess() {
+    var el = $("access"), v = state.view;
+    if (!v || (el.contains(document.activeElement) && document.activeElement.tagName === "INPUT")) return;
+    clear(el);
+    var access = v.access || { interactions: [], dependencies: [], gaps: [], phases: [] };
+    append(el, h("p", { class: "callout", text: access.limit || "No access relationships declared." }));
+    var gaps = h("details", { class: "access-gaps" }, h("summary", { text: "All missing checks (" + access.gaps.length + ")" }));
+    if (!access.gaps.length) append(gaps, h("p", { class: "muted", text: "No declared coverage gaps. This is not an effective permission result." }));
+    else append(gaps, h("ul", { class: "list" }, access.gaps.map(function (g) {
+      return h("li", { class: "item" }, h("strong", { text: g.title || g.dependency || g.interaction || g.phase }), " · " + (g.kind || g.subject || "phase interactions") + ": " + g.state + (g.comparison ? " · " + g.comparison : ""), h("div", { class: "cell-sum", text: g.next_check }), g.interactions && g.interactions.length > 1 ? h("details", null, h("summary", { text: "Affects " + g.interactions.length + " interactions" }), h("p", { class: "mono", text: g.interactions.join(", ") })) : null);
+    })));
+    append(el, [gaps, h("h3", { class: "h3", text: "Required interactions" })]);
+    var phase = h("select", { id: "access-phase" }, h("option", { value: "all", text: "All phases" }), access.phases.map(function (p) { return h("option", { value: p.id, text: p.title }); }));
+    phase.value = state.accessPhase;
+    var query = h("input", { id: "access-query", type: "search", placeholder: "Resource, identity or operation", value: state.accessQuery });
+    var count = h("p", { class: "muted", "aria-live": "polite" }), list = h("div");
+    function filter() {
+      state.accessPhase = phase.value; state.accessQuery = query.value;
+      var text = query.value.toLowerCase().trim();
+      var items = access.interactions.filter(function (i) {
+        var related = [i.caller, i.identity, i.target].map(function (id) { return (v.subjects[id] || {}).title || id; });
+        return (phase.value === "all" || i.phases.indexOf(phase.value) >= 0) && (!text || [i.title, i.id].concat(related, i.operations).join(" ").toLowerCase().indexOf(text) >= 0);
+      });
+      count.textContent = items.length + " of " + access.interactions.length + " interactions";
+      clear(list); append(list, items.length ? accessList(items) : h("p", { text: "No interactions match these filters." }));
+    }
+    phase.addEventListener("change", filter); query.addEventListener("input", filter);
+    append(el, [h("div", { class: "access-filters" }, h("label", { for: "access-phase" }, "Consuming phase", phase), h("label", { for: "access-query" }, "Find access", query)), count, list]);
+    filter();
+  }
+
   function renderCredentials() {
     var v = state.view, body = $("cred-table").tBodies[0];
     clear(body);
@@ -728,7 +800,7 @@
   }
 
   // ---------------------------------------------------------------- tabs
-  var TABS = { map: "tab-map", ready: "tab-ready", diff: "tab-diff", life: "tab-life", accept: "tab-accept", cred: "tab-cred" };
+  var TABS = { map: "tab-map", access: "tab-access", ready: "tab-ready", diff: "tab-diff", life: "tab-life", accept: "tab-accept", cred: "tab-cred" };
   function showTab(name, focus) {
     if (!TABS[name]) name = "map";
     state.tab = name; writeHash();

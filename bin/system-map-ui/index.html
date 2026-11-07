@@ -28,6 +28,7 @@
 <main class="page">
   <div class="tabs" role="tablist" aria-label="Views">
     <button role="tab" id="tab-map" aria-controls="view-map" aria-selected="true">Map</button>
+    <button role="tab" id="tab-access" aria-controls="view-access" aria-selected="false" tabindex="-1">Access coverage</button>
     <button role="tab" id="tab-ready" aria-controls="view-ready" aria-selected="false" tabindex="-1">Prerequisites</button>
     <button role="tab" id="tab-diff" aria-controls="view-diff" aria-selected="false" tabindex="-1">Differences <span class="count" id="diff-count"></span></button>
     <button role="tab" id="tab-life" aria-controls="view-life" aria-selected="false" tabindex="-1">Experiment timeline</button>
@@ -61,6 +62,12 @@
       <div class="tablewrap"><table class="table" id="edge-table"><thead><tr><th scope="col">Connection</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Implementation</th><th scope="col">Runtime</th><th scope="col">Proof</th></tr></thead><tbody></tbody></table></div>
     </div>
     <aside class="detail" id="detail" aria-label="Selected item" tabindex="-1"></aside>
+  </section>
+
+  <section id="view-access" role="tabpanel" aria-labelledby="tab-access" class="view" hidden>
+    <h2 class="h2">Required access and observed coverage</h2>
+    <p class="hint">Who calls which operation on which resource, through which identity and policies. Baseline coverage and actual request proof are separate; effective access remains unknown.</p>
+    <div id="access"></div>
   </section>
 
   <section id="view-ready" role="tabpanel" aria-labelledby="tab-ready" class="view" hidden>
