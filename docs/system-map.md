@@ -98,6 +98,7 @@ A successful read yields `present` or `mismatch`; `absent`, `denied`, `error`, `
 The view distinguishes `observed`, `imported`, `uncovered`, `uncollected` and `missing-evidence` coverage, and flags phases with no prerequisites declared.
 An observation takes precedence over an imported assessment, including when it fails; neither presence nor authorization grants phase proof.
 Imported assessments carry a `prerequisites` map from prerequisite ID to `present`, `absent`, `denied`, `unknown`, or `not-tested` on an ordinary evidence record, plus a required textual `scope`.
+An imported assessment qualifies only when its existing `resource_identities` entry for the producer matches the current bound observation digest, or the producer's current version identity when no observation is declared; missing bindings or identities leave it unknown with missing evidence coverage.
 They retain that record's observed/recorded time and provenance and never become collector observations.
 Only the new prerequisite references are validated at intake; the existing deferred criterion/phase receipt-validation work remains separate.
 
@@ -126,7 +127,6 @@ Credential records extend purpose, owner, `expires`, and `rotation` with optiona
 The credential view groups renewal dependencies while retaining each identity's expiry, renewal mechanism, owner, and limits, including identities outside a group.
 For a full run the start must be strictly before the earliest chain expiry minus the entire support interval, and after every known not-before time.
 `latest_safe_start`, remaining seconds and `fits`/`does-not-fit` require observed expiries throughout the issuer chain and known not-before dates for certificates; missing validity, an inferred expiry or a cycle leaves feasibility unknown.
-`latest_possible_start` is only an upper bound from known expiries, never execution authority or installed/served identity equality.
 An expiry within seven days opens a discrepancy under its existing stable credential ID.
 
 ## Supervision integration

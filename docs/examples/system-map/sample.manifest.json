@@ -435,7 +435,6 @@
       ],
       "baseline": "both",
       "observation": "queue-sqs",
-      "expected_state": "empty",
       "authorization": "unknown",
       "owners": [
         {

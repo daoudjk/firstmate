@@ -728,7 +728,6 @@
           h("span", { class: "cell-sum", text: "Issuer: " + (c.issuer || "not recorded") }), c.expected_expires ? h("span", { class: "cell-sum", text: "Inferred expiry: " + c.expected_expires }) : null,
           c.full_window_seconds ? h("span", { class: "cell-sum", text: "Full window: " + (c.full_window || "unknown") + " · " + c.full_window_seconds + " seconds" }) : null,
           c.full_window_seconds ? h("span", { class: "cell-sum", text: "Latest safe start (strictly before): " + (c.latest_safe_start || "unknown") }) : null,
-          c.latest_possible_start ? h("span", { class: "cell-sum muted", text: "Known-expiry upper bound: " + c.latest_possible_start }) : null,
           c.note ? h("details", null, h("summary", { text: "Evidence and limits" }), h("p", { text: c.note })) : null),
         h("td", { text: (c.subjects || []).map(function (sid) { return (v.subjects[sid] || {}).title || sid; }).join(", ") })));
     });

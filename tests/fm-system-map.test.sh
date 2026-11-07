@@ -65,7 +65,7 @@ if op == "describe-services":
     n = int(st.get("ecs_running", 0))
     out({"services": [{"status": "ACTIVE", "desiredCount": n, "runningCount": n, "pendingCount": 0, "taskDefinition": "arn:aws:ecs:us-east-1:123456789012:task-definition/example-api:7"}]})
 if op == "get-queue-url": out({"QueueUrl": "https://example.invalid/q"})
-if op == "get-queue-attributes": out({"Attributes": {"ApproximateNumberOfMessages": "0", "ApproximateNumberOfMessagesNotVisible": "0"}})
+if op == "get-queue-attributes": out({"Attributes": {"ApproximateNumberOfMessages": str(st.get("queue_visible", 0)), "ApproximateNumberOfMessagesNotVisible": "0"}})
 if op == "describe-table": out({"Table": {"TableStatus": "ACTIVE", "ItemCount": 1}})
 if op == "get-item": out({"Item": {"Halted": {"BOOL": True}, "Revision": {"N": "7"}}})
 if op == "describe-instances":
@@ -1046,7 +1046,7 @@ m['prerequisites']=[]
 for pid, producer, observation in [('wake-ready','wake-function','wake-function-read'),('stop-ready','stop-schedule','stop-schedule-read'),('role-ready','scheduler-role','scheduler-role-read'),('unmeasured','console',None),('owner-check','console',None)]:
     item={'id':pid,'title':pid,'producer':producer,'resource':pid,'phases':['submit'],'baseline':'both','authorization':'awaiting-authorization','next_check':'Obtain a bounded owner receipt.'}
     if observation: item['observation']=observation
-    if pid=='owner-check': item['evidence']='owner-report'
+    if pid=='owner-check': item['evidence']='owner-report'; item['producer']='worker-host'
     m['prerequisites'].append(item)
 json.dump(m,open(sys.argv[1],'w')); json.dump(b,open(sys.argv[2],'w'))
 PY
@@ -1071,15 +1071,35 @@ PY
   view_json "$home"
   assert_equals "denied" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][0]["state"]')" "denied prerequisite never becomes absent"
   assert_equals "absent" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][1]["state"]')" "successful not-found means absent"
-  python3 - "$home/receipt.json" <<'PY'
+  python3 - "$home/receipt.json" "$home/view.json" <<'PY'
 import json, sys, datetime
-json.dump({'schema':'fm-system-map.evidence.v1','id':'owner-report','subjects':['console'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Owner has not tested installation.','scope':'retained owner report only','versions':{'console':'locally-built-v2'},'prerequisites':{'owner-check':'not-tested'},'provenance':{'kind':'imported-report','source':'fixture owner'}},open(sys.argv[1],'w'))
+identity=json.load(open(sys.argv[2]))['subjects']['worker-host']['resource_identity']
+json.dump({'schema':'fm-system-map.evidence.v1','id':'owner-report','subjects':['console'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Owner has not tested installation.','scope':'retained owner report only','versions':{'console':'locally-built-v2'},'resource_identities':{'worker-host':identity},'prerequisites':{'owner-check':'not-tested'},'provenance':{'kind':'imported-report','source':'fixture owner'}},open(sys.argv[1],'w'))
 PY
   map "$home" evidence add example "$home/receipt.json" >/dev/null || fail "owner receipt rejected"
   view_json "$home"
   assert_equals "not-tested" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][4]["state"]')" "not tested differs from unknown"
   assert_equals "reported" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["status"]')" "local artifact is a reported stage"
   assert_equals "None" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["version"]')" "reported artifact does not create an observed deployment"
+  python3 - "$home/data/system-map/example/bindings.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['bindings']['worker_host']['instance_id']='i-abcdef01234567890'; json.dump(d,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "resource B collection failed"
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][4]["state"]')" "resource A receipt does not assess resource B"
+  assert_equals "missing-evidence" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][4]["coverage"]')" "resource B has no qualified owner receipt"
+  python3 - "$home/data/system-map/example/bindings.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); del d['bindings']['worker_host']; json.dump(d,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][4]["state"]')" "unbound resource cannot inherit the owner assessment"
+  python3 - "$home/data/system-map/example/bindings.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d['bindings']['worker_host']={'instance_id':'i-abcdef01234567890','pin':'ami-0123456789abcdef0'}; json.dump(d,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "resource B recollection failed"
   python3 - "$home/receipt.json" <<'PY'
 import json,sys
 p=sys.argv[1]; r=json.load(open(p)); r['id']='bad-reference'; r['prerequisites']={'typo':'present'}; json.dump(r,open(p,'w'))
@@ -1123,7 +1143,13 @@ assert checks['migration-worker-record']['baseline'] == 'migration'
 assert checks['worker-host']['baseline'] == 'both'
 assert view['credentials'][0]['expiry_basis'] == 'unknown'
 assert view['credentials'][0]['latest_safe_start'] is None
+assert 'latest_possible_start' not in view['credentials'][0]
 PY
+  aws_state "$home" '{"queue_visible":1}'
+  map "$home" collect >/dev/null || fail "queued-work collection failed"
+  view_json "$home"
+  assert_equals "holding" "$(py "$home/view.json" 'd["subjects"]["queue"]["observations"][0]["current"]["state"]')" "fixture represents queued work"
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "wake-queue"][0]["state"]')" "queued work does not contradict the wake prerequisite"
   pass "sample covers lifecycle prerequisites without manufacturing proof or issuer validity"
 }
 
@@ -1152,6 +1178,7 @@ PY
   view_json "$home"
   assert_equals "unknown" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "inferred issuer cannot establish feasibility"
   assert_equals "None" "$(py "$home/view.json" 'd["credentials"][1]["latest_safe_start"]')" "inferred issuer gives no latest safe start"
+  assert_equals "False" "$(py "$home/view.json" '"latest_possible_start" in d["credentials"][1]')" "unknown timing has no speculative upper bound"
   python3 - "$home/data/system-map/example/manifest.json" <<'PY'
 import datetime,json,sys
 p=sys.argv[1]; m=json.load(open(p)); m['credentials'][0]['expiry_basis']='observed'; m['credentials'][0]['expires']=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=7200)).isoformat(); json.dump(m,open(p,'w'))

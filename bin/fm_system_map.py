@@ -1341,7 +1341,7 @@ def live_verification(evidence, sid, version, vstate, completed_at, resource_ide
     return "unversioned" if vstate == "untracked" else True
 
 
-def prerequisite_view(manifest, subjects, evidence, observations, interval):
+def prerequisite_view(manifest, bindings, subjects, evidence, observations, interval):
     records = {r["id"]: r for r in evidence if not r.get("invalid")}
     items = []
     for item in manifest.get("prerequisites", []):
@@ -1360,11 +1360,21 @@ def prerequisite_view(manifest, subjects, evidence, observations, interval):
             if state == "present" and item.get("expected_state") and obs.get("state") != item["expected_state"]:
                 state = "mismatch"
         elif rec and item["id"] in rec.get("prerequisites", {}):
-            state = rec["prerequisites"][item["id"]]
-            coverage, checked, scope = "imported", rec.get("observed_at", rec["recorded_at"]), rec.get("scope")
+            identity = subject["resource_identity"]
+            if item.get("observation"):
+                producer = subjects_of(manifest)[item["producer"]][1]
+                declared = next(o for o in producer.get("observe", []) if o["id"] == item["observation"])
+                entry = bindings.get("bindings", {}).get(declared["binding"])
+                identity = observation_binding_digest(declared, bindings) if not binding_problem(declared["adapter"], entry) else None
+            scope = rec.get("scope")
             provenance, detail = rec["provenance"], rec["summary"]
-            if rec.get("historical"):
-                state = "stale"
+            if identity and rec.get("resource_identities", {}).get(item["producer"]) == identity:
+                state = rec["prerequisites"][item["id"]]
+                coverage, checked = "imported", rec.get("observed_at", rec["recorded_at"])
+                if rec.get("historical"):
+                    state = "stale"
+            else:
+                coverage, detail = "missing-evidence", "Named receipt has no assessment for the current bound resource."
         elif item.get("evidence"):
             coverage, detail = "missing-evidence", "Named receipt is missing or contains no assessment of this prerequisite."
         observed_state = state
@@ -1397,15 +1407,13 @@ def credential_view(manifest):
         validity_known = all(c.get("kind") not in ("tls-leaf", "ca") or parse_iso(c.get("not_before")) is not None for c in chain)
         observed = not cycle and issuer_complete and validity_known and all(t is not None and c.get("expiry_basis") == "observed" for c, t in zip(chain, known))
         window = cred.get("full_window_seconds")
-        possible = min(t for t in known if t is not None) - window if window and any(t is not None for t in known) else None
-        safe = possible if observed else None
+        safe = min(known) - window if observed and window else None
         valid_from = max([parse_iso(c.get("not_before")) or 0 for c in chain])
         feasibility = "unknown"
         if safe is not None:
             feasibility = "fits" if valid_from <= now_ts() < safe else "does-not-fit"
         result.append(dict(cred, issuer_chain=[c["id"] for c in chain[1:]], issuer_cycle=cycle,
                            remaining_seconds=int(min(known) - now_ts()) if observed else None,
-                           latest_possible_start=iso(possible) if possible is not None else None,
                            latest_safe_start=iso(safe) if safe is not None else None,
                            full_window=feasibility))
     return result
@@ -1595,7 +1603,7 @@ def build_view(home, cfg, project):
         "order": {"components": [c["id"] for c in manifest["components"]], "connections": [c["id"] for c in manifest["connections"]]},
         "acceptance": acceptance,
         "timeline": timeline,
-        "readiness": prerequisite_view(manifest, subjects, evidence, observations, interval),
+        "readiness": prerequisite_view(manifest, bindings, subjects, evidence, observations, interval),
         "credentials": credential_view(manifest),
         "discrepancies": sorted(ledger.values(), key=lambda d: (d.get("status") != "open", SEVERITIES.index(d.get("severity", "info")), d.get("first_seen", ""))),
         "requests": requests,
