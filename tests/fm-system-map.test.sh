@@ -1674,6 +1674,23 @@ PYTEST
   map "$home" collect >/dev/null || fail "repeat identical read"
   view_json "$home"
   assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "identical refreshed checks preserve exact receipt binding"
+  cp "$home/data/system-map/example/manifest.json" "$home/pass-role-manifest.json"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/manifest.json'; m=json.load(open(p)); role=next(d for d in m['access_dependencies'] if d['id']=='identity-role-check'); m['access_dependencies'].append(dict(role,id='wrong-pass-role',title='Trust read labeled PassRole',kind='pass-role')); m['access_dependencies'].append(dict(role,id='wrong-session-policy',title='Trust read labeled session policy',kind='session-policy')); i=next(i for i in m['interactions'] if i['id']=='explicit-pass-role-request'); i['dependencies']=[d for d in i['dependencies'] if d!='session-policy']+['wrong-pass-role','wrong-session-policy']; i['context_complete']=True; i['evidence']='wrong-pass-role-request'; p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  python3 - "$home" <<'PYTEST'
+import datetime,json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); v=json.load(open(h/'view.json')); i=next(i for i in v['access']['interactions'] if i['id']=='explicit-pass-role-request'); ids=['access-role','access-bucket']; at=datetime.datetime.now(datetime.timezone.utc).isoformat(); r={'schema':'fm-system-map.evidence.v1','id':'wrong-pass-role-request','subjects':ids,'versions':{s:v['subjects'][s]['version'] for s in ids},'resource_identities':{s:v['subjects'][s]['resource_identity'] for s in ids},'result':'pass','recorded_at':at,'observed_at':at,'scope':'synthetic policy-kind mismatch request','summary':'Trust metadata cannot establish PassRole','provenance':{'kind':'receipt','source':'fixture owner'},'access_requests':{i['id']:i['assertion_digest']}}; (h/'wrong-pass-role-request.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/wrong-pass-role-request.json" >/dev/null || fail "wrong PassRole receipt intake"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" '"pass-role" in next(i for i in d["access"]["interactions"] if i["id"]=="explicit-pass-role-request")["missing_kinds"]')" "trust metadata cannot satisfy PassRole coverage"
+  assert_equals "True" "$(py "$home/view.json" '"session-policy" in next(i for i in d["access"]["interactions"] if i["id"]=="explicit-pass-role-request")["missing_kinds"]')" "trust metadata cannot satisfy session-policy coverage"
+  assert_equals "gaps" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="explicit-pass-role-request")["static_coverage"]')" "wrong policy kind cannot complete declared coverage"
+  assert_equals "stale" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="explicit-pass-role-request")["request_proof"]')" "matching receipt cannot prove wrong policy kind"
+  cp "$home/pass-role-manifest.json" "$home/data/system-map/example/manifest.json"
   cp "$home/data/system-map/example/manifest.json" "$home/participant-manifest.json"
   cp "$home/data/system-map/example/bindings.json" "$home/participant-bindings.json"
   cp "$home/aws-state.json" "$home/trust-state.json"

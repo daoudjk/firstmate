@@ -27,6 +27,20 @@ BINDING_FIELDS = {
     "aws.kms_policy": {"key_id": "str"},
     "aws.ecs_task_metadata": {"task_definition": "str"},
 }
+OBSERVATION_KINDS = {
+    "role-existence": {"aws.iam_role_access"},
+    "trust": {"aws.iam_role_access"},
+    "identity-policy": {"aws.iam_inline_policy", "aws.iam_managed_policy"},
+    "resource-policy": {"aws.s3_policy", "aws.sqs_policy", "aws.dynamodb_policy"},
+    "key-policy": {"aws.kms_policy"},
+    "permissions-boundary": {"aws.iam_managed_policy"},
+    "session-policy": set(),
+    "organization-policy": set(),
+    "endpoint-policy": set(),
+    "pass-role": {"aws.iam_inline_policy", "aws.iam_managed_policy"},
+    "configuration": set(),
+    "tags": {"aws.ecs_task_metadata"},
+}
 
 
 def digest(value):
@@ -488,7 +502,7 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
             d["comparison"] = "insufficient-evidence"
     # Inventory completeness is separate from role existence and trust. Every
     # policy in the bounded attachment inventory needs its own current read.
-    observed_policies = {d["facts"].get("policy_identity") for d in deps.values() if d["kind"] in ("identity-policy", "permissions-boundary") and d["state"] == "observed" and d["comparison"] in ("matches-baseline", "representation-only")}
+    observed_policies = {d["facts"].get("policy_identity") for d in deps.values() if d["kind"] in ("identity-policy", "permissions-boundary", "pass-role") and d["state"] == "observed" and d["comparison"] in ("matches-baseline", "representation-only")}
     for d in deps.values():
         facts = d["facts"]
         inventory = [entry for key, entry in facts.items() if key in ("list-attached-role-policies", "list-role-policies")]
@@ -519,7 +533,7 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
     policy_checks = {}
     policy_identities = {}
     for d in deps.values():
-        if d["kind"] not in ("identity-policy", "permissions-boundary"):
+        if d["kind"] not in ("identity-policy", "permissions-boundary", "pass-role"):
             continue
         declaration = next((o for o in declarations[d["subject"]].get("observe", []) if o["id"] == d.get("observation")), None)
         entry = bindings.get("bindings", {}).get(declaration["binding"]) if declaration else None
@@ -563,6 +577,8 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
             kind = d["kind"]
             declaration = next((o for o in declarations[d["subject"]].get("observe", []) if o["id"] == d.get("observation")), None)
             adapter = declaration["adapter"] if declaration else None
+            if adapter and adapter not in OBSERVATION_KINDS[kind]:
+                return False
             if d["subject"] == subject and declaration and not same_resource(subject, declaration):
                 return False
             if kind in ("role-existence", "trust", "identity-policy", "permissions-boundary", "session-policy", "pass-role") and slot != "identity":
@@ -571,7 +587,7 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
                 return False
             if kind == "key-policy" and slot != "target":
                 return False
-            if kind == "identity-policy":
+            if kind in ("identity-policy", "pass-role"):
                 if d["subject"] == subject and not adapter:
                     return True
                 if adapter not in ("aws.iam_inline_policy", "aws.iam_managed_policy"):
