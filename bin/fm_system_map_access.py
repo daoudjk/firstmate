@@ -563,7 +563,13 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
     gaps = []
     for item in manifest.get("interactions", []):
         role_read = bound_role_read(item["identity"]) if item["identity"] in declarations else {}
-        role_facts = role_read.get("facts", {}) if role_read.get("outcome") == "ok" else {}
+        identity_declaration = declarations.get(item["identity"], {})
+        identity_role_expected = any(o["adapter"] == "aws.iam_role_access" for o in identity_declaration.get("observe", [])) or any(o["id"] == identity_declaration.get("version_from") and o["adapter"] == "aws.iam_role" for o in identity_declaration.get("observe", []))
+        role_age = now - (parse_time(role_read.get("checked_at")) or 0)
+        role_qualified = (role_read.get("outcome") == "ok" and role_read.get("facts", {}).get("complete") is True
+                          and 0 <= role_age <= interval * 2 and role_read.get("scope", {}).get("account_verified") is True
+                          and bool(role_read.get("scope", {}).get("collector_identity")))
+        role_facts = role_read["facts"] if role_qualified else {}
         role_inventory = set()
         for inventory in ("list-attached-role-policies", "list-role-policies"):
             role_inventory.update(role_facts.get(inventory, {}).get("policy_identities", []))
@@ -574,12 +580,12 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
             d = deps[did]
             if d.get("key_dependency") and d["facts"].get("kms_key_identity"):
                 required.add(d["key_dependency"])
-            facts = d["facts"]
-            for inventory in ("list-attached-role-policies", "list-role-policies"):
-                for identity in facts.get(inventory, {}).get("policy_identities", []):
-                    required.update(policy_checks.get(("identity-policy", identity), []))
-            if facts.get("boundary_policy_identity"):
-                required.update(policy_checks.get(("permissions-boundary", facts["boundary_policy_identity"]), []))
+        uncovered_policy_identities = sorted(identity for identity in role_inventory if not policy_checks.get(("identity-policy", identity)))
+        for identity in role_inventory:
+            required.update(policy_checks.get(("identity-policy", identity), []))
+        uncovered_boundary_identity = boundary_identity if boundary_identity and not policy_checks.get(("permissions-boundary", boundary_identity)) else None
+        if boundary_identity:
+            required.update(policy_checks.get(("permissions-boundary", boundary_identity), []))
         unlinked = sorted(required - declared)
         required_ids = item["dependencies"] + unlinked
         linked = [deps[did] for did in required_ids]
@@ -648,6 +654,9 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
         # of a repeated identical read. Freshness is checked independently below.
         assertion = digest({"interaction": item, "bindings": bindings,
                             "dependencies": [{k: d.get(k) for k in ("id", "state", "comparison", "resource_identity", "version", "facts", "scope")} for d in linked],
+                            "identity_role_inventory": {k: role_read.get(k) for k in ("outcome", "binding_digest", "version", "facts", "scope")},
+                            "uncovered_policy_identities": uncovered_policy_identities,
+                            "uncovered_boundary_identity": uncovered_boundary_identity,
                             "subjects": {sid: {k: subjects[sid].get(k) for k in ("version", "resource_identity")} for sid in sorted(participants)}})
         proof = "not-demonstrated"
         rec = next((r for r in evidence if r.get("id") == item.get("evidence") and not r.get("invalid")), None)
@@ -659,13 +668,20 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
             # A credential reference must itself have current validity evidence.
             if item["identity"] not in subjects:
                 current = False
-            if current and not missing and not missing_kinds and item.get("context_complete") is True:
+            if current and not missing and not missing_kinds and (not identity_role_expected or role_qualified) and not uncovered_policy_identities and not uncovered_boundary_identity and item.get("context_complete") is True:
                 proof = {"pass": "demonstrated", "fail": "failed", "not-run": "not-demonstrated"}[rec["result"]]
-        status = "gaps" if missing or missing_kinds or participant_gaps or item.get("context_complete") is not True else "declared-baselines-observed"
+        status = "gaps" if missing or missing_kinds or participant_gaps or (identity_role_expected and not role_qualified) or uncovered_policy_identities or uncovered_boundary_identity or item.get("context_complete") is not True else "declared-baselines-observed"
         interactions.append(dict(item, required_dependencies=required_ids, unlinked_dependencies=unlinked, unmatched_dependencies=sorted(set(required_ids) - matched), static_coverage=status, missing_dependencies=missing,
-                                 missing_kinds=missing_kinds, participant_gaps=participant_gaps, assertion_digest=assertion,
+                                 missing_kinds=missing_kinds, participant_gaps=participant_gaps, identity_role_inventory="observed" if role_qualified else "unknown" if identity_role_expected else "not-applicable",
+                                 uncovered_policy_identities=uncovered_policy_identities, uncovered_boundary_identity=uncovered_boundary_identity, assertion_digest=assertion,
                                  request_proof=proof, evidence_record=rec,
                                  effective_access="unknown", propagation="unobserved", context_coverage="declared-complete" if item.get("context_complete") is True else "unobserved"))
+        if identity_role_expected and not role_qualified:
+            gaps.append({"interaction": item["id"], "kind": "identity-role-inventory", "subject": item["identity"], "state": "unknown", "owners": item["owners"], "next_check": "Observe a fresh, complete policy and boundary inventory for the bound identity role."})
+        for identity in uncovered_policy_identities:
+            gaps.append({"interaction": item["id"], "dependency": item["identity"] + ":" + identity, "kind": "identity-policy-document", "subject": item["identity"], "state": "unmapped", "owners": item["owners"], "next_check": "Declare and read the attached or inline policy identified by this fingerprint."})
+        if uncovered_boundary_identity:
+            gaps.append({"interaction": item["id"], "dependency": item["identity"] + ":" + uncovered_boundary_identity, "kind": "permissions-boundary", "subject": item["identity"], "state": "unmapped", "owners": item["owners"], "next_check": "Declare and read the active permissions boundary identified by this fingerprint."})
         for sid in participant_gaps:
             gaps.append({"interaction": item["id"], "kind": "current-identity-version", "subject": sid, "state": "unqualified", "owners": item["owners"], "next_check": "Observe a fresh current bound deployment and version for " + sid + "; credential metadata alone cannot qualify a request."})
         if item.get("context_complete") is not True:

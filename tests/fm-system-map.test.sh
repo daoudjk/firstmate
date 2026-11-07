@@ -1674,6 +1674,40 @@ PYTEST
   map "$home" collect >/dev/null || fail "repeat identical read"
   view_json "$home"
   assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "identical refreshed checks preserve exact receipt binding"
+  cp "$home/data/system-map/example/manifest.json" "$home/inventory-manifest.json"
+  cp "$home/aws-state.json" "$home/inventory-aws-state.json"
+  python3 - "$home" <<'PYTEST'
+import datetime,json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); at=datetime.datetime.now(datetime.timezone.utc).isoformat(); owners=[{'name':'fixture owner'}]
+for did,kind,mark in [('imported-role-existence','role-existence','1'),('imported-trust','trust','2')]:
+ m['access_dependencies'].append({'id':did,'title':did,'kind':kind,'subject':'access-role','participant':'identity','evidence':'inventory-owner','baseline':{'format':'role' if kind=='role-existence' else 'policy','complete':True,'sha256':mark*64,'source':'fixture owner assessment','observed_at':at},'owners':owners,'next_check':'Review current bound role evidence.'})
+i=dict(m['interactions'][0],id='unlinked-role-inventory',title='Imported role checks with incomplete policy documents',evidence='inventory-request'); i['dependencies']=[d for d in i['dependencies'] if d not in ('identity-role-check','trust-check')]+['imported-role-existence','imported-trust']; m['interactions'].append(i); p.write_text(json.dumps(m)); p=h/'aws-state.json'; s=json.load(open(p)); s['responses']['list-attached-role-policies']['AttachedPolicies'].append({'PolicyArn':'arn:aws:iam::123456789012:policy/fixture-second','PolicyName':'fixture-second'}); p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "two-policy role inventory collection"
+  view_json "$home"
+  python3 - "$home" <<'PYTEST'
+import datetime,json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); v=json.load(open(h/'view.json')); subject=v['subjects']['access-role']; at=datetime.datetime.now(datetime.timezone.utc).isoformat(); checks={}
+for did,fmt,mark in [('imported-role-existence','role','1'),('imported-trust','policy','2')]:
+ checks[did]={'outcome':'ok','binding_digest':subject['resource_identity'],'observer_identity':'1'*64,'version':did+'-v1','facts':{'format':fmt,'complete':True,'sha256':mark*64}}
+r={'schema':'fm-system-map.evidence.v1','id':'inventory-owner','subjects':['access-role'],'versions':{'access-role':subject['version']},'resource_identities':{'access-role':subject['resource_identity']},'result':'pass','recorded_at':at,'observed_at':at,'scope':'fixture current role and trust review','summary':'Owner role and trust assessments','provenance':{'kind':'receipt','source':'fixture owner'},'access_checks':checks}; (h/'inventory-owner.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/inventory-owner.json" >/dev/null || fail "imported role and trust assessments"
+  view_json "$home"
+  assert_equals "observed" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="unlinked-role-inventory")["identity_role_inventory"]')" "bound identity inventory is current"
+  assert_equals "[]" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="unlinked-role-inventory")["missing_dependencies"]')" "declared policy A and imported role checks remain current"
+  assert_equals "1" "$(py "$home/view.json" 'len(next(i for i in d["access"]["interactions"] if i["id"]=="unlinked-role-inventory")["uncovered_policy_identities"])')" "second attached policy has its own uncovered fingerprint"
+  assert_equals "gaps" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="unlinked-role-inventory")["static_coverage"]')" "imported role checks cannot hide missing attached policy"
+  python3 - "$home" <<'PYTEST'
+import datetime,json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); v=json.load(open(h/'view.json')); i=next(i for i in v['access']['interactions'] if i['id']=='unlinked-role-inventory'); ids=['access-role','access-bucket']; at=datetime.datetime.now(datetime.timezone.utc).isoformat(); r={'schema':'fm-system-map.evidence.v1','id':'inventory-request','subjects':ids,'versions':{s:v['subjects'][s]['version'] for s in ids},'resource_identities':{s:v['subjects'][s]['resource_identity'] for s in ids},'result':'pass','recorded_at':at,'observed_at':at,'scope':'synthetic request with one unchecked attached policy','summary':'Current request cannot establish complete coverage','provenance':{'kind':'receipt','source':'fixture owner'},'access_requests':{i['id']:i['assertion_digest']}}; (h/'inventory-request.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/inventory-request.json" >/dev/null || fail "inventory request receipt intake"
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="unlinked-role-inventory")["request_proof"]')" "matching receipt cannot prove missing attached policy"
+  cp "$home/inventory-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/inventory-aws-state.json" "$home/aws-state.json"
+  map "$home" collect >/dev/null || fail "restore role inventory fixture"
   cp "$home/data/system-map/example/manifest.json" "$home/compatible-manifest.json"
   cp "$home/data/system-map/example/bindings.json" "$home/compatible-bindings.json"
   cp "$home/aws-state.json" "$home/compatible-aws-state.json"
