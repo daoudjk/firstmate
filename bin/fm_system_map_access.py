@@ -580,12 +580,16 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
             d = deps[did]
             if d.get("key_dependency") and d["facts"].get("kms_key_identity"):
                 required.add(d["key_dependency"])
-        uncovered_policy_identities = sorted(identity for identity in role_inventory if not policy_checks.get(("identity-policy", identity)))
-        for identity in role_inventory:
-            required.update(policy_checks.get(("identity-policy", identity), []))
-        uncovered_boundary_identity = boundary_identity if boundary_identity and not policy_checks.get(("permissions-boundary", boundary_identity)) else None
-        if boundary_identity:
-            required.update(policy_checks.get(("permissions-boundary", boundary_identity), []))
+        def require_policy_check(kind, identity):
+            candidates = policy_checks.get((kind, identity), [])
+            if any(did in declared for did in candidates):
+                return True
+            if len(candidates) == 1:
+                required.add(candidates[0])
+                return True
+            return False
+        uncovered_policy_identities = sorted(identity for identity in role_inventory if not require_policy_check("identity-policy", identity))
+        uncovered_boundary_identity = boundary_identity if boundary_identity and not require_policy_check("permissions-boundary", boundary_identity) else None
         unlinked = sorted(required - declared)
         required_ids = item["dependencies"] + unlinked
         linked = [deps[did] for did in required_ids]

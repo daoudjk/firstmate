@@ -1708,6 +1708,62 @@ PYTEST
   cp "$home/inventory-manifest.json" "$home/data/system-map/example/manifest.json"
   cp "$home/inventory-aws-state.json" "$home/aws-state.json"
   map "$home" collect >/dev/null || fail "restore role inventory fixture"
+  cp "$home/data/system-map/example/manifest.json" "$home/shared-policy-manifest.json"
+  cp "$home/data/system-map/example/bindings.json" "$home/shared-policy-bindings.json"
+  python3 - "$home" <<'PYTEST'
+import copy,json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); bpath=h/'data/system-map/example/bindings.json'; b=json.load(open(bpath))
+subjects={'access-role':'access-role-b','access-inline':'access-inline-b','access-managed':'access-managed-b'}
+bindings={'access_role':'access_role_b','access_inline':'access_inline_b','access_managed':'access_managed_b'}
+observations={}
+for c in list(m['components']):
+ if c['id'] in subjects:
+  clone=copy.deepcopy(c); clone['id']=subjects[c['id']]; clone['title']=clone['id']; clone['observe'][0]['id']+='-b'; clone['observe'][0]['binding']=bindings[clone['observe'][0]['binding']]; clone['version_from']=clone['observe'][0]['id']; observations[c['id']]=clone['observe'][0]['id']; m['components'].append(clone)
+for d in list(m['access_dependencies']):
+ if d['id'] in ('identity-role-check','trust-check','inline-check','managed-check','permissions-boundary','session-policy','organization-policy','endpoint-policy'):
+  clone=copy.deepcopy(d); clone['id']+='-b'; clone['title']=clone['id']; clone['subject']=subjects[d['subject']]
+  if clone.get('observation'): clone['observation']=observations[d['subject']]
+  m['access_dependencies'].append(clone)
+a=copy.deepcopy(m['interactions'][0]); a['id']='shared-managed-a'; a['evidence']='shared-managed-request'; m['interactions'].append(a)
+other=copy.deepcopy(a); other['id']='shared-managed-b'; other['caller']='access-role-b'; other['identity']='access-role-b'; other['dependencies']=[d+'-b' if d in ('identity-role-check','trust-check','inline-check','managed-check','permissions-boundary','session-policy','organization-policy','endpoint-policy') else d for d in a['dependencies']]; m['interactions'].append(other); p.write_text(json.dumps(m))
+b['bindings']['access_role_b']={'role_name':'fixture-other'}; b['bindings']['access_inline_b']={'role_name':'fixture-other','policy_name':'fixture-inline'}; b['bindings']['access_managed_b']=copy.deepcopy(b['bindings']['access_managed']); bpath.write_text(json.dumps(b))
+PYTEST
+  map "$home" collect >/dev/null || fail "shared managed policy collection"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); snap=json.load(open(h/'state/system-map/example/snapshot.json'))
+for dep in m['access_dependencies']:
+ if dep['id'].endswith('-b') and dep.get('observation'):
+  facts=snap['observations'][dep['observation']]['facts']; dep['baseline']={'format':facts['format'],'complete':True,'sha256':facts['sha256'],'raw_sha256':facts['raw_sha256'],'source':'fixture exact read','observed_at':snap['finished_at']}
+  if dep['kind'] in ('trust','role-existence'): dep['baseline']['relationships_sha256']=facts['relationships_sha256']
+p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "declared-baselines-observed" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-a")["static_coverage"]')" "second role policy check does not create a false gap for first role"
+  assert_equals "declared-baselines-observed" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-b")["static_coverage"]')" "first role policy check does not create a false gap for second role"
+  assert_equals "[]" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-a")["unlinked_dependencies"]')" "shared policy duplicate is not required by first interaction"
+  assert_equals "[]" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-b")["unlinked_dependencies"]')" "shared policy duplicate is not required by second interaction"
+  python3 - "$home" <<'PYTEST'
+import datetime,json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); v=json.load(open(h/'view.json')); ids=['access-role','access-role-b','access-bucket']; at=datetime.datetime.now(datetime.timezone.utc).isoformat(); interactions=[i for i in v['access']['interactions'] if i['id'] in ('shared-managed-a','shared-managed-b')]
+r={'schema':'fm-system-map.evidence.v1','id':'shared-managed-request','subjects':ids,'versions':{s:v['subjects'][s]['version'] for s in ids},'resource_identities':{s:v['subjects'][s]['resource_identity'] for s in ids},'result':'pass','recorded_at':at,'observed_at':at,'scope':'fixture shared managed policy request','summary':'Current fixture requests','provenance':{'kind':'receipt','source':'fixture owner'},'access_requests':{i['id']:i['assertion_digest'] for i in interactions}}
+(h/'shared-managed-request.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/shared-managed-request.json" >/dev/null || fail "shared policy request receipt intake"
+  view_json "$home"
+  assert_equals "demonstrated" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-a")["request_proof"]')" "first role request is bound to its own check"
+  assert_equals "demonstrated" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-b")["request_proof"]')" "second role request is bound to its own check"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/manifest.json'; m=json.load(open(p)); next(i for i in m['interactions'] if i['id']=='shared-managed-b')['dependencies'].remove('managed-check-b'); p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "gaps" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-b")["static_coverage"]')" "unlinked duplicate cannot cover missing second role check"
+  assert_equals "1" "$(py "$home/view.json" 'len(next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-b")["uncovered_policy_identities"])')" "missing linked shared policy is identified"
+  assert_equals "stale" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-b")["request_proof"]')" "missing linked check invalidates second role proof"
+  cp "$home/shared-policy-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/shared-policy-bindings.json" "$home/data/system-map/example/bindings.json"
+  map "$home" collect >/dev/null || fail "restore shared policy fixture"
   cp "$home/data/system-map/example/manifest.json" "$home/compatible-manifest.json"
   cp "$home/data/system-map/example/bindings.json" "$home/compatible-bindings.json"
   cp "$home/aws-state.json" "$home/compatible-aws-state.json"
