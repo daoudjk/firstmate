@@ -821,6 +821,7 @@ test_binding_completion_and_live_verification() {
   expect_code 3 "$rc" "verify before live evidence"
   assert_contains "$out" "live-verified no" "landed work is not live-verified yet"
   view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'all(x["category"] == "verification" for x in d["presentation"]["differences"] if x["kind"] == "completion")')" "unverified completions remain verification concerns"
   assert_equals "complete" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["layers"]["implementation"]["status"]')" "implementation layer shows the completion"
   assert_contains "$(py "$home/view.json" '[x["kind"] for x in d["discrepancies"] if x["status"] == "open"]')" "completion" "an unverified completion is a visible discrepancy"
   write_evidence "$home" after-landing ami-0123456789abcdef0 pass false "$(date -u +%Y-%m-%dT%H:%M:%SZ -d '+1 minute' 2>/dev/null || date -u -v+1M +%Y-%m-%dT%H:%M:%SZ)"
@@ -2084,6 +2085,84 @@ PYTEST
   assert_equals "unobserved" "$(py "$home/view.json" 'd["access"]["interactions"][0]["propagation"]')" "matching GetRole never proves downstream propagation"
   pass "access view batches gaps, classifies policy/tag drift, and qualifies exact trust dependencies"
 }
+
+test_presentation_preserves_evidence_distinctions() {
+  local home ledger_before requests_before
+  home=$(new_home presentation)
+  python3 - "$home/data/system-map/example/manifest.json" "$home/data/system-map/example/bindings.json" <<'PYFIXTURE'
+import datetime, json, sys
+p, b = sys.argv[1:]; m = json.load(open(p)); bindings = json.load(open(b))
+owner = [{"name": "Example owner", "task": "example-owner"}]
+queue = next(c for c in m["components"] if c["id"] == "queue")
+queue["x-presentation"] = {"runtime": {"category": "implementation", "group": "Retained abandoned job", "detail": "A specifically abandoned job remains unclosed; queue message retained by decision.", "next_action": "Owner must decide disposition; no automatic acknowledgment."}}
+m["known_gaps"] = [
+ {"id": "required-consumption", "title": "Required queue consumption is not implemented", "subjects": ["queue"], "severity": "medium", "owners": owner, "x-presentation": {"category": "implementation", "expected": "Consumer processes admitted jobs", "impact": "Required jobs cannot progress", "next_action": "Implement consumer then prove runtime consumption"}},
+ {"id": "retained-job", "title": "Abandoned job remains unclosed", "subjects": ["queue"], "severity": "medium", "x-presentation": {"category": "operational", "group": "Retained abandoned job"}},
+ {"id": "publisher-grant", "title": "Generated publisher lacks scheduler:GetSchedule", "subjects": ["api"], "severity": "medium", "detail": "Source review only; applied permissions and actual request remain unverified.", "owners": owner, "x-presentation": {"category": "implementation", "expected": "Publisher can inspect its schedule", "impact": "Schedule reconciliation lacks the required grant", "next_action": "Repair generated policy; separately deploy and collect authorized request evidence"}},
+ {"id": "role-context", "title": "Exact operation and context unknown", "subjects": ["api"], "severity": "high", "x-presentation": {"category": "access"}},
+ {"id": "cleanup", "title": "Cleanup obligations need current census", "subjects": ["api"], "severity": "medium", "x-presentation": {"category": "verification", "urgent": True}},
+ {"id": "renewal", "title": "Certificate renewal automation missing", "subjects": ["api"], "severity": "medium", "x-presentation": {"category": "implementation"}},
+ {"id": "unclassified", "title": "Unknown source requirement", "subjects": ["api"], "severity": "medium"}]
+expires = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=2)).isoformat()
+m["credentials"] = [{"id": "cert-%d" % i, "title": "Example leaf %d" % i, "purpose": "Synthetic transport", "owner": "Example renewal owner", "subjects": ["api"], "expires": expires, "not_before": "2026-01-01T00:00:00Z", "rotation": "Owner rotation", "note": "Issuer validity is unknown"} for i in range(6)]
+m["components"] += [{"id": "example-role", "title": "Neutral name", "observe": [{"id": "role-observation", "adapter": "aws.iam_role", "binding": "role-binding"}], "owners": owner}, {"id": "shared-policy", "title": "Shared policy", "x-presentation": {"section": "access"}, "owners": owner}]
+bindings["bindings"]["role-binding"] = {"role_name": "synthetic-role"}
+json.dump(m, open(p, "w")); json.dump(bindings, open(b, "w"))
+PYFIXTURE
+  aws_state "$home" '{"queue_visible": 1, "deny": ["ecs"], "missing": ["dynamodb"]}'
+  map "$home" collect >/dev/null || fail "presentation collection failed"
+  ledger_before=$(cksum < "$home/data/system-map/example/discrepancies.json")
+  requests_before=$(cksum < "$home/state/system-map/example/requests.json")
+  view_json "$home"
+  assert_equals "$ledger_before" "$(cksum < "$home/data/system-map/example/discrepancies.json")" "presentation does not resolve or rewrite ledger obligations"
+  assert_equals "$requests_before" "$(cksum < "$home/state/system-map/example/requests.json")" "presentation never acknowledges requests"
+  python3 - "$home/view.json" <<'PYCHECK' || fail "presentation distinctions failed"
+import json, sys
+v = json.load(open(sys.argv[1])); p = v["presentation"]; ds = p["differences"]
+assert len(ds) == len(v["discrepancies"])
+assert {d["id"] for d in ds} == {d["id"] for d in v["discrepancies"]}
+assert "example-role" in p["access_subjects"] and "shared-policy" in p["access_subjects"]
+assert "queue" in p["components"] and "api" in p["components"]
+assert len(p["access_subjects"]) == len(set(p["access_subjects"]))
+runtime = next(d for d in ds if d["kind"] == "runtime" and d["subject"] == "queue")
+assert runtime["category"] == "operational" and runtime["urgent"]
+assert "abandoned" in runtime["disposition"]
+assert runtime["group"] == next(d for d in ds if d["title"] == "Abandoned job remains unclosed")["group"]
+required = next(d for d in ds if d["title"] == "Required queue consumption is not implemented")
+assert required["category"] == "implementation" and required["expected"] and required["impact"] and required["next_action"]
+assert next(d for d in ds if "GetSchedule" in d["title"])["category"] == "implementation"
+assert next(d for d in ds if "renewal automation" in d["title"])["category"] == "implementation"
+expiry = [d for d in ds if d["kind"] == "credential"]
+assert len(expiry) == 6 and {d["category"] for d in expiry} == {"maintenance"}
+assert len({d["group"] for d in expiry}) == 1 and all(d["owners"] for d in expiry)
+assert all(d["category"] == "verification" for d in ds if d["kind"] == "observation")
+assert v["subjects"]["api"]["observations"][0]["current"]["outcome"] == "denied"
+assert v["subjects"]["results"]["observations"][0]["current"]["outcome"] == "absent"
+assert next(d for d in ds if d["title"] == "Exact operation and context unknown")["urgent"] is False
+assert next(d for d in ds if d["title"] == "Cleanup obligations need current census")["urgent"] is True
+assert next(d for d in ds if d["title"] == "Unknown source requirement")["category"] == "review"
+assert v["subjects"]["api"]["layers"]["proof"]["status"] == "not-demonstrated"
+assert not any(a["status"] == "passed" for a in v["acceptance"])
+print("presentation categories retain distinct evidence and urgent obligations")
+PYCHECK
+  # A normal nonempty queue alone does not create the explicit implementation gap.
+  python3 - "$home/data/system-map/example/manifest.json" <<'PYFIXTURE'
+import json, sys
+p = sys.argv[1]; m = json.load(open(p)); m["known_gaps"] = []; json.dump(m, open(p, "w"))
+PYFIXTURE
+  map "$home" collect >/dev/null || fail "normal queue collection failed"
+  view_json "$home"
+  assert_equals "0" "$(py "$home/view.json" 'sum(d["category"] == "implementation" and d["subject"] == "queue" and d["status"] == "open" for d in d["presentation"]["differences"])')" "nonempty queue does not imply missing consumption implementation"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PYFIXTURE'
+import json, sys
+p = sys.argv[1]; m = json.load(open(p)); m["components"][0]["x-presentation"] = {"section": "arbitrary"}; json.dump(m, open(p, "w"))
+PYFIXTURE
+  map "$home" validate >"$home/invalid-presentation.txt" 2>&1 && fail "invalid presentation section accepted"
+  assert_grep 'section: component or access' "$home/invalid-presentation.txt" "presentation hints are validated"
+  pass "presentation groups expiry and separates implementation, operations, coverage and verification"
+}
+
+test_presentation_preserves_evidence_distinctions
 
 test_access_relationships_and_conservative_comparison
 

@@ -337,6 +337,31 @@ SUBJECT_FIELDS = {
     "version_from", "pin", "implementation", "exception", "x", "y", "notes", "from", "to", "lineage",
 }
 
+PRESENTATION_CATEGORIES = ("implementation", "operational", "maintenance", "verification", "access", "review")
+
+
+def validate_presentation(item, where, subject=False):
+    """Presentation hints never change intended state, evidence or ledger lifecycle."""
+    if not isinstance(item, dict):
+        raise MapError("%s: must be an object" % where)
+    hints = item.get("x-presentation", {})
+    if not isinstance(hints, dict):
+        raise MapError("%s.x-presentation must be an object" % where)
+    if subject:
+        _check_keys(hints, {"section", "runtime"}, where + ".x-presentation")
+        if hints.get("section", "component") not in ("component", "access"):
+            raise MapError("%s.x-presentation.section: component or access" % where)
+        validate_presentation({"x-presentation": hints.get("runtime", {})}, where + ".runtime")
+        return
+    _check_keys(hints, {"category", "group", "expected", "impact", "next_action", "detail", "urgent"}, where + ".x-presentation")
+    if hints.get("category", "review") not in PRESENTATION_CATEGORIES:
+        raise MapError("%s.x-presentation.category: unknown category" % where)
+    for key in ("group", "expected", "impact", "next_action", "detail"):
+        if key in hints:
+            _req(hints, key, "str", where + ".x-presentation")
+    if "urgent" in hints and not isinstance(hints["urgent"], bool):
+        raise MapError("%s.x-presentation.urgent must be boolean" % where)
+
 
 def _validate_owner_list(owners, where):
     if not isinstance(owners, list):
@@ -397,6 +422,7 @@ def validate_manifest(manifest):
             w = "manifest.%s[%d]" % (collection, index)
             if not isinstance(subject, dict):
                 raise MapError("%s: must be an object" % w)
+            validate_presentation(subject, w, subject=True)
             _check_keys(subject, SUBJECT_FIELDS, w)
             sid = _req(subject, "id", "id", w)
             if sid in ids:
@@ -522,6 +548,7 @@ def validate_manifest(manifest):
     gap_ids = set()
     for index, gap in enumerate(manifest.get("known_gaps", [])):
         w = "manifest.known_gaps[%d]" % index
+        validate_presentation(gap, w)
         _check_keys(gap, {"id", "title", "detail", "subjects", "severity", "owners", "evidence"}, w)
         _unique_manifest_id(gap, gap_ids, w)
         _req(gap, "title", "str", w)
@@ -1642,7 +1669,7 @@ def build_view(home, cfg, project):
     collector["fixture"] = bool((snapshot or {}).get("collector", {}).get("fixture"))
     collector["snapshot_at"] = (snapshot or {}).get("finished_at")
     collector["manifest_revision_at_snapshot"] = (snapshot or {}).get("manifest_revision")
-    return {
+    view = {
         "schema": VIEW_SCHEMA,
         "project": project,
         "generated_at": iso(),
@@ -1662,6 +1689,87 @@ def build_view(home, cfg, project):
         "invalid_evidence": [r for r in evidence if r.get("invalid")],
         "config": {k: cfg[k] for k in DEFAULTS},
     }
+    view["presentation"] = presentation_view(view, manifest)
+    return view
+
+
+def presentation_view(view, manifest):
+    """Read-only navigation and difference grouping; retain every ledger member."""
+    declared = {s["id"]: s for _, s in subjects_of(manifest).values()}
+    access_ids = set()
+    for sid, subject in declared.items():
+        section = subject.get("x-presentation", {}).get("section")
+        # Fixed adapter/kind contracts, never names, identify legacy IAM records.
+        if section == "access" or (section is None and (
+                subject.get("kind") in ("identity", "role", "policy", "trust", "certificate", "credential") or
+                any(o["adapter"] in ("aws.iam_role", "aws.iam_role_access", "aws.iam_managed_policy", "aws.iam_inline_policy")
+                    for o in subject.get("observe", [])))):
+            access_ids.add(sid)
+    access_view = view["access"]
+    # Policies, roles and trust checks already name their existing subjects.
+    for dep in access_view["dependencies"]:
+        sid = dep["subject"]
+        if sid in declared and declared[sid].get("x-presentation", {}).get("section") != "component" and dep["kind"] in (
+                "identity-policy", "trust", "role-existence", "permissions-boundary", "session-policy", "pass-role"):
+            access_ids.add(sid)
+    components = [sid for sid in view["order"]["components"] if sid not in access_ids]
+    connections = [sid for sid in view["order"]["connections"]
+                   if view["subjects"][sid]["from"] not in access_ids and view["subjects"][sid]["to"] not in access_ids]
+    related = {}
+    for sid in view["subjects"]:
+        related[sid] = [i["id"] for i in access_view["interactions"] if sid in (i["caller"], i["target"], i["identity"]) or
+                        any(d["subject"] == sid and d["id"] in i["required_dependencies"] for d in access_view["dependencies"])]
+    gap_hints = {discrepancy_id(view["project"], "gap", (g.get("subjects") or ["design"])[0], g["id"]):
+                 g.get("x-presentation", {}) for g in manifest.get("known_gaps", [])}
+    credential_sources = {discrepancy_id(view["project"], "credential", (c.get("subjects") or ["credentials"])[0], c["id"] + ":" + suffix): c
+                          for c in manifest.get("credentials", []) for suffix in ("expired", "expiring")}
+    defaults = {
+        "runtime": ("operational", "Runtime differs from declared intent; cause and disposition need owner review.", "Review runtime evidence and record the required operational disposition."),
+        "version": ("implementation", "The deployed version or its declared pin is incorrect or missing.", "Reconcile the intended pin and deployment with the owner."),
+        "binding": ("verification", "The map cannot observe the declared resource through this binding.", "Repair or confirm the observation binding; do not infer resource absence."),
+        "observation": ("verification", "The collector could not read this resource; service authorization is not established.", "Confirm the observing identity and scope; obtain an authorized read or owner evidence."),
+        "proof": ("verification", "Current deployment behavior remains unverified.", "Obtain qualifying current-version evidence under the existing proof criteria."),
+        "completion": ("verification", "Landed implementation is not live-verified.", "Obtain later passing evidence for the current deployment."),
+        "credential": ("maintenance", "Credential validity limits the safe operating window.", "Review issuer and leaf validity, renewal owner and restart requirements in Identity & Access."),
+        "coverage": ("verification", "Work is not mapped to its affected system subjects.", "Bind the existing task to its map subjects or record why none apply."),
+        "collector": ("verification", "Current system state may be unobserved or stale.", "Review collector health and refresh authorized read-only evidence."),
+    }
+    differences = []
+    for item in view["discrepancies"]:
+        sid, kind = item["subject"], item["kind"]
+        subject = view["subjects"].get(sid, {})
+        hints = gap_hints.get(item["id"], {})
+        if kind == "runtime":
+            hints = declared.get(sid, {}).get("x-presentation", {}).get("runtime", {})
+        category, impact, action = defaults.get(kind, ("review", "This declared gap has no presentation classification yet.", "Classify this gap from its source evidence; do not infer a failure from unknown state."))
+        # Runtime observations cannot become implementation defects through a hint.
+        category = "operational" if kind == "runtime" else hints.get("category", category) if kind == "gap" else category
+        if kind == "gap" and category != "review":
+            impact, action = {
+                "implementation": ("The declared capability is missing or incorrect according to this source assertion; deployment and runtime proof remain separate.", "Resolve the source gap with its owner, then independently verify deployment and runtime."),
+                "operational": ("An operational obligation or disposition remains unresolved.", "Resolve the retained owner disposition under the existing authority."),
+                "maintenance": ("Maintenance may limit continued safe operation.", "Follow the retained maintenance requirement and its owner next check."),
+                "verification": ("The required current evidence is missing; failure is not established by this unknown.", "Obtain the current scoped evidence required by the original owner next check."),
+                "access": ("The required operation, identity, target or context remains unconfirmed.", "Resolve the original access owner next check; do not infer service denial."),
+            }[category]
+        group = hints.get("group") or ("credential-validity" if kind == "credential" else
+                                      "verification-" + kind if kind in ("completion", "proof") else item["id"])
+        expected = hints.get("expected") or ("Runtime intent: " + str(subject.get("intended", {}).get(manifest["expected_mode"], "not declared")) if kind == "runtime" else
+                                             "Deployed version matches the declared pin" if kind == "version" else
+                                             "Declared requirement: " + item["title"] if kind == "gap" else
+                                             subject.get("description") or "See declared requirement and source evidence below.")
+        credential = credential_sources.get(item["id"])
+        owners = item.get("owners") or ([{"name": credential.get("renewal_owner") or credential.get("owner")}] if credential and
+                                       (credential.get("renewal_owner") or credential.get("owner")) else subject.get("owners", []))
+        differences.append(dict(item, category=category, group=group, expected=expected, owners=owners,
+                                impact=hints.get("impact", impact), next_action=hints.get("next_action", action),
+                                disposition=hints.get("detail"),
+                                # Classified coverage unknowns are not observed failures.
+                                # Unclassified severe gaps remain visible until an owner classifies them.
+                                urgent=hints.get("urgent", False) or (item["severity"] == "high" and category in
+                                        ("implementation", "operational", "maintenance", "review"))))
+    return {"components": components, "connections": connections, "access_subjects": [sid for sid in view["order"]["components"] if sid in access_ids],
+            "component_access": related, "differences": differences}
 
 
 def build_timeline(manifest, evidence):

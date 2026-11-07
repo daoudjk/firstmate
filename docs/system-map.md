@@ -6,8 +6,9 @@ It answers "what is this system supposed to be, what is it now, and what has bee
 
 ## What it shows
 
-- A map of components and connections, drawn inside the manifest's groups, with an Intended, Observed, and Difference lens.
-  Every connection is also listed in a table so each one can be opened from the keyboard.
+- A map of product and infrastructure components and connections, drawn inside the manifest's groups, with an Intended, Observed, and Difference lens.
+  Each visible connection is also listed in a table so it can be opened from the keyboard.
+  Identity & Access holds the shared IAM and credential inventory; expandable component access links lead to the existing interactions and policy checks.
 - For every component and connection, four separate layers: implementation, deployment, runtime, and proof.
   None implies another, and there is no completion percentage.
 - Each observation's outcome, state, facts, check time, and scope (region, account label, and whether the account was verified).
@@ -27,6 +28,32 @@ Observation outcomes are distinct and never merged into a false green:
 
 When a read fails, a last successful read from the same manifest revision and bindings is shown separately as historical, never as current.
 Proof is `proven` (a pass for the current deployment), `unversioned` (a pass on a subject that declares no version source), `failed`, `stale` (pass or fail records exist but cannot qualify for the current deployment), `unknown` (the current version is unobserved), or `not-demonstrated`.
+
+## Reading Differences
+
+Differences defaults to implementation/deployment gaps and urgent alerts, with expected capability, the gap or disposition, impact, owner and next action.
+The concern selector exposes operational dispositions, maintenance/expiry, missing observation/proof, access coverage, unclassified declarations and the complete list with open counts.
+Counts describe ledger members rather than groups; urgent alerts also appear in their own categories, so category counts are not additive.
+Status and text filters retain resolved history and individual source IDs, timestamps, subjects and task links inside expandable groups.
+Verification has a dedicated view, credential expiry concerns are grouped in Identity & Access, and declared operation/context unknowns appear beside Access coverage.
+Shared causes group only through explicit presentation metadata or the existing credential/proof/completion kind, with every member available.
+
+Runtime deviations are operational observations, including a nonempty queue; they do not establish a missing consumer implementation.
+A denied collector read is missing observation coverage, not evidence that a service request was denied or that the resource is absent.
+Unknown proof stays unverified, and no presentation category changes acceptance or makes landed work live-verified.
+High-severity implementation, operational, maintenance and unclassified concerns remain visible as urgent alerts; explicitly marked safety, security, cleanup or cost concerns remain visible from any category.
+
+Optional subject `x-presentation` accepts `section` (`component` or `access`) and `runtime` hints.
+Without an explicit section, fixed IAM adapter/kind contracts and identity-side access dependencies identify access records; names and title substrings do not classify anything.
+Shared resource-policy and key-policy checks do not move their buckets, queues or keys out of the infrastructure map.
+Optional known-gap `x-presentation`, and the subject's `runtime` object, accept `category` (`implementation`, `operational`, `maintenance`, `verification`, `access`, `review`), `group` (shared display label), `expected`, `impact`, `next_action`, `detail` (supplemental disposition) and boolean `urgent`.
+Runtime concerns always remain operational, regardless of a category hint.
+Existing kinds classify version differences as implementation, credential expiry as maintenance, and observation/binding/collector/proof/completion/coverage concerns as verification.
+A generic declared gap without explicit metadata remains **Needs classification**, never an inferred implementation defect.
+A source-confirmed missing grant can be explicitly classified as implementation with source provenance and a deployment/readback next action; that does not establish that the grant was applied or works.
+These hints affect only the derived `presentation` section of the view: they do not alter declared intent, collector scope, evidence, discrepancy IDs/status, requests or annotations.
+Use the existing validated intent replacement path to adopt metadata; presentation changes never acknowledge operational obligations.
+`tests/fm-system-map.test.sh` exercises these distinctions through the CLI and HTTP interfaces with synthetic observations.
 
 ## Enabling it
 

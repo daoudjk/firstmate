@@ -9,7 +9,7 @@
 
   var state = {
     project: null, view: null, loadedAt: null, error: null, lens: "observed", tab: "map",
-    selected: null, dfilter: "open", timer: null, collecting: false,
+    selected: null, dfilter: "open", dcategory: "default", dquery: "", identityQuery: "", timer: null, collecting: false,
     // Unsaved note and intent drafts, keyed "<target>|<field>". They survive
     // reloads and auto-refresh until saved or explicitly discarded.
     drafts: {},
@@ -161,6 +161,7 @@
     renderBanners();
     renderMap();
     renderEdgeTable();
+    renderComponentAccess();
     renderDetail();
     renderDiff();
     renderTimeline();
@@ -236,7 +237,7 @@
   }
 
   function nodeGeometry(v) {
-    var ids = v.order.components, pos = {}, maxX = 0, maxY = 0, auto = 0;
+    var ids = v.presentation.components, pos = {}, maxX = 0, maxY = 0, auto = 0;
     ids.forEach(function (id) {
       var sub = v.subjects[id];
       var x = typeof sub.x === "number" ? sub.x : (auto % 5);
@@ -283,14 +284,14 @@
     // boundaries) as boxes around their members, so the architecture's
     // boundaries stay visible instead of a flat graph.
     (v.manifest.groups || []).forEach(function (grp) {
-      var members = v.order.components.filter(function (id) { return v.subjects[id].group === grp.id; });
+      var members = v.presentation.components.filter(function (id) { return v.subjects[id].group === grp.id; });
       if (!members.length) return;
       var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       members.forEach(function (id) { var p = g.pos[id]; x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x + p.w); y1 = Math.max(y1, p.y + p.h); });
       groupLayer.appendChild(s("rect", { x: x0 - 14, y: y0 - 30, width: x1 - x0 + 28, height: y1 - y0 + 44, rx: 12, class: "grp-band" }));
       groupLayer.appendChild(s("text", { x: x0 - 4, y: y0 - 12, class: "grp-label", text: grp.title }));
     });
-    v.order.connections.forEach(function (id) {
+    v.presentation.connections.forEach(function (id) {
       var e = v.subjects[id], a = g.pos[e.from], b = g.pos[e.to];
       if (!a || !b) return;
       var p1 = clip(a, b), p2 = clip(b, a);
@@ -308,7 +309,7 @@
         labelLayer.appendChild(s("text", { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 - 6, "text-anchor": "middle", class: "edge__label", text: e.title }));
       }
     });
-    v.order.components.forEach(function (id) {
+    v.presentation.components.forEach(function (id) {
       var sub = v.subjects[id], p = g.pos[id], t = subjectTone(sub);
       var grp = s("g", { class: "node", tabindex: "0", role: "button", "aria-pressed": String(state.selected === id), "data-tone": t.tone, "data-faded": String(!!t.faded),
         "aria-label": sub.title + ": " + t.text, onclick: function (ev) { activate(ev, id); }, onkeydown: function (ev) { activate(ev, id); } });
@@ -362,11 +363,26 @@
     el.appendChild(h("li", null, h("span", { class: "chip chip--hist", text: "historical" }), "Old evidence, never counted for the current version"));
   }
 
+  function renderComponentAccess() {
+    var v = state.view, el = clear($("component-access"));
+    if (!v) return;
+    v.presentation.components.forEach(function (sid) {
+      var sub = v.subjects[sid], related = v.presentation.component_access[sid] || [];
+      if (!related.length && !sub.credentials.length) return;
+      append(el, h("details", null, h("summary", { text: sub.title + " · " + related.length + " interactions · " + sub.credentials.length + " credentials" }),
+        h("button", { type: "button", class: "btn btn--link", text: "Open component & access relationships", onclick: function () { select(sid, true); } }),
+        h("ul", null, related.map(function (id) {
+          var i = v.access.interactions.find(function (item) { return item.id === id; });
+          return h("li", null, i.title, " · ", h("button", { type: "button", class: "btn btn--link", text: "Access checks", onclick: function () { state.accessQuery = i.id; renderAccess(); showTab("access", true); } }));
+        })), h("ul", { class: "list" }, sub.credentials.map(credItem))));
+    });
+  }
+
   function renderEdgeTable() {
     var v = state.view, body = $("edge-table").tBodies[0];
     clear(body);
     if (!v) return;
-    v.order.connections.forEach(function (id) {
+    v.presentation.connections.forEach(function (id) {
       var e = v.subjects[id];
       body.appendChild(h("tr", { "aria-selected": String(state.selected === id) },
         h("td", null, h("button", { type: "button", class: "btn--link btn", text: e.title, onclick: function () { select(id, true); } })),
@@ -424,7 +440,12 @@
     append(el, dl);
     var access = v.access || { interactions: [], dependencies: [] };
     var related = access.interactions.filter(function (i) { return i.caller === sub.id || i.target === sub.id || i.identity === sub.id || i.required_dependencies.some(function (id) { return access.dependencies.some(function (d) { return d.id === id && d.subject === sub.id; }); }); });
-    if (related.length) append(el, [h("h3", { class: "h3", text: "Required access" }), accessList(related), h("button", { type: "button", class: "btn", text: "Open consolidated access coverage", onclick: function () { showTab("access", true); } })]);
+    if (related.length || sub.credentials.length) append(el, h("details", { class: "component-access" },
+      h("summary", { text: "Identity & Access · " + related.length + " interactions · " + sub.credentials.length + " credentials" }),
+      h("p", { class: "hint", text: "Shared checks link to the same policy records. Presence does not prove effective access." }),
+      h("button", { type: "button", class: "btn", text: "Find this component in Access coverage", onclick: function () { state.accessQuery = sub.title; renderAccess(); showTab("access", true); } }),
+      h("button", { type: "button", class: "btn", text: "Open Identity & Access inventory", onclick: function () { showTab("cred", true); } }),
+      accessList(related), h("ul", { class: "list" }, sub.credentials.map(credItem))));
     if (sub.lineage && sub.lineage.length) append(el, lineageList(sub.lineage));
     if (sub.live_verified !== null && sub.live_verified !== undefined) {
       append(el, h("p", { class: sub.live_verified === true ? "muted" : "callout" }, sub.live_verified === true ? "Landed work on this subject is live-verified by later passing evidence at the current version."
@@ -494,12 +515,6 @@
       append(el, elist);
     }
 
-    if (sub.credentials.length) {
-      append(el, h("h3", { class: "h3", text: "Credentials (metadata only)" }));
-      var clist = h("ul", { class: "list" });
-      sub.credentials.forEach(function (c) { clist.appendChild(credItem(c)); });
-      append(el, clist);
-    }
     if (sub.tasks.length) {
       append(el, h("h3", { class: "h3", text: "Bound Firstmate tasks" }));
       append(el, h("ul", { class: "list" }, sub.tasks.map(function (t) {
@@ -595,25 +610,61 @@
       h("p", { class: "hint", text: "Changes the intended design only. Each save is validated, raises the design revision, and keeps the previous revision in history. Observed states never change here." }), form);
   }
 
-  function renderDiff() {
-    var v = state.view, body = $("diff-table").tBodies[0];
-    clear(body);
-    if (!v) return;
-    var open = v.discrepancies.filter(function (d) { return d.status === "open"; });
-    $("diff-count").textContent = open.length ? String(open.length) : "";
-    document.querySelectorAll("[data-dfilter]").forEach(function (b) { b.setAttribute("aria-checked", String(b.dataset.dfilter === state.dfilter)); });
-    var rows = v.discrepancies.filter(function (d) { return state.dfilter === "all" || d.status === state.dfilter; });
-    if (!rows.length) body.appendChild(h("tr", null, h("td", { colspan: "6", class: "muted", text: state.dfilter === "open" ? "No open differences." : "Nothing here." })));
-    rows.forEach(function (d) {
-      var subj = v.subjects[d.subject];
-      body.appendChild(h("tr", null,
-        h("td", null, chip("severity", d.severity), d.status !== "open" ? h("div", { class: "muted", text: "resolved " + ago(d.resolved_at) }) : null),
-        h("td", null, h("strong", { text: d.title }), d.detail ? h("span", { class: "cell-sum", text: d.detail }) : null, h("span", { class: "cell-sum mono", text: d.id })),
-        h("td", null, subj ? h("button", { type: "button", class: "btn btn--link", text: subj.title, onclick: function () { state.tab = "map"; select(d.subject, false); showTab("map", true); } }) : d.subject),
-        h("td", { text: d.kind }),
-        h("td", null, "first ", stamp(d.first_seen), h("br"), "last ", stamp(d.last_seen)),
-        h("td", { text: (d.owners || []).map(function (o) { return o.task || o.name; }).filter(Boolean).concat((d.links || []).map(function (l) { return "linked: " + l; })).join(", ") || "none recorded" })));
+  var CATEGORIES = { default: "Implementation gaps + urgent alerts", implementation: "Implementation & deployment", operational: "Operational dispositions", maintenance: "Maintenance & expiry", verification: "Missing observation & proof", access: "Access coverage", review: "Needs classification", all: "All concerns" };
+
+  function openSubject(sid) { select(sid, false); showTab("map", true); }
+  function differenceGroups(rows) {
+    var groups = {};
+    rows.forEach(function (d) { var key = d.category + ":" + d.group; (groups[key] || (groups[key] = [])).push(d); });
+    return Object.keys(groups).map(function (key) {
+      var members = groups[key], first = members[0];
+      var title = members.length === 1 ? first.disposition || first.title : first.group === "credential-validity" ? "Credential validity & renewal" : first.kind === "completion" ? "Landed implementation awaiting live verification" : first.kind === "proof" ? "Current deployment proof missing" : first.group;
+      return h("section", { class: "difference-group" },
+        h("h3", { class: "h3" }, title, " ", h("span", { class: "count", text: String(members.length) })),
+        h("p", { class: "muted", text: CATEGORIES[first.category] + (members.some(function (d) { return d.urgent && d.status === "open"; }) ? " · urgent alert retained" : "") }),
+        members.length > 1 ? h("details", null, h("summary", { text: "Individual concerns & evidence (" + members.length + ")" }), members.map(differenceMember)) : differenceMember(first));
     });
+  }
+  function differenceMember(d) {
+    var v = state.view, sub = v.subjects[d.subject];
+    return h("article", { class: "difference-member" },
+      h("p", null, chip("severity", d.severity), " ", h("strong", { text: d.title }), d.status !== "open" ? " · resolved " + ago(d.resolved_at) : ""),
+      h("dl", { class: "layers" },
+        h("dt", { text: "Expected" }), h("dd", { text: d.expected }),
+        h("dt", { text: d.category === "implementation" ? "Gap" : "Evidence / disposition" }), h("dd", { text: [d.disposition, d.detail].filter(Boolean).join(" ") || "No further source detail recorded." }),
+        h("dt", { text: "Impact" }), h("dd", { text: d.impact }),
+        h("dt", { text: "Owner" }), h("dd", { text: (d.owners || []).map(function (o) { return [o.name || o.role, o.task].filter(Boolean).join(" · "); }).join(", ") || "Owner not recorded; assign during review." }),
+        h("dt", { text: "Next action" }), h("dd", { text: d.next_action })),
+      h("details", null, h("summary", { text: "Source evidence & links" }),
+        h("p", null, sub ? h("button", { type: "button", class: "btn btn--link", text: sub.title, onclick: function () { openSubject(d.subject); } }) : d.subject),
+        h("p", { class: "mono", text: d.id + " · " + d.kind }),
+        h("p", null, "First seen ", stamp(d.first_seen), " · Last seen ", stamp(d.last_seen)),
+        h("p", { text: "Existing task links: " + ((d.links || []).join(", ") || "none recorded") }),
+        sub ? h("p", { text: "Layers: " + Object.keys(sub.layers).map(function (k) { return k + " " + sub.layers[k].status; }).join(" · ") }) : null));
+  }
+  function renderDiff() {
+    var v = state.view;
+    if (!v) return;
+    var concerns = v.presentation.differences;
+    var open = concerns.filter(function (d) { return d.status === "open"; });
+    var defaults = open.filter(function (d) { return d.category === "implementation" || d.urgent; });
+    $("diff-count").textContent = String(defaults.length);
+    document.querySelectorAll("[data-dfilter]").forEach(function (b) { b.setAttribute("aria-checked", String(b.dataset.dfilter === state.dfilter)); });
+    var category = clear($("diff-category"));
+    Object.keys(CATEGORIES).forEach(function (key) {
+      var count = open.filter(function (d) { return key === "all" || (key === "default" ? d.category === "implementation" || d.urgent : d.category === key); }).length;
+      append(category, h("option", { value: key, text: CATEGORIES[key] + " (" + count + " open)" }));
+    });
+    category.value = state.dcategory;
+    var rows = concerns.filter(function (d) {
+      return (state.dfilter === "all" || d.status === state.dfilter) &&
+        (state.dcategory === "all" || (state.dcategory === "default" ? d.category === "implementation" || d.urgent : d.category === state.dcategory)) &&
+        (!state.dquery || JSON.stringify(d).toLowerCase().indexOf(state.dquery.toLowerCase()) >= 0);
+    });
+    $("diff-summary").textContent = rows.length + " concerns shown · " + open.length + " total open · " + (open.length - defaults.length) + " open outside the default view. Category counts overlap urgent alerts; selecting All retains every concern.";
+    append(clear($("diff-list")), rows.length ? differenceGroups(rows) : h("p", { text: "No concerns match this view. Other categories and unverified evidence remain available." }));
+    append(clear($("verification")), differenceGroups(open.filter(function (d) { return d.category === "verification"; })));
+    append(clear($("credential-differences")), differenceGroups(open.filter(function (d) { return d.category === "maintenance"; })));
     var extra = clear($("diff-extra"));
     if (v.invalid_evidence && v.invalid_evidence.length) {
       append(extra, h("h3", { class: "h3", text: "Unreadable evidence records" }));
@@ -726,18 +777,7 @@
         i.missing_kinds.length ? h("p", { class: "callout", text: "Unmapped checks: " + i.missing_kinds.join(", ") }) : null,
         h("details", null, h("summary", { text: "Policy, trust and configuration checks (" + deps.length + ")" }),
           h("ul", { class: "list" }, deps.map(function (d) {
-            return h("li", { class: "item" }, h("strong", { text: d.title }), " · ", d.kind, i.unlinked_dependencies.includes(d.id) ? " · not linked to interaction" : "", i.unmatched_dependencies.includes(d.id) ? " · participant relationship unknown" : "",
-              h("p", null, chip("prerequisite", d.state), " · ", d.comparison.replace(/-/g, " "), " · ", d.coverage),
-              h("p", { text: d.reason || d.error || "Baseline observation only; no effective permission conclusion." }),
-              h("p", { class: "muted", text: "Source: " + (d.source || "uncollected") + " · Resource: " + d.subject }), stamp(d.checked_at),
-              h("p", { text: "Scope / observing identity: " + JSON.stringify(d.scope || {}) }),
-              h("p", { class: "mono", text: "Version: " + (d.version || "unknown") }),
-              h("details", null, h("summary", { text: "Observed policy / configuration metadata" }), h("pre", { class: "access-context", text: JSON.stringify(d.facts, null, 2) })),
-              d.provenance ? provenance(d.provenance) : null,
-              d.baseline ? h("p", { class: "muted", text: "Baseline: " + d.baseline.source + " · " + d.baseline.observed_at + " · " + (d.baseline.complete ? "complete" : "incomplete") }) : null,
-              d.reference_states.length ? h("p", { text: "Trust references: " + d.reference_states.map(function (r) { return r.subject + ": " + r.state + " · created " + (r.created_at || "unknown") + " · propagation unobserved"; }).join("; ") }) : null,
-              d.unobserved_policy_documents.length ? h("p", { class: "callout", text: d.unobserved_policy_documents.length + " attached or inline policy documents are unobserved." }) : null,
-              h("p", { text: "Owner: " + d.owners.map(function (o) { return o.name || o.task || o.role; }).join(", ") + " · Next: " + d.next_check }));
+            return accessDependency(d, i);
           }))),
         h("details", null, h("summary", { text: "Request context, scope and proof binding" }),
           h("p", { text: i.analysis_scope + " Context coverage: " + i.context_coverage }), h("pre", { class: "access-context", text: JSON.stringify(i.context, null, 2) }),
@@ -745,6 +785,23 @@
           i.evidence_record ? [h("p", { text: i.evidence_record.summary }), provenance(i.evidence_record.provenance)] : h("p", { text: "No actual request receipt recorded." })),
         h("p", { class: "muted", text: "Owner: " + i.owners.map(function (o) { return o.name || o.task || o.role; }).join(", ") + " · Next: " + i.next_check }));
     }));
+  }
+
+  function accessDependency(d, interaction) {
+    return h("li", { class: "item" }, h("strong", { text: d.title }), " · ", d.kind,
+      interaction && interaction.unlinked_dependencies.includes(d.id) ? " · not linked to interaction" : "",
+      interaction && interaction.unmatched_dependencies.includes(d.id) ? " · participant relationship unknown" : "",
+      h("p", null, chip("prerequisite", d.state), " · ", d.comparison.replace(/-/g, " "), " · ", d.coverage),
+      h("p", { text: d.reason || d.error || "Baseline observation only; no effective permission conclusion." }),
+      h("p", { class: "muted", text: "Source: " + (d.source || "uncollected") + " · Resource: " + d.subject }), stamp(d.checked_at),
+      h("p", { text: "Scope / observing identity: " + JSON.stringify(d.scope || {}) }),
+      h("p", { class: "mono", text: "Version: " + (d.version || "unknown") }),
+      h("details", null, h("summary", { text: "Observed policy / configuration metadata" }), h("pre", { class: "access-context", text: JSON.stringify(d.facts, null, 2) })),
+      d.provenance ? provenance(d.provenance) : null,
+      d.baseline ? h("p", { class: "muted", text: "Baseline: " + d.baseline.source + " · " + d.baseline.observed_at + " · " + (d.baseline.complete ? "complete" : "incomplete") }) : null,
+      d.reference_states.length ? h("p", { text: "Trust references: " + d.reference_states.map(function (r) { return r.subject + ": " + r.state + " · created " + (r.created_at || "unknown") + " · propagation unobserved"; }).join("; ") }) : null,
+      d.unobserved_policy_documents.length ? h("p", { class: "callout", text: d.unobserved_policy_documents.length + " attached or inline policy documents are unobserved." }) : null,
+      h("p", { text: "Owner: " + d.owners.map(function (o) { return o.name || o.task || o.role; }).join(", ") + " · Next: " + d.next_check }));
   }
 
   function renderAccess() {
@@ -756,6 +813,8 @@
     clear(el);
     var access = v.access || { interactions: [], dependencies: [], gaps: [], phases: [] };
     append(el, h("p", { class: "callout", text: access.limit || "No access relationships declared." }));
+    var declared = v.presentation.differences.filter(function (d) { return d.status === "open" && d.category === "access"; });
+    if (declared.length) append(el, h("details", { class: "access-gaps" }, h("summary", { text: "Declared operation & context unknowns (" + declared.length + ")" }), differenceGroups(declared)));
     var gaps = h("details", { class: "access-gaps" }, h("summary", { text: "All missing checks (" + access.gaps.length + ")" }));
     if (!access.gaps.length) append(gaps, h("p", { class: "muted", text: "No declared coverage gaps. This is not an effective permission result." }));
     else append(gaps, h("ul", { class: "list" }, access.gaps.map(function (g) {
@@ -790,7 +849,27 @@
     var v = state.view, body = $("cred-table").tBodies[0];
     clear(body);
     if (!v) return;
-    var creds = v.credentials || v.manifest.credentials || [];
+    var query = state.identityQuery.toLowerCase().trim();
+    var inventory = clear($("identity-inventory"));
+    var identities = v.presentation.access_subjects.filter(function (sid) { return !query || JSON.stringify(v.subjects[sid]).toLowerCase().indexOf(query) >= 0; });
+    append(inventory, h("p", { class: "hint", text: identities.length + " of " + v.presentation.access_subjects.length + " shared identity & policy records" }));
+    append(inventory, h("ul", { class: "list" }, identities.map(function (sid) {
+      var sub = v.subjects[sid], interactionIds = v.presentation.component_access[sid] || [];
+      var consumers = v.access.interactions.filter(function (i) { return interactionIds.indexOf(i.id) >= 0; });
+      return h("li", { class: "identity-record" }, h("details", null, h("summary", { text: sub.title + " · " + consumers.length + " interactions" }),
+        h("p", { text: sub.description }), h("p", { text: "Used by: " + Array.from(new Set(consumers.reduce(function (ids, i) { return ids.concat([i.caller, i.target]); }, []))).map(function (id) { return (v.subjects[id] || {}).title || id; }).join(", ") }),
+        h("p", null, "Deployment ", chip("deployment", sub.layers.deployment.status), " · Proof ", chip("proof", sub.layers.proof.status)),
+        h("button", { type: "button", class: "btn btn--link", text: "Open full record, observations & evidence", onclick: function () { openSubject(sid); } })));
+    })));
+    var dependencies = v.access.dependencies.filter(function (d) { return !query || JSON.stringify(d).toLowerCase().indexOf(query) >= 0; });
+    append(inventory, h("details", { class: "access-gaps" }, h("summary", { text: "Shared policy, trust & configuration checks (" + dependencies.length + " of " + v.access.dependencies.length + ")" }),
+      h("ul", { class: "list access-list" }, dependencies.map(function (d) {
+        var consumers = v.access.interactions.filter(function (i) { return i.required_dependencies.indexOf(d.id) >= 0; });
+        return h("li", { class: "identity-record" }, h("details", null, h("summary", { text: d.title + " · " + consumers.length + " interactions" }),
+          h("p", { text: "Used by: " + consumers.map(function (i) { return i.title; }).join(", ") }), h("ul", { class: "list" }, accessDependency(d))));
+      }))));
+    append(inventory, h("p", { class: "hint", text: "Validity alerts below retain all open credential concerns, independently of this inventory search." }));
+    var creds = (v.credentials || v.manifest.credentials || []).filter(function (c) { return !query || JSON.stringify(c).toLowerCase().indexOf(query) >= 0; });
     if (!creds.length) body.appendChild(h("tr", null, h("td", { colspan: "5", class: "muted", text: "No credentials described." })));
     creds.forEach(function (c) {
       var exp = (c.expiry_basis || "observed") === "observed" ? parseTime(c.expires) : null, soon = exp !== null && exp - Date.now() < 7 * 86400000;
@@ -808,7 +887,7 @@
   }
 
   // ---------------------------------------------------------------- tabs
-  var TABS = { map: "tab-map", access: "tab-access", ready: "tab-ready", diff: "tab-diff", life: "tab-life", accept: "tab-accept", cred: "tab-cred" };
+  var TABS = { map: "tab-map", access: "tab-access", ready: "tab-ready", diff: "tab-diff", verify: "tab-verify", life: "tab-life", accept: "tab-accept", cred: "tab-cred" };
   function showTab(name, focus) {
     if (!TABS[name]) name = "map";
     state.tab = name; writeHash();
@@ -853,6 +932,9 @@
     $("zoom-out").addEventListener("click", function () { state.zoom = Math.max(0.6, (state.zoom === "fit" ? 1 : state.zoom) - 0.2); renderMap(); });
     $("zoom-in").addEventListener("click", function () { state.zoom = Math.min(2, (state.zoom === "fit" ? 1 : state.zoom) + 0.2); renderMap(); });
     $("zoom-fit").addEventListener("click", function () { state.zoom = state.zoom === "fit" ? 1 : "fit"; renderMap(); });
+    $("diff-category").addEventListener("change", function () { state.dcategory = this.value; renderDiff(); });
+    $("diff-query").addEventListener("input", function () { state.dquery = this.value; renderDiff(); });
+    $("identity-query").addEventListener("input", function () { state.identityQuery = this.value; renderCredentials(); });
     radios("[data-dfilter]", "dfilter", function (f) { state.dfilter = f; renderDiff(); });
     document.addEventListener("keydown", function (ev) {
       if (ev.key === "Escape" && state.selected && !(document.activeElement && /TEXTAREA|INPUT/.test(document.activeElement.tagName))) select(null, false);
