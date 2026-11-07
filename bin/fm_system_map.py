@@ -30,6 +30,7 @@ Design boundaries this module keeps:
 """
 
 import argparse
+import importlib.util
 import contextlib
 import datetime as _dt
 import errno
@@ -49,6 +50,12 @@ import time
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# The wrapper runs Python in isolated mode. Load only this fixed sibling module,
+# never a module from cwd, PYTHONPATH or the user's site packages.
+_access_spec = importlib.util.spec_from_file_location("fm_system_map_access", os.path.join(os.path.dirname(os.path.abspath(__file__)), "fm_system_map_access.py"))
+access = importlib.util.module_from_spec(_access_spec)
+_access_spec.loader.exec_module(access)
 
 MANIFEST_SCHEMA = "fm-system-map.manifest.v1"
 BINDINGS_SCHEMA = "fm-system-map.bindings.v1"
@@ -362,7 +369,7 @@ def validate_manifest(manifest):
     _check_keys(manifest, {
         "schema", "project", "title", "description", "revision", "updated_at", "modes",
         "expected_mode", "groups", "components", "connections", "lifecycle", "acceptance",
-        "known_gaps", "credentials", "prerequisites",
+        "known_gaps", "credentials", "prerequisites", "access_dependencies", "interactions",
     }, "manifest")
     if manifest.get("schema") != MANIFEST_SCHEMA:
         raise MapError("manifest.schema must be %s" % MANIFEST_SCHEMA)
@@ -553,6 +560,7 @@ def validate_manifest(manifest):
     for cred in manifest.get("credentials", []):
         if "issuer" in cred and (cred["issuer"] not in credential_ids or cred["issuer"] == cred["id"]):
             raise MapError("credential.issuer: must name another credential")
+    access.validate_manifest(manifest, ids, credential_ids, phase_ids, MapError)
     return ids
 
 
@@ -572,6 +580,7 @@ BINDING_FIELDS = {
     "aws.scheduler_schedule": {"schedule_name": "str", "group_name": "str"},
     "aws.iam_role": {"role_name": "str"},
 }
+BINDING_FIELDS.update(access.BINDING_FIELDS)
 OPTIONAL_BINDING_FIELDS = {"state_map", "state_attribute", "pin", "label"}
 
 
@@ -691,13 +700,13 @@ def record_evidence(home, project, record):
         raise MapError("evidence id %r already exists; records are append-only" % record["id"])
 
 
-def validate_evidence(record, subject_ids=None, prerequisite_ids=None):
+def validate_evidence(record, subject_ids=None, prerequisite_ids=None, interaction_ids=None, access_dependency_ids=None):
     if not isinstance(record, dict):
         raise MapError("evidence must be a JSON object")
     _scan_forbidden(record, "evidence")
     _check_keys(record, {
         "schema", "id", "subjects", "criterion", "phase", "run_id", "versions", "result",
-        "recorded_at", "observed_at", "received_at", "summary", "historical", "provenance", "resource_identities", "prerequisites", "scope",
+        "recorded_at", "observed_at", "received_at", "summary", "historical", "provenance", "resource_identities", "prerequisites", "scope", "access_requests", "access_checks",
     }, "evidence")
     if record.get("schema") != EVIDENCE_SCHEMA:
         raise MapError("evidence.schema must be %s" % EVIDENCE_SCHEMA)
@@ -733,6 +742,14 @@ def validate_evidence(record, subject_ids=None, prerequisite_ids=None):
                 raise MapError("evidence names unknown subject %r" % sid)
     if "run_id" in record and not TASK_RE.match(str(record["run_id"])):
         raise MapError("evidence.run_id: invalid id")
+    access.validate_receipt(record, MapError)
+    if record.get("access_requests") or record.get("access_checks"):
+        if parse_iso(record.get("observed_at")) > now_ts():
+            raise MapError("evidence.access_requests: request time is in the future")
+        if access_dependency_ids is not None and set(record.get("access_checks", {})) - access_dependency_ids:
+            raise MapError("evidence.access_checks: unknown dependency")
+        if interaction_ids is not None and set(record.get("access_requests", {})) - interaction_ids:
+            raise MapError("evidence.access_requests: unknown interaction")
     checks = _req(record, "prerequisites", "dict", "evidence", optional=True) or {}
     for pid, state in checks.items():
         if not ID_RE.fullmatch(pid) or state not in ("present", "absent", "denied", "unknown", "not-tested"):
@@ -782,6 +799,8 @@ class Runner:
         self.git = shutil.which("git")
         self.call_timeout = 25
 
+        self.caller_identity = None
+
     def remaining(self):
         return self.deadline - time.monotonic()
 
@@ -820,6 +839,8 @@ def classify_aws_error(stderr):
     text = stderr or ""
     if re.search(r"AccessDenied|UnauthorizedOperation|not authorized|Forbidden|\(403\)", text):
         return ("denied", redact(text))
+    if re.search(r"NoSuchBucketPolicy|PolicyNotFoundException", text):
+        return ("absent", redact(text))
     if re.search(r"NotFound|does not exist|NonExistentQueue|ResourceNotFound|NoSuchEntity|NoSuchBucket|\(404\)|RepositoryNotFound|ImageNotFound", text):
         return ("absent", redact(text))
     if re.search(r"Unable to locate credentials|ExpiredToken|token.*expired|InvalidClientTokenId|SSO", text, re.IGNORECASE):
@@ -837,12 +858,18 @@ def adapt_ec2_instance(runner, b):
     data, err = runner.aws_call("ec2", "describe-instances", ["--instance-ids", b["instance_id"]])
     if err:
         return _result(err[0], error=err[1])
+    if not isinstance(data.get("Reservations"), list) or data.get("NextToken"):
+        return _result("unknown", error="Instance response missing or incomplete; no absence/configuration conclusion.")
     instances = [i for r in data.get("Reservations", []) for i in r.get("Instances", [])]
     if not instances:
         return _result("absent", state="absent")
     inst = instances[0]
     state = inst.get("State", {}).get("Name", "unknown")
     facts = {"state": state, "type": inst.get("InstanceType"), "launched": inst.get("LaunchTime")}
+    metadata = inst.get("MetadataOptions", {})
+    config = {k: metadata.get(k) for k in ("HttpEndpoint", "HttpTokens", "HttpPutResponseHopLimit")}
+    facts.update({"format": "configuration", "complete": all(v is not None for v in config.values()),
+                  "metadata_options": config, "sha256": access.digest(config), "raw_sha256": access.digest(config)})
     if state == "terminated":
         return _result("absent", facts=facts)
     norm = {"shutting-down": "stopping"}.get(state, state)
@@ -856,6 +883,8 @@ def adapt_ec2_tagged(runner, b):
     ])
     if err:
         return _result(err[0], error=err[1])
+    if not isinstance(data.get("Reservations"), list) or data.get("NextToken"):
+        return _result("unknown", error="Tagged instance response missing or incomplete; no zero/configuration conclusion.")
     counts = {}
     for res in data.get("Reservations", []):
         for inst in res.get("Instances", []):
@@ -865,6 +894,12 @@ def adapt_ec2_tagged(runner, b):
     # The count covers only instances carrying this tag key; it is not an
     # account-wide absence census, and the fact says so wherever it is shown.
     facts = {"instances": total, "by_state": counts, "scope": "only instances tagged with key %s" % b["tag_key"]}
+    configs = [{"identity": access.digest(i.get("InstanceId")), "image": i.get("ImageId"),
+                "metadata_options": {k: i.get("MetadataOptions", {}).get(k) for k in ("HttpEndpoint", "HttpTokens", "HttpPutResponseHopLimit")}}
+               for res in data.get("Reservations", []) for i in res.get("Instances", [])]
+    configs.sort(key=lambda c: c["identity"])
+    facts.update({"format": "configuration", "complete": bool(configs) and not data.get("NextToken") and all(all(v is not None for v in c["metadata_options"].values()) for c in configs),
+                  "instance_configurations": configs, "sha256": access.digest(configs), "raw_sha256": access.digest(configs)})
     state = next((name for name in ("running", "pending", "stopping", "stopped", "shutting-down", "unknown") if counts.get(name)), "zero")
     return _result("ok", state=state, facts=facts)
 
@@ -1079,6 +1114,8 @@ def adapt_iam_role(runner, b):
                                                     "Role.{RoleId:RoleId,CreateDate:CreateDate,MaxSessionDuration:MaxSessionDuration}"])
     if err:
         return _result(err[0], error=err[1])
+    if not data.get("RoleId"):
+        return _result("unknown", error="RoleId missing; role existence is unobserved.")
     return _result("ok", state="present", version=data.get("RoleId"), facts={
         "created": str(data.get("CreateDate", "")), "max_session_seconds": data.get("MaxSessionDuration"),
         "limit": "Role existence only; trust and effective permissions are not tested.",
@@ -1102,6 +1139,8 @@ ADAPTERS = {
     "aws.iam_role": adapt_iam_role,
 }
 
+ADAPTERS.update(access.adapters(_result))
+
 
 # ---------------------------------------------------------------------------
 # Collection
@@ -1115,6 +1154,7 @@ def verify_scope(runner, scope):
     data, err = runner.aws_call("sts", "get-caller-identity", [])
     if err:
         return False, "account scope could not be verified: %s" % err[1]
+    runner.caller_identity = access.digest({k: data.get(k) for k in ("Account", "Arn", "UserId")}) if data.get("Arn") and data.get("UserId") else None
     if str(data.get("Account")) != str(expected):
         return False, "credentials resolve to a different account than the bound scope; AWS reads skipped"
     return True, None
@@ -1129,7 +1169,7 @@ def ingest_inbox(home, project, manifest):
         name = os.path.basename(path)
         try:
             record = read_json(path)
-            validate_evidence(record, ids, {p["id"] for p in manifest.get("prerequisites", [])})
+            validate_evidence(record, ids, {p["id"] for p in manifest.get("prerequisites", [])}, {i["id"] for i in manifest.get("interactions", [])}, {d["id"] for d in manifest.get("access_dependencies", [])})
             record_evidence(home, project, record)
             os.unlink(path)
             moved.append(record["id"])
@@ -1190,7 +1230,7 @@ def _collect_locked(home, cfg, project, started):
     verified, scope_error = (None, None)
     if needs_aws:
         verified, scope_error = verify_scope(runner, scope)
-    public_scope = {"region": scope.get("region"), "account_label": scope.get("account_label"), "account_verified": verified}
+    public_scope = {"region": scope.get("region"), "account_label": scope.get("account_label"), "account_verified": verified, "collector_identity": runner.caller_identity}
     # A test or preview run that substitutes a stand-in for the AWS CLI must say
     # so, so its output can never be mistaken for a live read.
     fixture = os.environ.get("FM_SYSTEM_MAP_FIXTURE") == "1"
@@ -1615,6 +1655,7 @@ def build_view(home, cfg, project):
         "timeline": timeline,
         "readiness": prerequisite_view(manifest, bindings, subjects, evidence, observations, interval),
         "credentials": credential_view(manifest),
+        "access": access.build_view(manifest, bindings, subjects, evidence, observations, interval, now_ts(), parse_iso, observation_binding_digest, binding_problem),
         "discrepancies": sorted(ledger.values(), key=lambda d: (d.get("status") != "open", SEVERITIES.index(d.get("severity", "info")), d.get("first_seen", ""))),
         "requests": requests,
         "annotations": annotations,
@@ -1964,6 +2005,8 @@ def cmd_summary(home, cfg, args):
         out.append("%s: %sobservations %s, last success %s%s; %d open discrepancies (%d high); manifest r%s" % (
             project, "TEST DATA, not live - " if col.get("fixture") else "", state, _age(col.get("last_success_at")), " (STALE)" if col.get("stale") else "",
             len(opened), len(high), view["manifest"]["revision"]))
+        if view["access"]["interactions"]:
+            out.append("  access: %d declared interactions; %d missing checks; effective access unknown" % (len(view["access"]["interactions"]), len(view["access"]["gaps"])))
         for item in (high or opened)[:3]:
             out.append("  - %s %s: %s" % (item["id"], item["severity"], item["title"][:110]))
     pending = []
@@ -2051,7 +2094,7 @@ def cmd_evidence_add(home, cfg, args):
             record = json.load(handle)
         except ValueError as exc:
             raise MapError("evidence file is not JSON: %s" % exc)
-    validate_evidence(record, set(subjects_of(manifest)), {p["id"] for p in manifest.get("prerequisites", [])})
+    validate_evidence(record, set(subjects_of(manifest)), {p["id"] for p in manifest.get("prerequisites", [])}, {i["id"] for i in manifest.get("interactions", [])}, {d["id"] for d in manifest.get("access_dependencies", [])})
     record_evidence(home, project, record)
     print("recorded evidence %s" % record["id"])
     return 0

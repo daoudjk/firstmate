@@ -47,7 +47,7 @@ st = json.load(open(os.environ["FAKE_AWS_STATE"])) if os.path.exists(os.environ.
 args = sys.argv[1:]
 svc, op = args[0], args[1]
 with open(os.environ["FAKE_AWS_LOG"], "a") as log:
-    log.write(" ".join(args[:2]) + "\n")
+    log.write(" ".join(args) + "\n")
 time.sleep(float(st.get("sleep", 0)))
 def out(o):
     print(json.dumps(o)); sys.exit(0)
@@ -57,7 +57,12 @@ if svc in st.get("missing", []):
     sys.stderr.write("ResourceNotFoundException: resource does not exist"); sys.exit(254)
 if svc in st.get("deny", []):
     sys.stderr.write("An error occurred (AccessDeniedException) when calling %s: User arn:aws:iam::123456789012:user/x is not authorized" % op); sys.exit(254)
-if svc == "sts": out({"Account": st.get("account", "123456789012")})
+if op == "get-role" and "--role-name" in args:
+    role_name = args[args.index("--role-name") + 1]
+    if role_name in st.get("role_responses", {}): out(st["role_responses"][role_name])
+if op in st.get("responses", {}): out(st["responses"][op])
+if op == "describe-task-definition" and "--include" not in args: sys.exit(23)
+if svc == "sts": out({"Account": st.get("account", "123456789012"), "Arn": "arn:aws:iam::123456789012:user/fixture", "UserId": "fixture"})
 if op == "get-function-configuration": out({"State": "Active", "CodeSha256": "code-v1", "LastUpdateStatus": "Successful", "Runtime": "python3.13", "Timeout": 30, "Role": "arn:aws:iam::123456789012:role/example", "Environment": {"Variables": {"EXAMPLE": "fixture-private-payload"}}})
 if op == "get-schedule": out({"State": "ENABLED", "ScheduleExpression": "at(2099-01-01T00:00:00)", "ScheduleExpressionTimezone": "UTC", "TargetArn": "arn:aws:lambda:us-east-1:123456789012:function:example", "RoleArn": "arn:aws:iam::123456789012:role/example", "Input": "fixture-private-payload"})
 if op == "get-role": out({"RoleId": "role-v1", "CreateDate": "2026-01-01T00:00:00Z", "MaxSessionDuration": 3600})
@@ -1530,6 +1535,557 @@ PY
   assert_contains "$out" 'not due (idle cadence)' "tick uses same derived activity"
   pass "delegated work changes cadence without scanning child fleets"
 }
+
+test_access_relationships_and_conservative_comparison() {
+  local home out before after
+  home=$(new_home access)
+  python3 - "$home" <<'PYTEST'
+import json,sys,hashlib
+from pathlib import Path
+h=Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p))
+def sha(v): return hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+policy={"Version":"2012-10-17","Statement":[{"Effect":"Deny","Principal":{"AWS":["arn:aws:iam::123456789012:role/a","arn:aws:iam::123456789012:role/b"]},"Action":["s3:GetObject","s3:PutObject"],"Resource":["arn:aws:s3:::fixture/*"],"Condition":{"Bool":{"aws:SecureTransport":"false"}}}]}
+# The fixture baseline is already canonical by the declared normalization.
+base={"format":"policy","complete":True,"sha256":sha(policy),"raw_sha256":sha(json.dumps(policy)),"source":"sanitized owner fixture","observed_at":"2026-01-01T00:00:00Z"}
+owners=[{"name":"fixture owner"}]
+components=m['components']
+components.append({"id":"access-role","title":"Access role","observe":[{"id":"access-trust","adapter":"aws.iam_role_access","binding":"access_role","role":"version"}],"version_from":"access-trust"})
+components.append({"id":"trust-source","title":"Required trust principal","observe":[{"id":"source-role","adapter":"aws.iam_role_access","binding":"source_role","role":"version"}],"version_from":"source-role"})
+for oid,adapter,binding in [('access-bucket','aws.s3_policy','access_bucket'),('access-inline','aws.iam_inline_policy','access_inline'),('access-managed','aws.iam_managed_policy','access_managed'),('access-queue','aws.sqs_policy','access_queue'),('access-table','aws.dynamodb_policy','access_table'),('access-key','aws.kms_policy','access_kms'),('access-tags','aws.ecs_task_metadata','access_tags')]:
+ components.append({'id':oid,'title':oid,'observe':[{'id':oid+'-read','adapter':adapter,'binding':binding,'role':'version'}],'version_from':oid+'-read'})
+deps=[]
+for did,kind,subject in [('bucket-check','resource-policy','access-bucket'),('trust-check','trust','access-role'),('role-check','role-existence','trust-source'),('inline-check','identity-policy','access-inline'),('managed-check','identity-policy','access-managed'),('boundary-check','permissions-boundary','access-managed'),('key-check','key-policy','access-key'),('queue-check','resource-policy','access-queue'),('tags-check','tags','access-tags')]:
+ d={'id':did,'title':did,'kind':kind,'subject':subject,'participant':'target' if kind in ('resource-policy','key-policy','tags') else 'identity','observation':next(c for c in components if c['id']==subject)['observe'][0]['id'],'baseline':dict(base),'owners':owners,'next_check':'Read exact configured metadata with existing identity.'}
+ if did=='trust-check': d['references']=['trust-source']
+ if did=='queue-check': d['key_dependency']='key-check'; d['baseline']['encryption_identity']=sha({'KmsMasterKeyId':'fixture-key','SqsManagedSseEnabled':None})
+ if did=='tags-check': d['baseline']={'format':'tags','complete':False,'source':'retained request omitted include=TAGS','observed_at':'2026-01-01T00:00:00Z'}
+ deps.append(d)
+deps.append(dict(next(d for d in deps if d['id']=='trust-check'),id='identity-role-check',title='Identity role',kind='role-existence',references=[]))
+deps.append({'id':'bucket-key-na','title':'Bucket key policy','kind':'key-policy','subject':'access-bucket','participant':'target','applicability':'not-applicable','reason':'The fixture bucket declares no KMS key relationship.','owners':owners,'next_check':'Review encryption configuration before changing this reason.'})
+for kind in ['permissions-boundary','session-policy','organization-policy','endpoint-policy']:
+ deps.append({'id':kind,'title':kind,'kind':kind,'subject':'access-role','participant':'identity','owners':owners,'next_check':'Owner must supply restriction evidence.'})
+m['access_dependencies']=deps
+identity_deps={'identity-role-check','trust-check','inline-check','managed-check','permissions-boundary','session-policy','organization-policy','endpoint-policy'}
+m['interactions']=[{'id':'console-request','title':'Console to exact bucket','caller':'access-role','identity':'access-role','target':'access-bucket','operations':['s3:GetObject'],'phases':[m['lifecycle']['phases'][0]['id']],'dependencies':[d['id'] for d in deps if d['id'] in identity_deps|{'bucket-check','bucket-key-na'}],'context':{'transport':'TLS','unknown_condition_context':'explicitly unobserved'},'analysis_scope':'Exact configured action and target; no effective IAM evaluation.','owners':owners,'next_check':'Owner supplies actual current-version request receipt.'}]
+queue_request=dict(m['interactions'][0],id='queue-request',title='Identity to encrypted queue',target='access-queue',operations=['sqs:SendMessage'],dependencies=[d['id'] for d in deps if d['id'] in identity_deps|{'queue-check','key-check'}])
+m['interactions'].append(queue_request)
+role_request=dict(m['interactions'][0],id='lowercase-role-request',title='Synthetic role-carrying request',operations=['lambda:createfunction'])
+m['interactions'].append(role_request)
+pass_role_request=dict(m['interactions'][0],id='explicit-pass-role-request',title='Synthetic explicit PassRole request',operations=['iam:PassRole'])
+m['interactions'].append(pass_role_request)
+p.write_text(json.dumps(m))
+p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['scope']['expected_account']='123456789012'; b['bindings'].update({'access_role':{'role_name':'fixture-target'},'source_role':{'role_name':'fixture-source'},'access_bucket':{'bucket':'fixture'},'access_inline':{'role_name':'fixture-target','policy_name':'fixture-inline'},'access_managed':{'policy_arn':'arn:aws:iam::123456789012:policy/fixture'},'access_queue':{'queue_url':'https://sqs.us-east-1.amazonaws.com/123456789012/fixture'},'access_table':{'resource_arn':'arn:aws:dynamodb:us-east-1:123456789012:table/fixture'},'access_kms':{'key_id':'fixture-key'},'access_tags':{'task_definition':'fixture:1'}}); p.write_text(json.dumps(b))
+reordered=json.loads(json.dumps(policy)); reordered['Statement'][0]['Principal']['AWS'].reverse(); reordered['Statement'][0]['Action'].reverse()
+responses={'get-bucket-policy':{'Policy':json.dumps(reordered)},'get-role-policy':{'PolicyDocument':policy},'get-policy':{'DefaultVersionId':'v7'},'get-policy-version':{'PolicyDocument':policy},'get-queue-attributes':{'Attributes':{'Policy':json.dumps(policy),'KmsMasterKeyId':'fixture-key','ApproximateNumberOfMessages':'0','ApproximateNumberOfMessagesNotVisible':'0'}},'get-resource-policy':{'Policy':json.dumps(policy)},'get-key-policy':{'Policy':json.dumps(policy)},'describe-task-definition':{'taskDefinition':{'taskDefinitionArn':'arn:aws:ecs:us-east-1:123456789012:task-definition/fixture:1','revision':1},'tags':[{'key':'Owner','value':'fixture'}]},'get-role':{'RoleId':'fixture-role-id','Arn':'arn:aws:iam::123456789012:role/fixture-source','CreateDate':'2026-01-01T00:00:00Z','PermissionsBoundary':None,'AssumeRolePolicyDocument':{'Statement':[{'Effect':'Allow','Principal':{'AWS':'arn:aws:iam::123456789012:role/fixture-source'},'Action':'sts:AssumeRole'}]}},'list-attached-role-policies':{'AttachedPolicies':[{'PolicyArn':'arn:aws:iam::123456789012:policy/fixture','PolicyName':'fixture'}],'IsTruncated':False},'list-role-policies':{'PolicyNames':['fixture-inline'],'IsTruncated':False}}
+(h/'aws-state.json').write_text(json.dumps({'responses':responses})); (h/'access-original.json').write_text(json.dumps({'responses':responses}))
+PYTEST
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/manifest.json'; m=json.load(open(p)); m['interactions'][-1]['operations']=['iam:*']; p.write_text(json.dumps(m))
+PYTEST
+  local rc=0
+  out=$(map "$home" validate 2>&1) || rc=$?
+  expect_code 1 "$rc" "wildcard interaction action must be rejected"
+  assert_contains "$out" "operations must be explicit" "wildcard rejection names exact operations"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/manifest.json'; m=json.load(open(p)); m['interactions'][-1]['operations']=['iam:PassRole']; p.write_text(json.dumps(m))
+PYTEST
+  map "$home" validate >/dev/null || fail "explicit PassRole interaction is invalid"
+  out=$(map "$home" collect) || fail "access collection: $out"
+  view_json "$home"
+  assert_equals "representation-only" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="bucket-check")["comparison"]')" "principal/action order is representational"
+  assert_equals "incomplete-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="tags-check")["comparison"]')" "unrequested historical tags are incomplete"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["access"]["interactions"][0]["effective_access"]')" "observed policy does not imply effective permission"
+  assert_equals "not-demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "request proof stays separate"
+  assert_equals "['pass-role']" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="lowercase-role-request")["missing_kinds"]')" "lowercase role-carrying action requires PassRole coverage"
+  assert_equals "['pass-role']" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="explicit-pass-role-request")["missing_kinds"]')" "explicit iam:PassRole requires its dependency"
+  assert_equals "[]" "$(py "$home/view.json" 'd["access"]["interactions"][0]["missing_kinds"]')" "ordinary read needs no PassRole dependency"
+  assert_equals "4" "$(py "$home/view.json" 'len([g for g in d["access"]["gaps"] if g.get("state")=="unobserved"])')" "all independent restriction gaps appear together"
+  assert_equals "observed" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "exact trust reference is observed"
+  assert_grep 'include TAGS' "$home/aws.log" "tag collector explicitly requests tags"
+  assert_equals "v7" "$(py "$home/view.json" 'd["subjects"]["access-managed"]["observations"][0]["current"]["facts"]["policy_version"]')" "managed policy default version retained"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'aws-state.json'; s=json.load(open(p)); policy=json.loads(s['responses']['get-bucket-policy']['Policy']); policy['Statement'][0]['Condition']['Bool']['aws:SecureTransport']='true'; s['responses']['get-bucket-policy']['Policy']=json.dumps(policy); del s['responses']['describe-task-definition']['tags']; s['responses']['get-role']['Arn']='arn:aws:iam::123456789012:role/wrong-source'; s['responses']['list-role-policies']={'PolicyNames':['hidden-policy'],'IsTruncated':True,'Marker':'more'}; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "independent partial sweep"
+  view_json "$home"
+  assert_equals "policy-drift" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="bucket-check")["comparison"]')" "condition change is true drift"
+  assert_equals "wrong-reference" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "existing but wrong trust principal is distinct"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["subjects"]["access-tags"]["observations"][0]["current"]["outcome"]')" "missing tags member is unknown"
+  assert_equals "False" "$(py "$home/view.json" 'd["subjects"]["access-role"]["observations"][0]["current"]["facts"]["complete"]')" "truncated policy list cannot become complete"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'aws-state.json'; s=json.load(open(p)); s['responses']['list-role-policies']={'PolicyNames':['hidden-policy'],'IsTruncated':False};p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "unread policy inventory"
+  view_json "$home"
+  assert_equals "1" "$(py "$home/view.json" 'len(next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["unobserved_policy_documents"])')" "an attachment list cannot substitute for a policy document"
+  aws_state "$home" '{"deny":["iam"]}'
+  map "$home" collect >/dev/null || fail "denial collection"
+  view_json "$home"
+  assert_equals "denied" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["state"]')" "denied role checks remain denied"
+  assert_equals "ok" "$(py "$home/view.json" 'd["subjects"]["queue"]["observations"][0]["current"]["outcome"]')" "denial never stops independent configured reads"
+  assert_equals "denied" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "unobserved principal not inferred from historical role"
+  aws_state "$home" '{"missing":["iam"]}'
+  map "$home" collect >/dev/null || fail "authoritative role absence"
+  view_json "$home"
+  assert_equals "absent" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "authoritatively missing role remains distinct"
+  assert_no_grep 'sts assume-role' "$home/aws.log" "collector never pivots to retry a denied or absent read"
+  [ ! -e "$home/state/system-map/example/reads" ] || fail "raw access responses must not be archived"
+  # Complete only the synthetic declared baselines, then record an actual
+  # fixture request through public evidence intake. No AWS request is sent.
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); (h/'aws-state.json').write_text((h/'access-original.json').read_text())
+p=h/'data/system-map/example/manifest.json'; m=json.load(open(p));
+for i in m['interactions'][:2]:
+ i['evidence']='fixture-request'; i['context_complete']=True; i['context']={'transport':'TLS','resource_prefix':'fixture/*'}
+p.write_text(json.dumps(m))
+PYTEST
+  map "$home" collect >/dev/null || fail "restore synthetic observations"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); snap=json.load(open(h/'state/system-map/example/snapshot.json'))
+for dep in m['access_dependencies']:
+ if dep.get('observation'):
+  facts=snap['observations'][dep['observation']]['facts']; dep['baseline']={'format':facts['format'],'complete':True,'sha256':facts['sha256'],'raw_sha256':facts['raw_sha256'],'source':'fixture exact read','observed_at':snap['finished_at']}
+  if dep['id']=='queue-check': dep['baseline']['encryption_identity']=facts['encryption_identity']
+  if dep['id'] in ('trust-check','role-check','identity-role-check'): dep['baseline']['relationships_sha256']=facts['relationships_sha256']
+ else:
+  dep['applicability']='not-applicable'; dep['reason']='Synthetic fixture with no restriction in this declared class; no production claim.'
+p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "declared-baselines-observed" "$(py "$home/view.json" 'd["access"]["interactions"][0]["static_coverage"]')" "complete declared coverage is separate from permission"
+  assert_equals "declared-baselines-observed" "$(py "$home/view.json" 'd["access"]["interactions"][1]["static_coverage"]')" "queue access has participant-bound coverage"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib,datetime
+h=pathlib.Path(sys.argv[1]); v=json.load(open(h/'view.json')); ids=['access-role','access-bucket','access-queue']; at=datetime.datetime.now(datetime.timezone.utc).isoformat()
+r={'schema':'fm-system-map.evidence.v1','id':'fixture-request','subjects':ids,'versions':{s:v['subjects'][s]['version'] for s in ids},'resource_identities':{s:v['subjects'][s]['resource_identity'] for s in ids},'result':'pass','recorded_at':at,'observed_at':at,'scope':'sanitized fixture request; no native execution','summary':'Fixture owner request receipt','provenance':{'kind':'receipt','source':'fixture owner'},'access_requests':{i['id']:i['assertion_digest'] for i in v['access']['interactions'][:2]}}
+(h/'request.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/request.json" >/dev/null || fail "valid request receipt"
+  view_json "$home"
+  assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "exact current-version request qualifies"
+  assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][1]["request_proof"]')" "queue request proof qualifies independently"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["access"]["interactions"][0]["effective_access"]')" "one request never proves general effective access"
+  map "$home" collect >/dev/null || fail "repeat identical read"
+  view_json "$home"
+  assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "identical refreshed checks preserve exact receipt binding"
+  cp "$home/data/system-map/example/manifest.json" "$home/inventory-manifest.json"
+  cp "$home/aws-state.json" "$home/inventory-aws-state.json"
+  python3 - "$home" <<'PYTEST'
+import datetime,json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); at=datetime.datetime.now(datetime.timezone.utc).isoformat(); owners=[{'name':'fixture owner'}]
+for did,kind,mark in [('imported-role-existence','role-existence','1'),('imported-trust','trust','2')]:
+ m['access_dependencies'].append({'id':did,'title':did,'kind':kind,'subject':'access-role','participant':'identity','evidence':'inventory-owner','baseline':{'format':'role' if kind=='role-existence' else 'policy','complete':True,'sha256':mark*64,'source':'fixture owner assessment','observed_at':at},'owners':owners,'next_check':'Review current bound role evidence.'})
+i=dict(m['interactions'][0],id='unlinked-role-inventory',title='Imported role checks with incomplete policy documents',evidence='inventory-request'); i['dependencies']=[d for d in i['dependencies'] if d not in ('identity-role-check','trust-check')]+['imported-role-existence','imported-trust']; m['interactions'].append(i); p.write_text(json.dumps(m)); p=h/'aws-state.json'; s=json.load(open(p)); s['responses']['list-attached-role-policies']['AttachedPolicies'].append({'PolicyArn':'arn:aws:iam::123456789012:policy/fixture-second','PolicyName':'fixture-second'}); p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "two-policy role inventory collection"
+  view_json "$home"
+  python3 - "$home" <<'PYTEST'
+import datetime,json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); v=json.load(open(h/'view.json')); subject=v['subjects']['access-role']; at=datetime.datetime.now(datetime.timezone.utc).isoformat(); checks={}
+for did,fmt,mark in [('imported-role-existence','role','1'),('imported-trust','policy','2')]:
+ checks[did]={'outcome':'ok','binding_digest':subject['resource_identity'],'observer_identity':'1'*64,'version':did+'-v1','facts':{'format':fmt,'complete':True,'sha256':mark*64}}
+r={'schema':'fm-system-map.evidence.v1','id':'inventory-owner','subjects':['access-role'],'versions':{'access-role':subject['version']},'resource_identities':{'access-role':subject['resource_identity']},'result':'pass','recorded_at':at,'observed_at':at,'scope':'fixture current role and trust review','summary':'Owner role and trust assessments','provenance':{'kind':'receipt','source':'fixture owner'},'access_checks':checks}; (h/'inventory-owner.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/inventory-owner.json" >/dev/null || fail "imported role and trust assessments"
+  view_json "$home"
+  assert_equals "observed" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="unlinked-role-inventory")["identity_role_inventory"]')" "bound identity inventory is current"
+  assert_equals "[]" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="unlinked-role-inventory")["missing_dependencies"]')" "declared policy A and imported role checks remain current"
+  assert_equals "1" "$(py "$home/view.json" 'len(next(i for i in d["access"]["interactions"] if i["id"]=="unlinked-role-inventory")["uncovered_policy_identities"])')" "second attached policy has its own uncovered fingerprint"
+  assert_equals "gaps" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="unlinked-role-inventory")["static_coverage"]')" "imported role checks cannot hide missing attached policy"
+  python3 - "$home" <<'PYTEST'
+import datetime,json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); v=json.load(open(h/'view.json')); i=next(i for i in v['access']['interactions'] if i['id']=='unlinked-role-inventory'); ids=['access-role','access-bucket']; at=datetime.datetime.now(datetime.timezone.utc).isoformat(); r={'schema':'fm-system-map.evidence.v1','id':'inventory-request','subjects':ids,'versions':{s:v['subjects'][s]['version'] for s in ids},'resource_identities':{s:v['subjects'][s]['resource_identity'] for s in ids},'result':'pass','recorded_at':at,'observed_at':at,'scope':'synthetic request with one unchecked attached policy','summary':'Current request cannot establish complete coverage','provenance':{'kind':'receipt','source':'fixture owner'},'access_requests':{i['id']:i['assertion_digest']}}; (h/'inventory-request.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/inventory-request.json" >/dev/null || fail "inventory request receipt intake"
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="unlinked-role-inventory")["request_proof"]')" "matching receipt cannot prove missing attached policy"
+  cp "$home/inventory-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/inventory-aws-state.json" "$home/aws-state.json"
+  map "$home" collect >/dev/null || fail "restore role inventory fixture"
+  cp "$home/data/system-map/example/manifest.json" "$home/shared-policy-manifest.json"
+  cp "$home/data/system-map/example/bindings.json" "$home/shared-policy-bindings.json"
+  python3 - "$home" <<'PYTEST'
+import copy,json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); bpath=h/'data/system-map/example/bindings.json'; b=json.load(open(bpath))
+subjects={'access-role':'access-role-b','access-inline':'access-inline-b','access-managed':'access-managed-b'}
+bindings={'access_role':'access_role_b','access_inline':'access_inline_b','access_managed':'access_managed_b'}
+observations={}
+for c in list(m['components']):
+ if c['id'] in subjects:
+  clone=copy.deepcopy(c); clone['id']=subjects[c['id']]; clone['title']=clone['id']; clone['observe'][0]['id']+='-b'; clone['observe'][0]['binding']=bindings[clone['observe'][0]['binding']]; clone['version_from']=clone['observe'][0]['id']; observations[c['id']]=clone['observe'][0]['id']; m['components'].append(clone)
+for d in list(m['access_dependencies']):
+ if d['id'] in ('identity-role-check','trust-check','inline-check','managed-check','permissions-boundary','session-policy','organization-policy','endpoint-policy'):
+  clone=copy.deepcopy(d); clone['id']+='-b'; clone['title']=clone['id']; clone['subject']=subjects[d['subject']]
+  if clone.get('observation'): clone['observation']=observations[d['subject']]
+  m['access_dependencies'].append(clone)
+a=copy.deepcopy(m['interactions'][0]); a['id']='shared-managed-a'; a['evidence']='shared-managed-request'; m['interactions'].append(a)
+other=copy.deepcopy(a); other['id']='shared-managed-b'; other['caller']='access-role-b'; other['identity']='access-role-b'; other['dependencies']=[d+'-b' if d in ('identity-role-check','trust-check','inline-check','managed-check','permissions-boundary','session-policy','organization-policy','endpoint-policy') else d for d in a['dependencies']]; m['interactions'].append(other); p.write_text(json.dumps(m))
+b['bindings']['access_role_b']={'role_name':'fixture-other'}; b['bindings']['access_inline_b']={'role_name':'fixture-other','policy_name':'fixture-inline'}; b['bindings']['access_managed_b']=copy.deepcopy(b['bindings']['access_managed']); bpath.write_text(json.dumps(b))
+PYTEST
+  map "$home" collect >/dev/null || fail "shared managed policy collection"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); snap=json.load(open(h/'state/system-map/example/snapshot.json'))
+for dep in m['access_dependencies']:
+ if dep['id'].endswith('-b') and dep.get('observation'):
+  facts=snap['observations'][dep['observation']]['facts']; dep['baseline']={'format':facts['format'],'complete':True,'sha256':facts['sha256'],'raw_sha256':facts['raw_sha256'],'source':'fixture exact read','observed_at':snap['finished_at']}
+  if dep['kind'] in ('trust','role-existence'): dep['baseline']['relationships_sha256']=facts['relationships_sha256']
+p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "declared-baselines-observed" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-a")["static_coverage"]')" "second role policy check does not create a false gap for first role"
+  assert_equals "declared-baselines-observed" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-b")["static_coverage"]')" "first role policy check does not create a false gap for second role"
+  assert_equals "[]" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-a")["unlinked_dependencies"]')" "shared policy duplicate is not required by first interaction"
+  assert_equals "[]" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-b")["unlinked_dependencies"]')" "shared policy duplicate is not required by second interaction"
+  python3 - "$home" <<'PYTEST'
+import datetime,json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); v=json.load(open(h/'view.json')); ids=['access-role','access-role-b','access-bucket']; at=datetime.datetime.now(datetime.timezone.utc).isoformat(); interactions=[i for i in v['access']['interactions'] if i['id'] in ('shared-managed-a','shared-managed-b')]
+r={'schema':'fm-system-map.evidence.v1','id':'shared-managed-request','subjects':ids,'versions':{s:v['subjects'][s]['version'] for s in ids},'resource_identities':{s:v['subjects'][s]['resource_identity'] for s in ids},'result':'pass','recorded_at':at,'observed_at':at,'scope':'fixture shared managed policy request','summary':'Current fixture requests','provenance':{'kind':'receipt','source':'fixture owner'},'access_requests':{i['id']:i['assertion_digest'] for i in interactions}}
+(h/'shared-managed-request.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/shared-managed-request.json" >/dev/null || fail "shared policy request receipt intake"
+  view_json "$home"
+  assert_equals "demonstrated" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-a")["request_proof"]')" "first role request is bound to its own check"
+  assert_equals "demonstrated" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-b")["request_proof"]')" "second role request is bound to its own check"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/manifest.json'; m=json.load(open(p)); next(i for i in m['interactions'] if i['id']=='shared-managed-b')['dependencies'].remove('managed-check-b'); p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "gaps" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-b")["static_coverage"]')" "unlinked duplicate cannot cover missing second role check"
+  assert_equals "1" "$(py "$home/view.json" 'len(next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-b")["uncovered_policy_identities"])')" "missing linked shared policy is identified"
+  assert_equals "stale" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="shared-managed-b")["request_proof"]')" "missing linked check invalidates second role proof"
+  cp "$home/shared-policy-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/shared-policy-bindings.json" "$home/data/system-map/example/bindings.json"
+  map "$home" collect >/dev/null || fail "restore shared policy fixture"
+  cp "$home/data/system-map/example/manifest.json" "$home/compatible-manifest.json"
+  cp "$home/data/system-map/example/bindings.json" "$home/compatible-bindings.json"
+  cp "$home/aws-state.json" "$home/compatible-aws-state.json"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); owners=[{'name':'fixture owner'}]; m['access_dependencies'].append({'id':'imds-check','title':'EC2 metadata configuration','kind':'configuration','subject':'worker-host','participant':'caller','observation':'worker-ec2','owners':owners,'next_check':'Read current instance metadata settings.'}); i=dict(m['interactions'][0],id='imds-request',title='EC2 caller to bucket',caller='worker-host'); i.pop('evidence',None); i['dependencies']=i['dependencies']+['imds-check']; m['interactions'].append(i); p.write_text(json.dumps(m)); p=h/'aws-state.json'; s=json.load(open(p)); s['responses']['describe-instances']={'Reservations':[{'Instances':[{'State':{'Name':'running'},'ImageId':'ami-0123456789abcdef0','MetadataOptions':{'HttpEndpoint':'enabled','HttpTokens':'required','HttpPutResponseHopLimit':1}}]}]}; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "EC2 configuration collection"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); snap=json.load(open(h/'state/system-map/example/snapshot.json')); f=snap['observations']['worker-ec2']['facts']; d=next(d for d in m['access_dependencies'] if d['id']=='imds-check'); d['baseline']={'format':'configuration','complete':True,'sha256':f['sha256'],'raw_sha256':f['raw_sha256'],'source':'fixture EC2 metadata read','observed_at':snap['finished_at']}; p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="imds-check")["comparison"]')" "complete EC2 metadata settings match baseline"
+  assert_equals "False" "$(py "$home/view.json" '"imds-check" in next(i for i in d["access"]["interactions"] if i["id"]=="imds-request")["unmatched_dependencies"]')" "EC2 configuration read covers its bound caller"
+  cp "$home/compatible-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/compatible-bindings.json" "$home/data/system-map/example/bindings.json"
+  cp "$home/compatible-aws-state.json" "$home/aws-state.json"
+  map "$home" collect >/dev/null || fail "restore EC2 configuration fixture"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); role=next(s for s in m['components'] if s['id']=='access-role'); role['observe'].append({'id':'same-role-inline-read','adapter':'aws.iam_inline_policy','binding':'same_role_inline','role':'info'}); d=dict(next(d for d in m['access_dependencies'] if d['id']=='inline-check'),id='same-role-inline-check',title='Same role inline policy',subject='access-role',observation='same-role-inline-read'); m['access_dependencies'].append(d); m['interactions'][0]['dependencies'].append('same-role-inline-check'); p.write_text(json.dumps(m)); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['same_role_inline']={'role_name':'fixture-target','policy_name':'fixture-inline'}; p.write_text(json.dumps(b))
+PYTEST
+  map "$home" collect >/dev/null || fail "same-role inline policy collection"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); snap=json.load(open(h/'state/system-map/example/snapshot.json')); f=snap['observations']['same-role-inline-read']['facts']; d=next(d for d in m['access_dependencies'] if d['id']=='same-role-inline-check'); d['baseline']={'format':'policy','complete':True,'sha256':f['sha256'],'raw_sha256':f['raw_sha256'],'source':'fixture inline policy read','observed_at':snap['finished_at']}; p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" '"same-role-inline-check" in d["access"]["interactions"][0]["unmatched_dependencies"]')" "complete same-role inventory covers its inline policy"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['same_role_inline']['role_name']='fixture-other'; p.write_text(json.dumps(b))
+PYTEST
+  map "$home" collect >/dev/null || fail "wrong-role inline policy collection"
+  view_json "$home"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="same-role-inline-check")["comparison"]')" "wrong-role document can still match its policy baseline"
+  assert_equals "True" "$(py "$home/view.json" '"same-role-inline-check" in d["access"]["interactions"][0]["unmatched_dependencies"]')" "wrong-role inline policy cannot cover identity"
+  cp "$home/compatible-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/compatible-bindings.json" "$home/data/system-map/example/bindings.json"
+  map "$home" collect >/dev/null || fail "restore inline policy fixture"
+  cp "$home/data/system-map/example/manifest.json" "$home/pass-role-manifest.json"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/manifest.json'; m=json.load(open(p)); role=next(d for d in m['access_dependencies'] if d['id']=='identity-role-check'); m['access_dependencies'].append(dict(role,id='wrong-pass-role',title='Trust read labeled PassRole',kind='pass-role')); m['access_dependencies'].append(dict(role,id='wrong-session-policy',title='Trust read labeled session policy',kind='session-policy')); i=next(i for i in m['interactions'] if i['id']=='explicit-pass-role-request'); i['dependencies']=[d for d in i['dependencies'] if d!='session-policy']+['wrong-pass-role','wrong-session-policy']; i['context_complete']=True; i['evidence']='wrong-pass-role-request'; p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  python3 - "$home" <<'PYTEST'
+import datetime,json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); v=json.load(open(h/'view.json')); i=next(i for i in v['access']['interactions'] if i['id']=='explicit-pass-role-request'); ids=['access-role','access-bucket']; at=datetime.datetime.now(datetime.timezone.utc).isoformat(); r={'schema':'fm-system-map.evidence.v1','id':'wrong-pass-role-request','subjects':ids,'versions':{s:v['subjects'][s]['version'] for s in ids},'resource_identities':{s:v['subjects'][s]['resource_identity'] for s in ids},'result':'pass','recorded_at':at,'observed_at':at,'scope':'synthetic policy-kind mismatch request','summary':'Trust metadata cannot establish PassRole','provenance':{'kind':'receipt','source':'fixture owner'},'access_requests':{i['id']:i['assertion_digest']}}; (h/'wrong-pass-role-request.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/wrong-pass-role-request.json" >/dev/null || fail "wrong PassRole receipt intake"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" '"pass-role" in next(i for i in d["access"]["interactions"] if i["id"]=="explicit-pass-role-request")["missing_kinds"]')" "trust metadata cannot satisfy PassRole coverage"
+  assert_equals "True" "$(py "$home/view.json" '"session-policy" in next(i for i in d["access"]["interactions"] if i["id"]=="explicit-pass-role-request")["missing_kinds"]')" "trust metadata cannot satisfy session-policy coverage"
+  assert_equals "gaps" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="explicit-pass-role-request")["static_coverage"]')" "wrong policy kind cannot complete declared coverage"
+  assert_equals "stale" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="explicit-pass-role-request")["request_proof"]')" "matching receipt cannot prove wrong policy kind"
+  cp "$home/pass-role-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/data/system-map/example/manifest.json" "$home/participant-manifest.json"
+  cp "$home/data/system-map/example/bindings.json" "$home/participant-bindings.json"
+  cp "$home/aws-state.json" "$home/trust-state.json"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); m['components'].append({'id':'caller-only','title':'Separate caller','observe':[{'id':'caller-role-read','adapter':'aws.iam_role','binding':'caller_role','role':'version'}],'version_from':'caller-role-read'}); i=dict(m['interactions'][0],id='caller-version-request',title='Separate caller to bucket',caller='caller-only'); i.pop('evidence',None); m['interactions'].append(i); p.write_text(json.dumps(m)); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['caller_role']={'role_name':'fixture-caller'}; p.write_text(json.dumps(b))
+PYTEST
+  map "$home" collect >/dev/null || fail "separate caller collection"
+  view_json "$home"
+  assert_equals "declared-baselines-observed" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="caller-version-request")["static_coverage"]')" "fresh separate caller qualifies declared coverage"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])/'state/system-map/example/snapshot.json'; s=json.load(open(p)); s['observations']['caller-role-read']['checked_at']='2020-01-01T00:00:00Z'; p.write_text(json.dumps(s))
+PYTEST
+  view_json "$home"
+  assert_equals "['caller-only']" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="caller-version-request")["participant_gaps"]')" "stale caller is the only unqualified participant"
+  assert_equals "[]" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="caller-version-request")["missing_dependencies"]')" "dependency baselines remain current"
+  assert_equals "gaps" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="caller-version-request")["static_coverage"]')" "stale caller invalidates declared coverage"
+  cp "$home/participant-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/participant-bindings.json" "$home/data/system-map/example/bindings.json"
+  map "$home" collect >/dev/null || fail "restore separate caller fixture"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); source=next(s for s in m['components'] if s['id']=='trust-source'); source['observe'].insert(0,{'id':'other-source-read','adapter':'aws.iam_role_access','binding':'other_source_role','role':'info'}); p.write_text(json.dumps(m)); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['other_source_role']={'role_name':'fixture-other'}; p.write_text(json.dumps(b)); p=h/'aws-state.json'; s=json.load(open(p)); base=s['responses']['get-role']; a=json.loads(json.dumps(base)); a['Arn']='arn:aws:iam::123456789012:role/fixture-source'; other=json.loads(json.dumps(base)); other['Arn']='arn:aws:iam::123456789012:role/fixture-other'; s['role_responses']={'fixture-source':a,'fixture-other':other}; s['responses']['get-role']['AssumeRolePolicyDocument']['Statement'][0]['Principal']['AWS']=other['Arn']; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "conflicting trust role collection"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); snap=json.load(open(h/'state/system-map/example/snapshot.json')); facts=snap['observations']['access-trust']['facts']; p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); dep=next(d for d in m['access_dependencies'] if d['id']=='trust-check'); dep['baseline'].update({k:facts[k] for k in ('format','complete','sha256','raw_sha256','relationships_sha256')}); p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "wrong-reference" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "unrelated successful role read cannot satisfy trust reference"
+  assert_equals "insufficient-evidence" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["comparison"]')" "matching trust baseline cannot hide wrong referenced resource"
+  cp "$home/participant-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/participant-bindings.json" "$home/data/system-map/example/bindings.json"
+  cp "$home/trust-state.json" "$home/aws-state.json"
+  map "$home" collect >/dev/null || fail "restore trust references"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); role=next(s for s in m['components'] if s['id']=='access-role'); role['observe'][0]['adapter']='aws.iam_role'; role['observe'].append({'id':'other-identity-role-read','adapter':'aws.iam_role_access','binding':'other_identity_role','role':'info'}); m['interactions'][0]['dependencies'].append('boundary-check'); p.write_text(json.dumps(m)); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['other_identity_role']={'role_name':'fixture-other'}; p.write_text(json.dumps(b)); p=h/'aws-state.json'; s=json.load(open(p)); s['responses']['get-role']['PermissionsBoundary']={'PermissionsBoundaryArn':'arn:aws:iam::123456789012:policy/fixture','PermissionsBoundaryType':'PermissionsBoundary'}; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "wrong identity role inventory collection"
+  view_json "$home"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="managed-check")["comparison"]')" "readable policy document remains observed"
+  assert_equals "True" "$(py "$home/view.json" '"identity-policy" in d["access"]["interactions"][0]["missing_kinds"]')" "policy inventory from another role cannot cover identity"
+  assert_equals "True" "$(py "$home/view.json" '"boundary-check" in d["access"]["interactions"][0]["unmatched_dependencies"]')" "boundary from another role cannot cover identity"
+  cp "$home/participant-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/participant-bindings.json" "$home/data/system-map/example/bindings.json"
+  cp "$home/trust-state.json" "$home/aws-state.json"
+  map "$home" collect >/dev/null || fail "restore identity role inventory"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); bucket=next(s for s in m['components'] if s['id']=='access-bucket'); bucket['observe'].append({'id':'other-bucket-read','adapter':'aws.s3_policy','binding':'other_bucket','role':'info'}); check=next(d for d in m['access_dependencies'] if d['id']=='bucket-check'); m['access_dependencies'].append(dict(check,id='other-bucket-check',title='Other bucket policy',observation='other-bucket-read')); i=dict(m['interactions'][0],id='wrong-bound-resource',title='Wrong bound bucket policy',evidence='wrong-bound-request'); i['dependencies']=['other-bucket-check' if d=='bucket-check' else d for d in i['dependencies']]; m['interactions'].append(i); p.write_text(json.dumps(m)); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['other_bucket']={'bucket':'other-fixture'}; p.write_text(json.dumps(b))
+PYTEST
+  map "$home" collect >/dev/null || fail "wrong bound resource collection"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" '"resource-policy" in next(i for i in d["access"]["interactions"] if i["id"]=="wrong-bound-resource")["missing_kinds"]')" "same subject with a different bound resource cannot satisfy policy coverage"
+  assert_equals "gaps" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="wrong-bound-resource")["static_coverage"]')" "wrong bound resource cannot report complete coverage"
+  cp "$home/participant-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/participant-bindings.json" "$home/data/system-map/example/bindings.json"
+  map "$home" collect >/dev/null || fail "restore participant bindings"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/manifest.json'; m=json.load(open(p)); role=next(d for d in m['access_dependencies'] if d['id']=='role-check'); m['access_dependencies'].append(dict(role,id='wrong-trust-check',title='Other role trust',kind='trust'))
+i=dict(m['interactions'][0],id='wrong-subject-request',title='Unrelated checks for bucket request',evidence='wrong-request'); i['dependencies']=[d for d in i['dependencies'] if d not in ('identity-role-check','trust-check','bucket-check','bucket-key-na')]+['role-check','wrong-trust-check','queue-check','key-check']; m['interactions'].append(i); p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "['key-policy', 'resource-policy', 'role-existence', 'trust']" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="wrong-subject-request")["missing_kinds"]')" "checks for another role and resource do not satisfy participant coverage"
+  assert_equals "gaps" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="wrong-subject-request")["static_coverage"]')" "wrong-subject checks cannot report complete coverage"
+  python3 - "$home" <<'PYTEST'
+import datetime,json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); v=json.load(open(h/'view.json')); i=next(i for i in v['access']['interactions'] if i['id']=='wrong-subject-request'); ids=['access-role','access-bucket']; at=datetime.datetime.now(datetime.timezone.utc).isoformat(); r={'schema':'fm-system-map.evidence.v1','id':'wrong-request','subjects':ids,'versions':{s:v['subjects'][s]['version'] for s in ids},'resource_identities':{s:v['subjects'][s]['resource_identity'] for s in ids},'result':'pass','recorded_at':at,'observed_at':at,'scope':'synthetic wrong-subject request','summary':'Wrong-subject regression receipt','provenance':{'kind':'receipt','source':'fixture owner'},'access_requests':{i['id']:i['assertion_digest']}}; (h/'wrong-request.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/wrong-request.json" >/dev/null || fail "wrong-subject receipt intake"
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="wrong-subject-request")["request_proof"]')" "matching receipt cannot prove unrelated checks"
+  cp "$home/participant-manifest.json" "$home/data/system-map/example/manifest.json"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/manifest.json'; m=json.load(open(p)); next(d for d in m['access_dependencies'] if d['id']=='organization-policy').pop('participant'); p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "['organization-policy']" "$(py "$home/view.json" 'd["access"]["interactions"][0]["missing_kinds"]')" "shared caller and identity do not imply an ambiguous restriction mapping"
+  assert_equals "stale" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "unknown participant mapping cannot qualify request proof"
+  cp "$home/participant-manifest.json" "$home/data/system-map/example/manifest.json"
+  view_json "$home"
+  assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "restored participant mapping requalifies request proof"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/manifest.json'; m=json.load(open(p)); role=next(s for s in m['components'] if s['id']=='access-role'); role['observe'].append({'id':'access-trust-alternate','adapter':'aws.iam_role_access','binding':'access_role','role':'info'}); p.write_text(json.dumps(m))
+PYTEST
+  map "$home" collect >/dev/null || fail "ambiguous identity role collection"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" '"identity-policy" in d["access"]["interactions"][0]["missing_kinds"]')" "two healthy role reads do not pick an arbitrary policy membership source"
+  assert_equals "stale" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "ambiguous role mapping cannot qualify request proof"
+  cp "$home/participant-manifest.json" "$home/data/system-map/example/manifest.json"
+  map "$home" collect >/dev/null || fail "restore single identity role read"
+  cp "$home/data/system-map/example/manifest.json" "$home/closure-manifest.json"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/manifest.json'; m=json.load(open(p)); m['interactions'][0]['dependencies'].remove('managed-check'); m['interactions'][1]['dependencies'].remove('key-check'); p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "['managed-check']" "$(py "$home/view.json" 'd["access"]["interactions"][0]["unlinked_dependencies"]')" "role policy check remains required when omitted"
+  assert_equals "['key-check']" "$(py "$home/view.json" 'd["access"]["interactions"][1]["unlinked_dependencies"]')" "queue key check remains required when omitted"
+  assert_equals "gaps" "$(py "$home/view.json" 'd["access"]["interactions"][0]["static_coverage"]')" "globally observed checks do not fill missing interaction links"
+  assert_equals "stale" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "omitted checks invalidate old request proof"
+  before=$(py "$home/view.json" 'd["access"]["interactions"][1]["assertion_digest"]')
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'aws-state.json'; s=json.load(open(p)); policy=json.loads(s['responses']['get-key-policy']['Policy']); policy['Statement'][0]['Condition']['Bool']['aws:SecureTransport']='true'; s['responses']['get-key-policy']['Policy']=json.dumps(policy); p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "changed omitted key policy"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); facts=json.load(open(h/'state/system-map/example/snapshot.json'))['observations']['access-key-read']['facts']; d=next(d for d in m['access_dependencies'] if d['id']=='key-check'); d['baseline'].update(sha256=facts['sha256'],raw_sha256=facts['raw_sha256']); p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="queue-check")["comparison"]')" "queue check remains green after key baseline review"
+  after=$(py "$home/view.json" 'd["access"]["interactions"][1]["assertion_digest"]')
+  assert_not_equals "$before" "$after" "omitted key-policy version enters request assertion"
+  before=$(py "$home/view.json" 'd["access"]["interactions"][0]["assertion_digest"]')
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'aws-state.json'; s=json.load(open(p)); s['responses']['get-policy-version']['PolicyDocument']['Statement'][0]['Condition']['Bool']['aws:SecureTransport']='true'; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "changed omitted role policy"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); facts=json.load(open(h/'state/system-map/example/snapshot.json'))['observations']['access-managed-read']['facts'];
+for d in m['access_dependencies']:
+ if d['id'] in ('managed-check','boundary-check'): d['baseline'].update(sha256=facts['sha256'],raw_sha256=facts['raw_sha256'])
+p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["comparison"]')" "role inventory remains green after policy document review"
+  after=$(py "$home/view.json" 'd["access"]["interactions"][0]["assertion_digest"]')
+  assert_not_equals "$before" "$after" "omitted attached-policy version enters request assertion"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'aws-state.json'; s=json.load(open(p)); s['deny']=['kms']; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "denied required key policy"
+  view_json "$home"
+  assert_equals "denied" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="key-check")["state"]')" "denied transitive key check remains denied"
+  assert_equals "gaps" "$(py "$home/view.json" 'd["access"]["interactions"][1]["static_coverage"]')" "denied transitive key check cannot complete coverage"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["access"]["interactions"][1]["effective_access"]')" "denied transitive coverage never becomes effective access"
+  cp "$home/closure-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/access-original.json" "$home/aws-state.json"
+  map "$home" collect >/dev/null || fail "restore interaction closure fixture"
+  view_json "$home"
+  assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "restored links and versions requalify the original receipt"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'aws-state.json'; s=json.load(open(p)); s['responses']['list-attached-role-policies']['AttachedPolicies']=[]; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "removed role policy attachment"
+  view_json "$home"
+  assert_equals "configuration-drift" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["comparison"]')" "removed role attachment drifts despite unchanged trust"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="managed-check")["comparison"]')" "readable detached policy does not cover role membership"
+  assert_equals "gaps" "$(py "$home/view.json" 'd["access"]["interactions"][0]["static_coverage"]')" "removed role attachment invalidates declared coverage"
+  assert_equals "stale" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "removed role attachment invalidates request proof"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'aws-state.json'; s=json.load(open(h/'access-original.json')); s['responses']['get-role']['PermissionsBoundary']={'PermissionsBoundaryArn':'arn:aws:iam::123456789012:policy/fixture','PermissionsBoundaryType':'PermissionsBoundary'}; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "changed role boundary"
+  view_json "$home"
+  assert_equals "configuration-drift" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["comparison"]')" "changed boundary drifts despite readable replacement document"
+  assert_equals "0" "$(py "$home/view.json" 'len(next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["unobserved_policy_documents"])')" "readable boundary document cannot hide relationship drift"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'aws-state.json'; s=json.load(open(h/'access-original.json')); s['responses']['list-attached-role-policies']['IsTruncated']=True; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "incomplete role inventory"
+  view_json "$home"
+  assert_equals "insufficient-evidence" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["comparison"]')" "incomplete attachment inventory cannot match relationship baseline"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); (h/'aws-state.json').write_text((h/'access-original.json').read_text())
+PYTEST
+  map "$home" collect >/dev/null || fail "restore role relationships"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'aws-state.json'; s=json.load(open(p)); s['responses']['get-queue-attributes']['Attributes']['KmsMasterKeyId']='replacement-key'; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "changed queue encryption key"
+  view_json "$home"
+  assert_equals "configuration-drift" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="queue-check")["comparison"]')" "changed key with unchanged queue policy drifts"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="key-check")["comparison"]')" "old key policy read alone cannot cover the queue"
+  assert_equals "stale" "$(py "$home/view.json" 'd["access"]["interactions"][1]["request_proof"]')" "changed queue key invalidates request proof"
+  assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "queue key change leaves bucket request proof intact"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); v=json.load(open(h/'view.json')); d=next(d for d in m['access_dependencies'] if d['id']=='queue-check'); observed=next(d for d in v['access']['dependencies'] if d['id']=='queue-check'); d['baseline']['encryption_identity']=observed['facts']['encryption_identity']; p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "insufficient-evidence" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="queue-check")["comparison"]')" "updated queue baseline cannot keep old key-policy relationship green"
+  python3 - "$home" <<'PYTEST'
+import hashlib,json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); (h/'aws-state.json').write_text((h/'access-original.json').read_text()); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); d=next(d for d in m['access_dependencies'] if d['id']=='queue-check'); d['baseline']['encryption_identity']=hashlib.sha256(json.dumps({'KmsMasterKeyId':'fixture-key','SqsManagedSseEnabled':None},sort_keys=True,separators=(',',':')).encode()).hexdigest(); p.write_text(json.dumps(m))
+PYTEST
+  map "$home" collect >/dev/null || fail "restore queue key"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib,datetime
+h=pathlib.Path(sys.argv[1]);p=h/'data/system-map/example/manifest.json';m=json.load(open(p));d=next(d for d in m['access_dependencies'] if d['id']=='endpoint-policy');d.pop('applicability');d.pop('reason');d['evidence']='fixture-owner-check';d['baseline']={'format':'configuration','complete':True,'sha256':'0'*64,'raw_sha256':'0'*64,'source':'fixture owner endpoint policy hash','observed_at':datetime.datetime.now(datetime.timezone.utc).isoformat()};p.write_text(json.dumps(m))
+v=json.load(open(h/'view.json'));subject=v['subjects']['access-role'];at=datetime.datetime.now(datetime.timezone.utc).isoformat()
+r={'schema':'fm-system-map.evidence.v1','id':'fixture-owner-check','subjects':['access-role'],'versions':{'access-role':subject['version']},'resource_identities':{'access-role':subject['resource_identity']},'result':'pass','recorded_at':at,'observed_at':at,'scope':'fixture existing owner endpoint policy read; no native call','summary':'Fixture owner supplies current bounded policy metadata','provenance':{'kind':'receipt','source':'fixture owner'},'access_checks':{'endpoint-policy':{'outcome':'ok','binding_digest':subject['resource_identity'],'observer_identity':'1'*64,'version':'endpoint-v1','facts':{'format':'configuration','complete':True,'sha256':'0'*64,'raw_sha256':'0'*64}}}}
+(h/'owner-check.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/owner-check.json" >/dev/null || fail "owner check intake"
+  view_json "$home"
+  assert_equals "imported" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="endpoint-policy")["coverage"]')" "qualified owner check is labeled imported"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="endpoint-policy")["comparison"]')" "owner check preserves exact baseline digest"
+  cp "$home/data/system-map/example/manifest.json" "$home/imported-format-manifest.json"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); d=dict(next(d for d in m['access_dependencies'] if d['id']=='endpoint-policy'),id='wrong-format-trust',title='Configuration mislabeled as trust',kind='trust',evidence='fixture-wrong-format'); m['access_dependencies'].append(d); m['interactions'][0]['dependencies'].append('wrong-format-trust'); p.write_text(json.dumps(m)); r=json.load(open(h/'owner-check.json')); r['id']='fixture-wrong-format'; r['access_checks']={'wrong-format-trust':r['access_checks']['endpoint-policy']}; (h/'wrong-format-check.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/wrong-format-check.json" >/dev/null || fail "wrong-format owner check intake"
+  view_json "$home"
+  assert_equals "imported" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="wrong-format-trust")["coverage"]')" "wrong-format owner receipt remains visible"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="wrong-format-trust")["comparison"]')" "wrong-format receipt matches its own declared baseline"
+  assert_equals "True" "$(py "$home/view.json" '"wrong-format-trust" in d["access"]["interactions"][0]["unmatched_dependencies"]')" "configuration receipt cannot satisfy trust coverage"
+  cp "$home/imported-format-manifest.json" "$home/data/system-map/example/manifest.json"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]);p=h/'owner-check.json';r=json.load(open(p));r['id']='fixture-wrong-binding';r['access_checks']['endpoint-policy']['binding_digest']='2'*64;p.write_text(json.dumps(r));p=h/'data/system-map/example/manifest.json';m=json.load(open(p));next(d for d in m['access_dependencies'] if d['id']=='endpoint-policy')['evidence']='fixture-wrong-binding';p.write_text(json.dumps(m))
+PYTEST
+  map "$home" evidence add example "$home/owner-check.json" >/dev/null || fail "unqualified check is retained"
+  view_json "$home"
+  assert_equals "missing-evidence" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="endpoint-policy")["coverage"]')" "owner check with wrong binding remains unqualified"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'state/system-map/example/snapshot.json'; s=json.load(open(p)); s['observations']['access-trust']['checked_at']='2020-01-01T00:00:00Z'; p.write_text(json.dumps(s))
+PYTEST
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "stale dependency invalidates request proof"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['access_bucket']['bucket']='other-fixture'; p.write_text(json.dumps(b))
+PYTEST
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "changed binding invalidates request proof"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'request.json'; r=json.load(open(p));r['id']='unknown-request';r['access_requests']={'missing-interaction':'0'*64};p.write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/request.json" >"$home/rejected.txt" 2>&1 && fail "unknown interaction receipt accepted"
+  assert_grep 'unknown interaction' "$home/rejected.txt" "request receipt reference validation"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['access_bucket']['bucket']='fixture';p.write_text(json.dumps(b));p=h/'aws-state.json';s=json.load(open(p));s['responses']['get-role']['AssumeRolePolicyDocument']['Statement'][0]['Effect']='Deny';p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "changed trust check"
+  view_json "$home"
+  assert_equals "policy-drift" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["comparison"]')" "changed trust denial is semantic drift"
+  assert_equals "denied-reference" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "a principal present only in Deny is not an observed Allow reference"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["access"]["interactions"][0]["effective_access"]')" "denied-only reference does not claim effective access"
+  assert_equals "unobserved" "$(py "$home/view.json" 'd["access"]["interactions"][0]["propagation"]')" "matching GetRole never proves downstream propagation"
+  pass "access view batches gaps, classifies policy/tag drift, and qualifies exact trust dependencies"
+}
+
+test_access_relationships_and_conservative_comparison
 
 test_proactive_prerequisites_and_lineage
 test_lineage_report_requires_current_binding

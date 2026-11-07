@@ -12,7 +12,7 @@ It answers "what is this system supposed to be, what is it now, and what has bee
   None implies another, and there is no completion percentage.
 - Each observation's outcome, state, facts, check time, and scope (region, account label, and whether the account was verified).
 - A prerequisite view grouped by consuming phase, showing observation coverage, fresh versus migration requirements, ownership, next checks and authorization beside the existing four layers.
-- Source, artifact, installed and configuration lineage, an experiment lifecycle timeline built from run evidence, the MVP acceptance criteria, credential metadata and the durable discrepancy list.
+- Source, artifact, installed and configuration lineage, an experiment lifecycle timeline built from run evidence, the MVP acceptance criteria, credential metadata, required access interactions and the durable discrepancy list.
 - Human notes on any component, connection, discrepancy, or criterion, and validated edits to the intended design.
 
 Observation outcomes are distinct and never merged into a false green:
@@ -78,7 +78,7 @@ Nothing observed is ever written into `data/`'s intended design, and intent edit
 ## Data contracts
 
 The manifest (`fm-system-map.manifest.v1`) declares observations by naming a built-in adapter and a binding key; it never carries a command.
-Adapters are a fixed, read-only set: `aws.ec2_instance`, `aws.ec2_tagged_instances`, `aws.ec2_image`, `aws.ecs_service`, `aws.sqs_queue`, `aws.dynamodb_table`, `aws.dynamodb_item` (named attributes only), `aws.s3_bucket` (metadata only), `aws.ecr_image`, `aws.lambda_configuration`, `aws.scheduler_schedule`, `aws.iam_role`, `git.revision` (a local clone, no fetch), and `firstmate.task` (local task record for live or ended state; the status line is a last-event fact).
+Adapters are a fixed, read-only set: `aws.ec2_instance`, `aws.ec2_tagged_instances`, `aws.ec2_image`, `aws.ecs_service`, `aws.sqs_queue`, `aws.dynamodb_table`, `aws.dynamodb_item` (named attributes only), `aws.s3_bucket` (metadata only), `aws.ecr_image`, `aws.lambda_configuration`, `aws.scheduler_schedule`, `aws.iam_role`, the access metadata adapters below, `git.revision` (a local clone, no fetch), and `firstmate.task` (local task record for live or ended state; the status line is a last-event fact).
 Each AWS call is a describe, get, list, or head operation with connect, read, and process timeouts, and provider text is stored with account numbers and ARNs redacted.
 When `bindings.json` pins `expected_account`, the collector first checks the caller identity and skips every AWS read under any other account.
 The additional metadata adapters require exact bindings: Lambda `function_name`, Scheduler `schedule_name` and `group_name`, and IAM `role_name`.
@@ -102,6 +102,96 @@ Imported assessments carry a `prerequisites` map from prerequisite ID to `presen
 An imported assessment qualifies only when its `resource_identities` entry for the producer matches the currently bound prerequisite observation digest, or the producer's current version observation identity when the prerequisite declares no observation, and its `versions` entry matches the producer's current observed version; missing or mismatched versions, bindings or identities leave it unknown with missing evidence coverage.
 They retain that record's observed/recorded time and provenance and never become collector observations; future-dated prerequisite assessments are rejected at intake.
 Only the new prerequisite references are validated at intake; the existing deferred criterion/phase receipt-validation work remains separate.
+
+### Access relationships
+
+Optional `access_dependencies` holds shared checks referenced by optional `interactions`; these extend the manifest rather than create a second ledger.
+Each dependency requires `id`, `title`, `kind`, `subject`, nonempty `owners` (the existing owner/task shape), and `next_check`.
+`participant` names `caller`, `identity`, or `target` for a dependency used by an interaction; omitting it leaves that dependency's participant mapping unknown.
+Its optional `observation` belongs to that subject; optional `evidence` references an owner receipt through the existing evidence store.
+`kind` is `role-existence`, `trust`, `identity-policy`, `resource-policy`, `key-policy`, `permissions-boundary`, `session-policy`, `organization-policy`, `endpoint-policy`, `pass-role`, `configuration`, or `tags`.
+`applicability` defaults to `required`; `not-applicable` requires a specific `reason` and cannot carry an observation or baseline.
+An optional `baseline` records `format` (`policy`, `configuration`, `tags`, or `role`), explicit boolean `complete`, `source`, the original `observed_at`, and canonical `sha256` (required when complete) plus optional `raw_sha256`.
+For an SQS policy observation, a complete baseline also needs `encryption_identity`, the digest of the observed `KmsMasterKeyId` and `SqsManagedSseEnabled` attributes.
+If the queue uses a KMS key, its dependency must name `key_dependency`, an observed `key-policy` dependency whose KMS binding identifies that same key; otherwise coverage remains insufficient.
+For an IAM role observation, a complete baseline also needs `relationships_sha256`, the fingerprint of complete attached and inline policy membership and the permissions-boundary relationship.
+The access adapters produce the digests to retain in a reviewed baseline; neither collection nor comparison adopts observations into intent.
+An incomplete or absent baseline remains `incomplete-baseline`, even when a new read succeeds.
+Policy dependencies may name exact literal principal subjects in `references`; their current role ARN fingerprints must match a literal principal in an Allow statement.
+The view distinguishes a principal found only in Deny statements as `denied-reference`, without interpreting the policy's effective permissions.
+Missing, denied, stale and wrong-reference principals stay distinct, with creation, identity and version metadata; role presence and a matching reference prove neither AWS propagation nor actual assumption.
+
+Each interaction requires `id`, `title`, `caller` and `target` subject IDs, `identity` (an existing subject or credential ID), nonempty `operations` (exact `service:operation` strings without wildcards), `phases`, dependency IDs in `dependencies`, explicit `context`, `analysis_scope`, nonempty `owners`, and `next_check`.
+`context_complete` defaults to false and must be explicitly true for complete declared coverage or request proof.
+Context records the concrete target constraints, service principal, transport, tag and condition inputs that matter; unresolved inputs must be described explicitly rather than assumed satisfied.
+Every interaction exposes missing dependency kinds for role existence, trust, identity/resource/key policies and boundary/session/organization/endpoint restrictions, even when no checks for those kinds were declared.
+Role, trust, identity-policy, boundary, session-policy and pass-role checks map to `identity`; resource and key policies map to `target`.
+Organization, endpoint, configuration and tag checks can name any participant, but their subject must be that participant.
+Attached, inline and boundary policy subjects may differ from the identity only when the identity's single complete role read establishes the corresponding policy membership; an SQS key-policy subject may differ from the target only through that target queue's active `key_dependency`.
+Other subject mismatches and ambiguous or missing role mappings remain gaps, even when a check's kind and baseline match.
+Its required dependency closure comes from the current bound identity-role inventory, requiring a qualified check for each attached or inline policy identity and the boundary policy identity, plus the declared key-policy check when a linked SQS read observes an active KMS key.
+Missing policy documents remain individual gaps even when role existence and trust come from owner receipts; incomplete role inventory stays unknown.
+The identity-role inventory also enters the request assertion.
+A policy identity needs one participant-bound linked check; duplicate checks for the same managed policy on another role neither create a gap nor cover a missing or denied linked check.
+Required checks omitted from the interaction's declared `dependencies` remain explicit gaps even when their documents were observed elsewhere; the required checks enter the request assertion, so a changed check invalidates earlier proof.
+Incomplete context and missing or stale request receipts appear in the consolidated gap list, with shared dependency gaps listed once and linked to every affected interaction.
+An `iam:PassRole` assertion or a known role-carrying request (`lambda:CreateFunction`, `lambda:UpdateFunctionConfiguration`, `scheduler:CreateSchedule`, `scheduler:UpdateSchedule`, `ecs:RegisterTaskDefinition`, `ecs:RunTask`, `ec2:RunInstances`) additionally requires a `pass-role` dependency, including an explicit not-applicable reason when no role is passed.
+Action spelling is compared without case for this dependency check.
+Other callers declare that dependency whenever passing a role is part of their service request.
+Use reasoned not-applicable references when a restriction cannot apply; an uncollected or unmapped restriction is never not-applicable by default.
+The derived `access` view lists all gaps together, every interaction, its shared checks, and lifecycle phases without declared interactions.
+It appears in Access coverage and in the relevant resource details, without granting permission or replacing deployment preflight.
+
+Existing exact-instance and tagged-instance EC2 reads also expose the three IMDS metadata settings separately; missing settings, an empty range or a continuation token cannot establish configuration coverage.
+The fixed access adapters use only these exact configured bindings and API calls:
+
+| Adapter | Binding fields | Read-only calls |
+| --- | --- | --- |
+| `aws.iam_role_access` | `role_name` | IAM `GetRole` (identity, creation, trust, boundary), `ListAttachedRolePolicies`, `ListRolePolicies` |
+| `aws.iam_inline_policy` | `role_name`, `policy_name` | IAM `GetRolePolicy` |
+| `aws.iam_managed_policy` | `policy_arn` | IAM `GetPolicy`, `GetPolicyVersion` for its returned default version |
+| `aws.s3_policy` | `bucket` | S3 `GetBucketPolicy` |
+| `aws.sqs_policy` | `queue_url` | SQS `GetQueueAttributes` for policy and encryption metadata |
+| `aws.dynamodb_policy` | `resource_arn` | DynamoDB `GetResourcePolicy` |
+| `aws.kms_policy` | `key_id` | KMS `GetKeyPolicy` for `default` |
+| `aws.ecs_task_metadata` | `task_definition` | ECS `DescribeTaskDefinition` with `include=TAGS`, projecting only identity, role references, status and tags |
+
+Role policy lists read one bounded service page with CLI pagination disabled; truncation, continuation markers or a missing completeness member leave the inventory incomplete.
+Incomplete or malformed role membership and boundary metadata cannot match a relationship baseline.
+Each attached or inline policy and configured boundary needs a separately declared policy-document check with a matching baseline and either a current observation or a qualified owner assessment; listing an attachment never means its document was read.
+The map does not enumerate accounts, collect secret values, pivot identities, simulate requests, grant permissions or retry denied reads under another identity.
+Independent configured checks finish despite another check being missing, denied or incomplete, subject to the existing collection deadline and per-call timeout.
+Access reads retain projected facts, hashes, collection scope and observing identity in the current snapshot and successful observation history.
+The view projects document fingerprints, statement Allow/Deny counts, condition operator names and role/policy identity fingerprints, excluding policy values and tag values.
+An account pin verified by the existing caller-identity read and an observing identity fingerprint are required for current access coverage; an unverified successful read stays unknown.
+A missing response member is unknown; absence requires an authoritative provider response.
+In particular, omitted task tags cannot become an empty historical tag baseline.
+
+Policy comparison parses JSON and ignores object key order, statement order and array order only in IAM Action/NotAction, Resource/NotResource and Principal/NotPrincipal members.
+It preserves scalar versus list types, identifiers, condition values and arbitrary arrays, with no condition evaluation or general IAM simulation.
+Equal canonical digests with different raw digests are `representation-only`; different digests are `policy-drift` or `configuration-drift`; incomplete reads or incompatible formats are `insufficient-evidence`.
+An SQS encryption identity change is `configuration-drift` even when its queue policy is unchanged, and it invalidates dependent interaction proof.
+An IAM role membership or permissions-boundary change is `configuration-drift` even when the trust policy and separately readable policy documents are unchanged.
+These are conservative document comparisons, not effective-permission verdicts.
+`declared-baselines-observed` means every declared check and required kind has current baseline coverage; `effective_access` always remains `unknown`.
+Explicit denies, unknown condition inputs and unobserved restrictions therefore cannot be converted into an Allow claim by document presence.
+
+Owner receipts or imported reports can supply `access_checks` mapping dependency IDs to `{outcome, binding_digest, observer_identity, version, facts, error?}`.
+The two identities are SHA-256 fingerprints: the exact observation binding (or producer version binding when no observation is declared) and the observing identity.
+Successful `facts` contains `format`, explicit boolean `complete`, and canonical `sha256`, plus optional `raw_sha256`, SQS encryption and KMS key fingerprints, a role relationship fingerprint, `policy_identity`, all/Allow/Deny principal fingerprints, Allow/Deny counts and condition operator names; policy values are refused.
+An assessment requires original `observed_at`, explicit `scope`, a nonhistorical owner receipt/report and matching producer `versions` and `resource_identities`, with a fresh independently observed producer version and deployment.
+Qualified assessments are labeled `imported`, retaining source, time, scope and observing identity; missing, stale or mismatched evidence remains `missing-evidence` and unknown.
+Any collected result, including denial or an incomplete read, takes precedence over an imported assessment.
+Manual assertions cannot qualify as collected access metadata, and importing a check never grants an access or request-proof verdict.
+
+An optional interaction `evidence` names an ordinary receipt whose `access_requests` maps that interaction ID to its current derived `assertion_digest`.
+This digest binds the declared operations/target/context, complete private bindings, current participant identities/versions, policy fingerprints, observing identity/scope and dependency state.
+Actual request proof requires receipt provenance, original `observed_at`, explicit `scope`, a nonhistorical result, and matching deployed versions and resource identities for caller, identity and target.
+Checks, participant version observations and request receipts must be fresh within twice the current collection interval; refreshed identical reads preserve the assertion digest, while changed versions, identities, context or coverage invalidate it.
+Future-dated or unknown-interaction request assessments are refused at intake.
+Unversioned subjects and credential-only identities cannot qualify as demonstrated requests; they remain visible with `not-demonstrated` or `stale` proof until versioned identity evidence is modeled.
+A matching pass becomes `demonstrated`, a matching fail `failed`, and neither establishes general access beyond that exact request context.
+Source, build, installed, runtime and MVP proof retain their existing independent contracts.
 
 Optional subject `lineage` is a list of `{stage, subject, expected?, evidence?, note?}` records.
 `stage` is `source`, `artifact`, `installed`, or `config`, and `subject` names the independently tracked subject for that stage.

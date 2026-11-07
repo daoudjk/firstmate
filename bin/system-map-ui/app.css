@@ -259,3 +259,13 @@ details.edit summary { cursor: pointer; font-weight: 700; color: var(--text-stro
   .bar__health { order: 3; flex-basis: 100%; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* Access metadata keeps hashes and request context readable on narrow screens. */
+.access-list .mono, .access-context { overflow-wrap: anywhere; white-space: pre-wrap; }
+.access-context { max-width: 100%; font-size: .85rem; }
+
+.access-filters { display: flex; flex-wrap: wrap; gap: 12px 20px; margin: 12px 0; }
+.access-filters label { display: grid; gap: 6px; max-width: 100%; }
+.access-filters input, .access-filters select { max-width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-body); font: inherit; }
+.access-gaps { margin: 16px 0; }
+.access-gaps > summary { font-weight: 700; color: var(--text-strong); }
