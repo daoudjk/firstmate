@@ -509,7 +509,7 @@
     return g ? g.title : id;
   }
   function credItem(c) {
-    var exp = c.expiry_basis === "observed" ? parseTime(c.expires) : null, soon = exp !== null && exp - Date.now() < 7 * 86400000;
+    var exp = (c.expiry_basis || "observed") === "observed" ? parseTime(c.expires) : null, soon = exp !== null && exp - Date.now() < 7 * 86400000;
     return h("li", { class: "item" }, h("div", { class: "item__head" }, h("strong", { text: c.title }), c.kind ? h("span", { class: "muted", text: c.kind }) : null,
       exp === null ? h("span", { class: "chip chip--unknown", text: "expiry not recorded" }) : h("span", { class: "chip chip--" + (exp < Date.now() ? "bad" : soon ? "warn" : "ok"), text: exp < Date.now() ? "expired" : "expires " + ago(c.expires) })),
       h("div", { text: c.purpose }), h("div", { class: "item__foot", text: "Owner: " + (c.owner || "not recorded") + (c.rotation ? " · Rotation: " + c.rotation : "") + (c.note ? " · " + c.note : "") }));
@@ -719,12 +719,12 @@
     });
     if (!creds.length) body.appendChild(h("tr", null, h("td", { colspan: "5", class: "muted", text: "No credentials described." })));
     creds.forEach(function (c) {
-      var exp = c.expiry_basis === "observed" ? parseTime(c.expires) : null;
+      var exp = (c.expiry_basis || "observed") === "observed" ? parseTime(c.expires) : null;
       body.appendChild(h("tr", null,
         h("td", null, h("strong", { text: c.title }), c.kind ? h("span", { class: "cell-sum muted", text: c.kind }) : null),
         h("td", { text: c.purpose }),
         h("td", null, c.owner || "not recorded", h("span", { class: "cell-sum", text: "Renewal owner: " + (c.renewal_owner || c.owner || "unknown") }), h("span", { class: "cell-sum", text: "Mechanism: " + (c.rotation || "unknown") }), h("span", { class: "cell-sum", text: "Restart required: " + (c.restart_required || "unknown") })),
-        h("td", null, exp === null ? h("span", { class: "chip chip--unknown", text: "not recorded" }) : [h("span", { class: "chip chip--" + (exp < Date.now() ? "bad" : "warn"), text: exp < Date.now() ? "expired" : ago(c.expires) }), h("span", { class: "cell-sum", text: c.expires + " · " + (c.expiry_basis || "basis unknown") })],
+        h("td", null, exp === null ? h("span", { class: "chip chip--unknown", text: "not recorded" }) : [h("span", { class: "chip chip--" + (exp < Date.now() ? "bad" : "warn"), text: exp < Date.now() ? "expired" : ago(c.expires) }), h("span", { class: "cell-sum", text: c.expires + " · " + (c.expiry_basis || "observed") })],
           h("span", { class: "cell-sum", text: "Issuer: " + (c.issuer || "not recorded") }), c.expected_expires ? h("span", { class: "cell-sum", text: "Inferred expiry: " + c.expected_expires }) : null,
           c.full_window_seconds ? h("span", { class: "cell-sum", text: "Full window: " + (c.full_window || "unknown") + " · " + c.full_window_seconds + " seconds" }) : null,
           c.full_window_seconds ? h("span", { class: "cell-sum", text: "Latest safe start (strictly before): " + (c.latest_safe_start || "unknown") }) : null,

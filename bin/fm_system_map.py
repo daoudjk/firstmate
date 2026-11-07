@@ -1407,7 +1407,7 @@ def credential_view(manifest):
         known = [parse_iso(c.get("expires")) for c in chain]
         issuer_complete = all(c.get("kind") != "tls-leaf" or c.get("issuer") for c in chain)
         validity_known = all(parse_iso(c.get("not_before")) is not None for c in chain if len(chain) > 1 or c.get("kind") in ("tls-leaf", "ca"))
-        observed = not cycle and issuer_complete and validity_known and all(t is not None and c.get("expiry_basis") == "observed" for c, t in zip(chain, known))
+        observed = not cycle and issuer_complete and validity_known and all(t is not None and c.get("expiry_basis", "observed") == "observed" for c, t in zip(chain, known))
         window = cred.get("full_window_seconds")
         safe = min(known) - window if observed and window else None
         valid_from = max([parse_iso(c.get("not_before")) or 0 for c in chain])
@@ -1575,7 +1575,7 @@ def build_view(home, cfg, project):
             reported = rec.get("versions", {}).get(item["subject"]) if rec else None
             if reported and state == "unknown":
                 state = "stale" if rec.get("historical") else "reported"
-                if item.get("expected") and reported != item["expected"]:
+                if not rec.get("historical") and item.get("expected") and reported != item["expected"]:
                     state = "mismatch"
             lineage.append(dict(item, status=state, version=target["version"], reported_version=reported,
                                 provenance=rec.get("provenance") if rec else None, recorded_at=rec.get("recorded_at") if rec else None,
@@ -1694,7 +1694,7 @@ def derive_discrepancies(home, cfg, project):
         subject = (gap.get("subjects") or ["design"])[0]
         add("gap", subject, gap["id"], gap["title"], gap.get("detail", ""), gap.get("severity", "medium"), gap.get("owners", []))
     for cred in manifest.get("credentials", []):
-        if cred.get("expiry_basis") != "observed":
+        if cred.get("expiry_basis", "observed") != "observed":
             continue
         expires = parse_iso(cred.get("expires"))
         if expires is None:

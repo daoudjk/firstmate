@@ -1084,6 +1084,19 @@ PY
   assert_equals "not-tested" "$(py "$home/view.json" 'd["readiness"]["prerequisites"][4]["state"]')" "not tested differs from unknown"
   assert_equals "reported" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["status"]')" "local artifact is a reported stage"
   assert_equals "None" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["version"]')" "reported artifact does not create an observed deployment"
+  python3 - "$home/receipt.json" "$home/historical-lineage.json" "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+receipt=json.load(open(sys.argv[1])); receipt['id']='old-artifact'; receipt['historical']=True
+receipt.pop('prerequisites'); receipt.pop('resource_identities'); receipt.pop('scope')
+json.dump(receipt,open(sys.argv[2],'w'))
+manifest=json.load(open(sys.argv[3])); artifact=manifest['components'][1]['lineage'][2]
+artifact['evidence']='old-artifact'; artifact['expected']='locally-built-v3'
+json.dump(manifest,open(sys.argv[3],'w'))
+PY
+  map "$home" evidence add example "$home/historical-lineage.json" >/dev/null || fail "historical lineage receipt rejected"
+  view_json "$home"
+  assert_equals "stale" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["status"]')" "historical artifact cannot claim a current mismatch"
+  assert_equals "locally-built-v2" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][2]["reported_version"]')" "historical reported version remains visible"
   python3 - "$home/data/system-map/example/bindings.json" <<'PY'
 import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d['bindings']['worker_host']['instance_id']='i-abcdef01234567890'; json.dump(d,open(p,'w'))
@@ -1260,6 +1273,40 @@ PY
   pass "inferred expiry stays separate from observed alerts and timing"
 }
 
+test_legacy_expiry_basis_retains_observed_dates() {
+  local home
+  home=$(new_home legacy-expiry)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import datetime,json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); now=datetime.datetime.now(datetime.timezone.utc)
+date=lambda days:(now+datetime.timedelta(days=days)).isoformat()
+base={'kind':'ca','purpose':'Test identity','not_before':date(-30),'full_window_seconds':3600,'subjects':['api']}
+manifest['credentials']=[dict(base,id='old-expired',title='Old expired',expires=date(-1)),
+                         dict(base,id='old-expiring',title='Old expiring',expires=date(1)),
+                         dict(base,id='old-future',title='Old future',expires=date(30)),
+                         dict(base,id='unknown-date',title='Unknown date',expires=date(-1),expiry_basis='unknown'),
+                         dict(base,id='inferred-date',title='Inferred date',expected_expires=date(-1),expiry_basis='inferred')]
+json.dump(manifest,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "legacy expiry fixture collection failed"
+  view_json "$home"
+  python3 - "$home/view.json" <<'PY' || fail "legacy and explicit expiry bases were classified incorrectly"
+import json,sys
+view=json.load(open(sys.argv[1])); creds={c['id']:c for c in view['credentials']}
+alerts={d['title'] for d in view['discrepancies'] if d['status']=='open' and d['kind']=='credential'}
+assert alerts=={'Old expired has expired','Old expiring expires within 7 days'},alerts
+assert creds['old-expired']['remaining_seconds']<0
+assert creds['old-expiring']['remaining_seconds']>0
+assert creds['old-future']['full_window']=='fits'
+assert creds['old-future']['latest_safe_start'] is not None
+assert creds['unknown-date']['full_window']=='unknown'
+assert creds['unknown-date']['latest_safe_start'] is None
+assert creds['inferred-date']['full_window']=='unknown'
+assert creds['inferred-date']['latest_safe_start'] is None
+PY
+  pass "legacy expires retain alerts and safe timing while explicit unknown and inferred do not"
+}
+
 test_historical_imported_assessment() {
   local home
   home=$(new_home historical-import)
@@ -1339,6 +1386,7 @@ test_proactive_prerequisites_and_lineage
 test_sample_lifecycle_coverage
 test_credential_full_window
 test_inferred_expiry_does_not_alert
+test_legacy_expiry_basis_retains_observed_dates
 test_historical_imported_assessment
 test_delegated_active_to_idle
 

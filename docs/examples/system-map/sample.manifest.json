@@ -571,24 +571,6 @@
         }
       ],
       "next_check": "Ask the owner for the migration inventory; fresh commissioning does not require this record."
-    },
-    {
-      "id": "submission-proof",
-      "title": "Submission proof",
-      "producer": "console",
-      "resource": "Version-bound submission receipt",
-      "phases": [
-        "submit"
-      ],
-      "baseline": "both",
-      "authorization": "unknown",
-      "owners": [
-        {
-          "role": "owner",
-          "task": "example-owner"
-        }
-      ],
-      "next_check": "Run one submission and import its scoped receipt."
     }
   ],
   "known_gaps": [
