@@ -1630,8 +1630,7 @@ PYTEST
   view_json "$home"
   assert_equals "absent" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "authoritatively missing role remains distinct"
   assert_no_grep 'sts assume-role' "$home/aws.log" "collector never pivots to retry a denied or absent read"
-  # Current immutable read receipts remain separate from original baselines.
-  [ -n "$(find "$home/state/system-map/example/reads" -name '*.json' -print -quit)" ] || fail "private raw read provenance absent"
+  [ ! -e "$home/state/system-map/example/reads" ] || fail "raw access responses must not be archived"
   # Complete only the synthetic declared baselines, then record an actual
   # fixture request through public evidence intake. No AWS request is sent.
   python3 - "$home" <<'PYTEST'
@@ -1673,6 +1672,18 @@ PYTEST
   view_json "$home"
   assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "identical refreshed checks preserve exact receipt binding"
   cp "$home/data/system-map/example/manifest.json" "$home/participant-manifest.json"
+  cp "$home/data/system-map/example/bindings.json" "$home/participant-bindings.json"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); bucket=next(s for s in m['components'] if s['id']=='access-bucket'); bucket['observe'].append({'id':'other-bucket-read','adapter':'aws.s3_policy','binding':'other_bucket','role':'info'}); check=next(d for d in m['access_dependencies'] if d['id']=='bucket-check'); m['access_dependencies'].append(dict(check,id='other-bucket-check',title='Other bucket policy',observation='other-bucket-read')); i=dict(m['interactions'][0],id='wrong-bound-resource',title='Wrong bound bucket policy',evidence='wrong-bound-request'); i['dependencies']=['other-bucket-check' if d=='bucket-check' else d for d in i['dependencies']]; m['interactions'].append(i); p.write_text(json.dumps(m)); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['other_bucket']={'bucket':'other-fixture'}; p.write_text(json.dumps(b))
+PYTEST
+  map "$home" collect >/dev/null || fail "wrong bound resource collection"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" '"resource-policy" in next(i for i in d["access"]["interactions"] if i["id"]=="wrong-bound-resource")["missing_kinds"]')" "same subject with a different bound resource cannot satisfy policy coverage"
+  assert_equals "gaps" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="wrong-bound-resource")["static_coverage"]')" "wrong bound resource cannot report complete coverage"
+  cp "$home/participant-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/participant-bindings.json" "$home/data/system-map/example/bindings.json"
+  map "$home" collect >/dev/null || fail "restore participant bindings"
   python3 - "$home" <<'PYTEST'
 import json,sys,pathlib
 p=pathlib.Path(sys.argv[1])/'data/system-map/example/manifest.json'; m=json.load(open(p)); role=next(d for d in m['access_dependencies'] if d['id']=='role-check'); m['access_dependencies'].append(dict(role,id='wrong-trust-check',title='Other role trust',kind='trust'))

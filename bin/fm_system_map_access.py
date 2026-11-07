@@ -238,8 +238,6 @@ def adapters(result):
 
     def call(runner, service, operation, args):
         data, err = runner.aws_call(service, operation, args)
-        if not err and hasattr(runner, "retain_access_read"):
-            runner.retain_access_read(service, operation, args, data)
         return data, result(err[0], error=err[1]) if err else None
 
     def policy_read(runner, service, operation, args, member):
@@ -393,6 +391,34 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
     deps = {}
     declarations = {s["id"]: s for s in manifest["components"] + manifest["connections"]}
     records = {e["id"]: e for e in evidence if not e.get("invalid")}
+    def same_resource(subject_id, check):
+        subject = declarations[subject_id]
+        version_id = subject.get("version_from")
+        version = next((o for o in subject.get("observe", []) if o["id"] == version_id), None)
+        if not version:
+            return False
+        version_entry = bindings.get("bindings", {}).get(version["binding"])
+        check_entry = bindings.get("bindings", {}).get(check["binding"])
+        if binding_problem(version["adapter"], version_entry) or binding_problem(check["adapter"], check_entry):
+            return False
+        first, second = version["adapter"], check["adapter"]
+        if first == second:
+            return all(version_entry[field] == check_entry[field] for field in BINDING_FIELDS.get(first, {})) if first in BINDING_FIELDS else version_entry == check_entry
+        if {first, second} == {"aws.s3_bucket", "aws.s3_policy"}:
+            return version_entry["bucket"] == check_entry["bucket"]
+        if {first, second} == {"aws.iam_role", "aws.iam_role_access"}:
+            return version_entry["role_name"] == check_entry["role_name"]
+        scope = bindings.get("scope", {})
+        account, region = scope.get("expected_account"), scope.get("region")
+        if not account or not region:
+            return False
+        if first == "aws.sqs_queue" and second == "aws.sqs_policy":
+            url = urllib.parse.urlparse(check_entry["queue_url"])
+            return (url.scheme == "https" and url.hostname == "sqs.%s.amazonaws.com" % region
+                    and url.path == "/%s/%s" % (account, version_entry["queue_name"]))
+        if first == "aws.dynamodb_table" and second == "aws.dynamodb_policy":
+            return check_entry["resource_arn"] == "arn:aws:dynamodb:%s:%s:table/%s" % (region, account, version_entry["table"])
+        return False
     for d in manifest.get("access_dependencies", []):
         obs = observations.get(d.get("observation"))
         imported = False
@@ -443,7 +469,7 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
                               checked_at=(obs or {}).get("checked_at"), scope=(obs or {}).get("scope"),
                               resource_identity=(obs or {}).get("binding_digest"), version=(obs or {}).get("version"),
                               facts=(obs or {}).get("facts", {}), error=(obs or {}).get("error"),
-                              source=(obs or {}).get("adapter"), provenance=named.get("provenance") if imported else None, reads=(obs or {}).get("reads", []))
+                              source=(obs or {}).get("adapter"), provenance=named.get("provenance") if imported else None)
     for d in deps.values():
         if "key_dependency" not in d or d["state"] != "observed":
             continue
@@ -535,6 +561,8 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
             kind = d["kind"]
             declaration = next((o for o in declarations[d["subject"]].get("observe", []) if o["id"] == d.get("observation")), None)
             adapter = declaration["adapter"] if declaration else None
+            if d["subject"] == subject and declaration and not same_resource(subject, declaration):
+                return False
             if kind in ("role-existence", "trust", "identity-policy", "permissions-boundary", "session-policy", "pass-role") and slot != "identity":
                 return False
             if kind == "resource-policy" and slot != "target":
@@ -556,7 +584,7 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
             if kind == "key-policy":
                 if d["subject"] == subject:
                     return adapter in (None, "aws.kms_policy")
-                return any(q["subject"] == item["target"] and q.get("key_dependency") == d["id"] and q["facts"].get("kms_key_identity") for q in linked)
+                return any(q["subject"] == item["target"] and participant_match(q) and q.get("key_dependency") == d["id"] and q["facts"].get("kms_key_identity") for q in linked)
             if kind in ("role-existence", "trust"):
                 return d["subject"] == subject and adapter in (None, "aws.iam_role_access")
             if kind == "resource-policy":

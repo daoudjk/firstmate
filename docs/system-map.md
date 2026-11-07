@@ -158,7 +158,7 @@ Incomplete or malformed role membership and boundary metadata cannot match a rel
 Each attached/inline policy and configured boundary needs a separately declared current policy observation with a matching baseline; listing an attachment never means its document was read.
 The map does not enumerate accounts, collect secret values, pivot identities, simulate requests, grant permissions or retry denied reads under another identity.
 Independent configured checks finish despite another check being missing, denied or incomplete, subject to the existing collection deadline and per-call timeout.
-Access reads retain private immutable request/response provenance and hashes under `state/system-map/<project>/reads/`, which the HTTP server never serves.
+Access reads retain projected facts, hashes, collection scope and observing identity in the current snapshot and successful observation history.
 The view projects document fingerprints, statement Allow/Deny counts, condition operator names and role/policy identity fingerprints, excluding policy values and tag values.
 An account pin verified by the existing caller-identity read and an observing identity fingerprint are required for current access coverage; an unverified successful read stays unknown.
 A missing response member is unknown; absence requires an authoritative provider response.

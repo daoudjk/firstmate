@@ -1230,16 +1230,6 @@ def _collect_locked(home, cfg, project, started):
     verified, scope_error = (None, None)
     if needs_aws:
         verified, scope_error = verify_scope(runner, scope)
-    def retain_access_read(service, operation, args, data):
-        # Only access adapters call this hook, with policy or explicit metadata
-        # projections. Files are private and immutable, never served by HTTP.
-        path = home.pstate(project, "reads", "%s-%s.json" % (time.time_ns(), secrets.token_hex(8)))
-        receipt = {"service": service, "operation": operation, "arguments": args, "response": data,
-                   "observed_at": precise_iso(), "collector_identity": runner.caller_identity}
-        write_json_atomic(path, receipt, create_only=True)
-        runner.access_reads.append({"service": service, "operation": operation, "path": str(path),
-                                    "response_sha256": access.digest(data), "observed_at": receipt["observed_at"]})
-    runner.retain_access_read = retain_access_read
     public_scope = {"region": scope.get("region"), "account_label": scope.get("account_label"), "account_verified": verified, "collector_identity": runner.caller_identity}
     # A test or preview run that substitutes a stand-in for the AWS CLI must say
     # so, so its output can never be mistaken for a live read.
@@ -1255,7 +1245,6 @@ def _collect_locked(home, cfg, project, started):
         for obs in subject.get("observe", []):
             adapter = obs["adapter"]
             entry = entries.get(obs["binding"])
-            runner.access_reads = []
             t0 = time.monotonic()
             problem = binding_problem(adapter, entry)
             if problem:
@@ -1268,8 +1257,6 @@ def _collect_locked(home, cfg, project, started):
                     result = ADAPTERS[adapter](runner, entry)
                 except Exception as exc:  # noqa: BLE001 - adapter bug must not abort the sweep
                     result = _result("error", error=redact("adapter failed: %s" % exc))
-            if runner.access_reads:
-                result["reads"] = runner.access_reads
             result.update({
                 "id": obs["id"], "subject": sid, "subject_type": kind, "adapter": adapter,
                 "role": obs.get("role", "runtime"), "binding": obs["binding"],

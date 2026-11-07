@@ -732,7 +732,7 @@
               h("p", { class: "muted", text: "Source: " + (d.source || "uncollected") + " · Resource: " + d.subject }), stamp(d.checked_at),
               h("p", { text: "Scope / observing identity: " + JSON.stringify(d.scope || {}) }),
               h("p", { class: "mono", text: "Version: " + (d.version || "unknown") }),
-              h("details", null, h("summary", { text: "Observed policy / configuration metadata" }), h("pre", { class: "access-context", text: JSON.stringify(d.facts, null, 2) }), d.reads.map(function (r) { return h("p", { class: "mono", text: r.service + ":" + r.operation + " · " + r.observed_at + " · response " + r.response_sha256 + " · private source " + r.path }); })),
+              h("details", null, h("summary", { text: "Observed policy / configuration metadata" }), h("pre", { class: "access-context", text: JSON.stringify(d.facts, null, 2) })),
               d.provenance ? provenance(d.provenance) : null,
               d.baseline ? h("p", { class: "muted", text: "Baseline: " + d.baseline.source + " · " + d.baseline.observed_at + " · " + (d.baseline.complete ? "complete" : "incomplete") }) : null,
               d.reference_states.length ? h("p", { text: "Trust references: " + d.reference_states.map(function (r) { return r.subject + ": " + r.state + " · created " + (r.created_at || "unknown") + " · propagation unobserved"; }).join("; ") }) : null,
@@ -749,7 +749,10 @@
 
   function renderAccess() {
     var el = $("access"), v = state.view;
-    if (!v || (el.contains(document.activeElement) && document.activeElement.tagName === "INPUT")) return;
+    if (!v) return;
+    var focused = el.contains(document.activeElement) ? document.activeElement.id : null;
+    var start = focused === "access-query" ? document.activeElement.selectionStart : null;
+    var end = focused === "access-query" ? document.activeElement.selectionEnd : null;
     clear(el);
     var access = v.access || { interactions: [], dependencies: [], gaps: [], phases: [] };
     append(el, h("p", { class: "callout", text: access.limit || "No access relationships declared." }));
@@ -776,6 +779,11 @@
     phase.addEventListener("change", filter); query.addEventListener("input", filter);
     append(el, [h("div", { class: "access-filters" }, h("label", { for: "access-phase" }, "Consuming phase", phase), h("label", { for: "access-query" }, "Find access", query)), count, list]);
     filter();
+    if (focused === "access-query" || focused === "access-phase") {
+      var control = focused === "access-query" ? query : phase;
+      control.focus({ preventScroll: true });
+      if (focused === "access-query" && start !== null && end !== null) control.setSelectionRange(start, end);
+    }
   }
 
   function renderCredentials() {
