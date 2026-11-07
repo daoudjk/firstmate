@@ -1563,12 +1563,27 @@ m['access_dependencies']=deps
 m['interactions']=[{'id':'console-request','title':'Console to exact bucket','caller':'access-role','identity':'access-role','target':'access-bucket','operations':['s3:GetObject'],'phases':[m['lifecycle']['phases'][0]['id']],'dependencies':[d['id'] for d in deps],'context':{'transport':'TLS','unknown_condition_context':'explicitly unobserved'},'analysis_scope':'Exact configured action and target; no effective IAM evaluation.','owners':owners,'next_check':'Owner supplies actual current-version request receipt.'}]
 role_request=dict(m['interactions'][0],id='lowercase-role-request',title='Synthetic role-carrying request',operations=['lambda:createfunction'])
 m['interactions'].append(role_request)
+pass_role_request=dict(m['interactions'][0],id='explicit-pass-role-request',title='Synthetic explicit PassRole request',operations=['iam:PassRole'])
+m['interactions'].append(pass_role_request)
 p.write_text(json.dumps(m))
 p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['scope']['expected_account']='123456789012'; b['bindings'].update({'access_role':{'role_name':'fixture-target'},'source_role':{'role_name':'fixture-source'},'access_bucket':{'bucket':'fixture'},'access_inline':{'role_name':'fixture-target','policy_name':'fixture-inline'},'access_managed':{'policy_arn':'arn:aws:iam::123456789012:policy/fixture'},'access_queue':{'queue_url':'https://sqs.us-east-1.amazonaws.com/123456789012/fixture'},'access_table':{'resource_arn':'arn:aws:dynamodb:us-east-1:123456789012:table/fixture'},'access_kms':{'key_id':'fixture-key'},'access_tags':{'task_definition':'fixture:1'}}); p.write_text(json.dumps(b))
 reordered=json.loads(json.dumps(policy)); reordered['Statement'][0]['Principal']['AWS'].reverse(); reordered['Statement'][0]['Action'].reverse()
 responses={'get-bucket-policy':{'Policy':json.dumps(reordered)},'get-role-policy':{'PolicyDocument':policy},'get-policy':{'DefaultVersionId':'v7'},'get-policy-version':{'PolicyDocument':policy},'get-queue-attributes':{'Attributes':{'Policy':json.dumps(policy),'KmsMasterKeyId':'fixture-key','ApproximateNumberOfMessages':'0','ApproximateNumberOfMessagesNotVisible':'0'}},'get-resource-policy':{'Policy':json.dumps(policy)},'get-key-policy':{'Policy':json.dumps(policy)},'describe-task-definition':{'taskDefinition':{'taskDefinitionArn':'arn:aws:ecs:us-east-1:123456789012:task-definition/fixture:1','revision':1},'tags':[{'key':'Owner','value':'fixture'}]},'get-role':{'RoleId':'fixture-role-id','Arn':'arn:aws:iam::123456789012:role/fixture-source','CreateDate':'2026-01-01T00:00:00Z','PermissionsBoundary':None,'AssumeRolePolicyDocument':{'Statement':[{'Effect':'Allow','Principal':{'AWS':'arn:aws:iam::123456789012:role/fixture-source'},'Action':'sts:AssumeRole'}]}},'list-attached-role-policies':{'AttachedPolicies':[{'PolicyArn':'arn:aws:iam::123456789012:policy/fixture','PolicyName':'fixture'}],'IsTruncated':False},'list-role-policies':{'PolicyNames':[],'IsTruncated':False}}
 (h/'aws-state.json').write_text(json.dumps({'responses':responses})); (h/'access-original.json').write_text(json.dumps({'responses':responses}))
 PYTEST
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/manifest.json'; m=json.load(open(p)); m['interactions'][-1]['operations']=['iam:*']; p.write_text(json.dumps(m))
+PYTEST
+  local rc=0
+  out=$(map "$home" validate 2>&1) || rc=$?
+  expect_code 1 "$rc" "wildcard interaction action must be rejected"
+  assert_contains "$out" "operations must be explicit" "wildcard rejection names exact operations"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/manifest.json'; m=json.load(open(p)); m['interactions'][-1]['operations']=['iam:PassRole']; p.write_text(json.dumps(m))
+PYTEST
+  map "$home" validate >/dev/null || fail "explicit PassRole interaction is invalid"
   out=$(map "$home" collect) || fail "access collection: $out"
   view_json "$home"
   assert_equals "representation-only" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="bucket-check")["comparison"]')" "principal/action order is representational"
@@ -1576,6 +1591,7 @@ PYTEST
   assert_equals "unknown" "$(py "$home/view.json" 'd["access"]["interactions"][0]["effective_access"]')" "observed policy does not imply effective permission"
   assert_equals "not-demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "request proof stays separate"
   assert_equals "['pass-role']" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="lowercase-role-request")["missing_kinds"]')" "lowercase role-carrying action requires PassRole coverage"
+  assert_equals "['pass-role']" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="explicit-pass-role-request")["missing_kinds"]')" "explicit iam:PassRole requires its dependency"
   assert_equals "[]" "$(py "$home/view.json" 'd["access"]["interactions"][0]["missing_kinds"]')" "ordinary read needs no PassRole dependency"
   assert_equals "4" "$(py "$home/view.json" 'len([g for g in d["access"]["gaps"] if g.get("state")=="unobserved"])')" "all independent restriction gaps appear together"
   assert_equals "observed" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "exact trust reference is observed"

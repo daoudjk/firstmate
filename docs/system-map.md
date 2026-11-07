@@ -120,7 +120,7 @@ Policy dependencies may name exact literal principal subjects in `references`; t
 The view distinguishes a principal found only in Deny statements as `denied-reference`, without interpreting the policy's effective permissions.
 Missing, denied, stale and wrong-reference principals stay distinct, with creation, identity and version metadata; role presence and a matching reference prove neither AWS propagation nor actual assumption.
 
-Each interaction requires `id`, `title`, `caller` and `target` subject IDs, `identity` (an existing subject or credential ID), nonempty `operations` (`service:operation` strings), `phases`, dependency IDs in `dependencies`, explicit `context`, `analysis_scope`, nonempty `owners`, and `next_check`.
+Each interaction requires `id`, `title`, `caller` and `target` subject IDs, `identity` (an existing subject or credential ID), nonempty `operations` (exact `service:operation` strings without wildcards), `phases`, dependency IDs in `dependencies`, explicit `context`, `analysis_scope`, nonempty `owners`, and `next_check`.
 `context_complete` defaults to false and must be explicitly true for complete declared coverage or request proof.
 Context records the concrete target constraints, service principal, transport, tag and condition inputs that matter; unresolved inputs must be described explicitly rather than assumed satisfied.
 Every interaction exposes missing dependency kinds for role existence, trust, identity/resource/key policies and boundary/session/organization/endpoint restrictions, even when no checks for those kinds were declared.

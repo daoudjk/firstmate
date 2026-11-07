@@ -184,7 +184,7 @@ def validate_manifest(manifest, subjects, credentials, phases, error):
         for key, known in (("phases", phases), ("dependencies", deps)):
             if not isinstance(i.get(key), list) or not i[key] or any(v not in known for v in i[key]):
                 fail(key + " must name declared records")
-        if not isinstance(i.get("operations"), list) or not i["operations"] or any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9.-]+:[A-Za-z0-9*.-]+", v) for v in i["operations"]):
+        if not isinstance(i.get("operations"), list) or not i["operations"] or any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9.-]+:[A-Za-z0-9.-]+", v) for v in i["operations"]):
             fail("operations must be explicit service:operation assertions")
         if "context_complete" in i and not isinstance(i["context_complete"], bool):
             fail("context_complete must be boolean")
