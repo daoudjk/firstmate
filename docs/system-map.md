@@ -132,7 +132,7 @@ An expiry within seven days opens a discrepancy under its existing stable creden
 ## Supervision integration
 
 - **Activity.** Local ship/scout records select active cadence.
-  For persistent secondmates, only a `working` parent status or a delivered, unresolved `fm-pending-reply.v1` request to a recorded secondmate selects it; a later paused, blocked, decision or terminal parent status parks that request.
+  For persistent secondmates, only a `working` parent status or a delivered, unresolved `fm-pending-reply.v1` request to a recorded secondmate selects it; a paused, blocked, decision or terminal parent status with that request's correlation ID at or after delivery parks the request.
   Resolved requests and mate existence alone do not select active cadence.
   The view exposes the selected interval and its task/parent-record reasons, and freshness uses that interval.
   These are bounded local status-tail reads in this home, with no secondmate chat, child-home scan, endpoint query or added collector/watch.

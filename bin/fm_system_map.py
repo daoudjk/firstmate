@@ -1404,7 +1404,7 @@ def credential_view(manifest):
         cycle = current is not None
         known = [parse_iso(c.get("expires")) for c in chain]
         issuer_complete = all(c.get("kind") != "tls-leaf" or c.get("issuer") for c in chain)
-        validity_known = all(c.get("kind") not in ("tls-leaf", "ca") or parse_iso(c.get("not_before")) is not None for c in chain)
+        validity_known = all(parse_iso(c.get("not_before")) is not None for c in chain if len(chain) > 1 or c.get("kind") in ("tls-leaf", "ca"))
         observed = not cycle and issuer_complete and validity_known and all(t is not None and c.get("expiry_basis") == "observed" for c, t in zip(chain, known))
         window = cred.get("full_window_seconds")
         safe = min(known) - window if observed and window else None
@@ -1827,11 +1827,13 @@ def activity_view(home):
     """
     reasons = []
     mates = {}
+    correlated_reports = {}
     for task, values in task_records(home, include_secondmates=True):
         if values.get("kind") != "secondmate":
             reasons.append({"task": task, "source": "local-task"})
             continue
         last = None
+        reports = {}
         try:
             with open(os.path.join(home.state_dir, task + ".status"), "rb") as handle:
                 handle.seek(0, os.SEEK_END)
@@ -1840,9 +1842,13 @@ def activity_view(home):
                     match = re.match(r"^(working|paused|done|failed|blocked|needs-decision)(?: \[(?:corr|key)=[^\[\]:]+\])* \[at=(0|[1-9]\d{0,11})\](?: \[(?:corr|key)=[^\[\]:]+\])*:", line)
                     if match:
                         last = (match[1], int(match[2]))
+                        correlation = re.search(r"\[corr=([0-9A-Fa-f]{16})\]", match[0])
+                        if correlation:
+                            reports[correlation[1].lower()] = last
         except OSError:
             pass
         mates[task] = last
+        correlated_reports[task] = reports
         if last and last[0] == "working":
             reasons.append({"task": task, "source": "parent-report", "at": iso(last[1])})
     if not mates:
@@ -1859,7 +1865,7 @@ def activity_view(home):
         delivered = values.get("delivered_epoch", "")
         if values.get("schema") != "fm-pending-reply.v1" or task not in mates or values.get("phase") == "resolved" or not delivered.isdigit():
             continue
-        last = mates[task]
+        last = correlated_reports[task].get(values.get("corr_id", "").lower())
         if last and last[1] >= int(delivered) and last[0] != "working":
             continue
         if not any(r["task"] == task for r in reasons):

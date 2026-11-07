@@ -1206,8 +1206,21 @@ PY
   assert_equals "None" "$(py "$home/view.json" 'd["credentials"][1]["latest_safe_start"]')" "inferred issuer gives no latest safe start"
   assert_equals "False" "$(py "$home/view.json" '"latest_possible_start" in d["credentials"][1]')" "unknown timing has no speculative upper bound"
   python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; m=json.load(open(p)); issuer=m['credentials'][0]; issuer['expiry_basis']='observed'; issuer.pop('not_before'); issuer.pop('kind'); json.dump(m,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "unlabeled issuer without validity cannot qualify safe timing"
+  assert_equals "None" "$(py "$home/view.json" 'd["credentials"][1]["latest_safe_start"]')" "unlabeled issuer has no safe start"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; m=json.load(open(p)); m['credentials'][0]['kind']='intermediate'; json.dump(m,open(p,'w'))
+PY
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "alternative issuer kind cannot bypass missing validity"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
 import datetime,json,sys
-p=sys.argv[1]; m=json.load(open(p)); m['credentials'][0]['expiry_basis']='observed'; m['credentials'][0]['expires']=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=7200)).isoformat(); json.dump(m,open(p,'w'))
+p=sys.argv[1]; m=json.load(open(p)); m['credentials'][0]['kind']='ca'; m['credentials'][0]['not_before']=(datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(seconds=60)).isoformat(); m['credentials'][0]['expires']=(datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=7200)).isoformat(); json.dump(m,open(p,'w'))
 PY
   view_json "$home"
   assert_equals "fits" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "entire observed chain has full interval"
@@ -1268,6 +1281,15 @@ PY
   printf 'paused [at=%s] [corr=0123456789abcdef]: delegated work parked\n' "$((epoch+3))" >> "$home/state/mate.status"
   view_json "$home"
   assert_equals "False" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "correlated pause returns to idle cadence"
+  printf 'schema=fm-pending-reply.v1\ncorr_id=2222222222222222\ntask_id=mate\nphase=awaiting_report\ndelivered_epoch=%s\n' "$((epoch+3))" > "$home/state/pending-replies/request-new"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "same-second unrelated pause cannot park a new request"
+  printf 'paused [corr=3333333333333333] [at=%s]: another request parked\n' "$((epoch+4))" >> "$home/state/mate.status"
+  view_json "$home"
+  assert_equals "True" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "later unrelated pause cannot park the pending request"
+  printf 'paused [corr=2222222222222222] [at=%s]: pending request parked\n' "$((epoch+4))" >> "$home/state/mate.status"
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" 'd["collector"]["activity"]["active"]')" "matching pause parks the pending request"
   out=$(map "$home" tick)
   assert_contains "$out" 'not due (idle cadence)' "tick uses same derived activity"
   pass "delegated work changes cadence without scanning child fleets"
