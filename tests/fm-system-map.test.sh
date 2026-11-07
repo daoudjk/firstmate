@@ -1674,6 +1674,47 @@ PYTEST
   map "$home" collect >/dev/null || fail "repeat identical read"
   view_json "$home"
   assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "identical refreshed checks preserve exact receipt binding"
+  cp "$home/data/system-map/example/manifest.json" "$home/compatible-manifest.json"
+  cp "$home/data/system-map/example/bindings.json" "$home/compatible-bindings.json"
+  cp "$home/aws-state.json" "$home/compatible-aws-state.json"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); owners=[{'name':'fixture owner'}]; m['access_dependencies'].append({'id':'imds-check','title':'EC2 metadata configuration','kind':'configuration','subject':'worker-host','participant':'caller','observation':'worker-ec2','owners':owners,'next_check':'Read current instance metadata settings.'}); i=dict(m['interactions'][0],id='imds-request',title='EC2 caller to bucket',caller='worker-host'); i.pop('evidence',None); i['dependencies']=i['dependencies']+['imds-check']; m['interactions'].append(i); p.write_text(json.dumps(m)); p=h/'aws-state.json'; s=json.load(open(p)); s['responses']['describe-instances']={'Reservations':[{'Instances':[{'State':{'Name':'running'},'ImageId':'ami-0123456789abcdef0','MetadataOptions':{'HttpEndpoint':'enabled','HttpTokens':'required','HttpPutResponseHopLimit':1}}]}]}; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "EC2 configuration collection"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); snap=json.load(open(h/'state/system-map/example/snapshot.json')); f=snap['observations']['worker-ec2']['facts']; d=next(d for d in m['access_dependencies'] if d['id']=='imds-check'); d['baseline']={'format':'configuration','complete':True,'sha256':f['sha256'],'raw_sha256':f['raw_sha256'],'source':'fixture EC2 metadata read','observed_at':snap['finished_at']}; p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="imds-check")["comparison"]')" "complete EC2 metadata settings match baseline"
+  assert_equals "False" "$(py "$home/view.json" '"imds-check" in next(i for i in d["access"]["interactions"] if i["id"]=="imds-request")["unmatched_dependencies"]')" "EC2 configuration read covers its bound caller"
+  cp "$home/compatible-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/compatible-bindings.json" "$home/data/system-map/example/bindings.json"
+  cp "$home/compatible-aws-state.json" "$home/aws-state.json"
+  map "$home" collect >/dev/null || fail "restore EC2 configuration fixture"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); role=next(s for s in m['components'] if s['id']=='access-role'); role['observe'].append({'id':'same-role-inline-read','adapter':'aws.iam_inline_policy','binding':'same_role_inline','role':'info'}); d=dict(next(d for d in m['access_dependencies'] if d['id']=='inline-check'),id='same-role-inline-check',title='Same role inline policy',subject='access-role',observation='same-role-inline-read'); m['access_dependencies'].append(d); m['interactions'][0]['dependencies'].append('same-role-inline-check'); p.write_text(json.dumps(m)); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['same_role_inline']={'role_name':'fixture-target','policy_name':'fixture-inline'}; p.write_text(json.dumps(b))
+PYTEST
+  map "$home" collect >/dev/null || fail "same-role inline policy collection"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); snap=json.load(open(h/'state/system-map/example/snapshot.json')); f=snap['observations']['same-role-inline-read']['facts']; d=next(d for d in m['access_dependencies'] if d['id']=='same-role-inline-check'); d['baseline']={'format':'policy','complete':True,'sha256':f['sha256'],'raw_sha256':f['raw_sha256'],'source':'fixture inline policy read','observed_at':snap['finished_at']}; p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "False" "$(py "$home/view.json" '"same-role-inline-check" in d["access"]["interactions"][0]["unmatched_dependencies"]')" "complete same-role inventory covers its inline policy"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['same_role_inline']['role_name']='fixture-other'; p.write_text(json.dumps(b))
+PYTEST
+  map "$home" collect >/dev/null || fail "wrong-role inline policy collection"
+  view_json "$home"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="same-role-inline-check")["comparison"]')" "wrong-role document can still match its policy baseline"
+  assert_equals "True" "$(py "$home/view.json" '"same-role-inline-check" in d["access"]["interactions"][0]["unmatched_dependencies"]')" "wrong-role inline policy cannot cover identity"
+  cp "$home/compatible-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/compatible-bindings.json" "$home/data/system-map/example/bindings.json"
+  map "$home" collect >/dev/null || fail "restore inline policy fixture"
   cp "$home/data/system-map/example/manifest.json" "$home/pass-role-manifest.json"
   python3 - "$home" <<'PYTEST'
 import json,pathlib,sys
@@ -1905,6 +1946,17 @@ PYTEST
   view_json "$home"
   assert_equals "imported" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="endpoint-policy")["coverage"]')" "qualified owner check is labeled imported"
   assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="endpoint-policy")["comparison"]')" "owner check preserves exact baseline digest"
+  cp "$home/data/system-map/example/manifest.json" "$home/imported-format-manifest.json"
+  python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); d=dict(next(d for d in m['access_dependencies'] if d['id']=='endpoint-policy'),id='wrong-format-trust',title='Configuration mislabeled as trust',kind='trust',evidence='fixture-wrong-format'); m['access_dependencies'].append(d); m['interactions'][0]['dependencies'].append('wrong-format-trust'); p.write_text(json.dumps(m)); r=json.load(open(h/'owner-check.json')); r['id']='fixture-wrong-format'; r['access_checks']={'wrong-format-trust':r['access_checks']['endpoint-policy']}; (h/'wrong-format-check.json').write_text(json.dumps(r))
+PYTEST
+  map "$home" evidence add example "$home/wrong-format-check.json" >/dev/null || fail "wrong-format owner check intake"
+  view_json "$home"
+  assert_equals "imported" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="wrong-format-trust")["coverage"]')" "wrong-format owner receipt remains visible"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="wrong-format-trust")["comparison"]')" "wrong-format receipt matches its own declared baseline"
+  assert_equals "True" "$(py "$home/view.json" '"wrong-format-trust" in d["access"]["interactions"][0]["unmatched_dependencies"]')" "configuration receipt cannot satisfy trust coverage"
+  cp "$home/imported-format-manifest.json" "$home/data/system-map/example/manifest.json"
   python3 - "$home" <<'PYTEST'
 import json,sys,pathlib
 h=pathlib.Path(sys.argv[1]);p=h/'owner-check.json';r=json.load(open(p));r['id']='fixture-wrong-binding';r['access_checks']['endpoint-policy']['binding_digest']='2'*64;p.write_text(json.dumps(r));p=h/'data/system-map/example/manifest.json';m=json.load(open(p));next(d for d in m['access_dependencies'] if d['id']=='endpoint-policy')['evidence']='fixture-wrong-binding';p.write_text(json.dumps(m))

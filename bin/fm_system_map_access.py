@@ -38,8 +38,22 @@ OBSERVATION_KINDS = {
     "organization-policy": set(),
     "endpoint-policy": set(),
     "pass-role": {"aws.iam_inline_policy", "aws.iam_managed_policy"},
-    "configuration": set(),
+    "configuration": {"aws.ec2_instance", "aws.ec2_tagged_instances"},
     "tags": {"aws.ecs_task_metadata"},
+}
+IMPORTED_KIND_FORMATS = {
+    "role-existence": {"role"},
+    "trust": {"policy"},
+    "identity-policy": {"policy"},
+    "resource-policy": {"policy"},
+    "key-policy": {"policy"},
+    "permissions-boundary": {"policy"},
+    "session-policy": {"policy"},
+    "organization-policy": {"policy"},
+    "endpoint-policy": {"policy", "configuration"},
+    "pass-role": {"policy"},
+    "configuration": {"configuration"},
+    "tags": {"tags"},
 }
 
 
@@ -579,7 +593,10 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
             adapter = declaration["adapter"] if declaration else None
             if adapter and adapter not in OBSERVATION_KINDS[kind]:
                 return False
-            if d["subject"] == subject and declaration and not same_resource(subject, declaration):
+            if d.get("source") == "owner.receipt" and (d["facts"].get("format") not in IMPORTED_KIND_FORMATS[kind] or (d.get("baseline") or {}).get("format") not in IMPORTED_KIND_FORMATS[kind]):
+                return False
+            policy_document = kind in ("identity-policy", "pass-role", "permissions-boundary") and adapter in ("aws.iam_inline_policy", "aws.iam_managed_policy")
+            if d["subject"] == subject and declaration and not policy_document and not same_resource(subject, declaration):
                 return False
             if kind in ("role-existence", "trust", "identity-policy", "permissions-boundary", "session-policy", "pass-role") and slot != "identity":
                 return False
