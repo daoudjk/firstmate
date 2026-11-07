@@ -1551,7 +1551,7 @@ components.append({"id":"trust-source","title":"Required trust principal","obser
 for oid,adapter,binding in [('access-bucket','aws.s3_policy','access_bucket'),('access-inline','aws.iam_inline_policy','access_inline'),('access-managed','aws.iam_managed_policy','access_managed'),('access-queue','aws.sqs_policy','access_queue'),('access-table','aws.dynamodb_policy','access_table'),('access-key','aws.kms_policy','access_kms'),('access-tags','aws.ecs_task_metadata','access_tags')]:
  components.append({'id':oid,'title':oid,'observe':[{'id':oid+'-read','adapter':adapter,'binding':binding,'role':'version'}],'version_from':oid+'-read'})
 deps=[]
-for did,kind,subject in [('bucket-check','resource-policy','access-bucket'),('trust-check','trust','access-role'),('role-check','role-existence','trust-source'),('inline-check','identity-policy','access-inline'),('key-check','key-policy','access-key'),('queue-check','resource-policy','access-queue'),('tags-check','tags','access-tags')]:
+for did,kind,subject in [('bucket-check','resource-policy','access-bucket'),('trust-check','trust','access-role'),('role-check','role-existence','trust-source'),('inline-check','identity-policy','access-inline'),('managed-check','identity-policy','access-managed'),('boundary-check','permissions-boundary','access-managed'),('key-check','key-policy','access-key'),('queue-check','resource-policy','access-queue'),('tags-check','tags','access-tags')]:
  d={'id':did,'title':did,'kind':kind,'subject':subject,'observation':next(c for c in components if c['id']==subject)['observe'][0]['id'],'baseline':dict(base),'owners':owners,'next_check':'Read exact configured metadata with existing identity.'}
  if did=='trust-check': d['references']=['trust-source']
  if did=='queue-check': d['key_dependency']='key-check'; d['baseline']['encryption_identity']=sha({'KmsMasterKeyId':'fixture-key','SqsManagedSseEnabled':None})
@@ -1566,7 +1566,7 @@ m['interactions'].append(role_request)
 p.write_text(json.dumps(m))
 p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['scope']['expected_account']='123456789012'; b['bindings'].update({'access_role':{'role_name':'fixture-target'},'source_role':{'role_name':'fixture-source'},'access_bucket':{'bucket':'fixture'},'access_inline':{'role_name':'fixture-target','policy_name':'fixture-inline'},'access_managed':{'policy_arn':'arn:aws:iam::123456789012:policy/fixture'},'access_queue':{'queue_url':'https://sqs.us-east-1.amazonaws.com/123456789012/fixture'},'access_table':{'resource_arn':'arn:aws:dynamodb:us-east-1:123456789012:table/fixture'},'access_kms':{'key_id':'fixture-key'},'access_tags':{'task_definition':'fixture:1'}}); p.write_text(json.dumps(b))
 reordered=json.loads(json.dumps(policy)); reordered['Statement'][0]['Principal']['AWS'].reverse(); reordered['Statement'][0]['Action'].reverse()
-responses={'get-bucket-policy':{'Policy':json.dumps(reordered)},'get-role-policy':{'PolicyDocument':policy},'get-policy':{'DefaultVersionId':'v7'},'get-policy-version':{'PolicyDocument':policy},'get-queue-attributes':{'Attributes':{'Policy':json.dumps(policy),'KmsMasterKeyId':'fixture-key','ApproximateNumberOfMessages':'0','ApproximateNumberOfMessagesNotVisible':'0'}},'get-resource-policy':{'Policy':json.dumps(policy)},'get-key-policy':{'Policy':json.dumps(policy)},'describe-task-definition':{'taskDefinition':{'taskDefinitionArn':'arn:aws:ecs:us-east-1:123456789012:task-definition/fixture:1','revision':1},'tags':[{'key':'Owner','value':'fixture'}]},'get-role':{'RoleId':'fixture-role-id','Arn':'arn:aws:iam::123456789012:role/fixture-source','CreateDate':'2026-01-01T00:00:00Z','PermissionsBoundary':None,'AssumeRolePolicyDocument':{'Statement':[{'Effect':'Allow','Principal':{'AWS':'arn:aws:iam::123456789012:role/fixture-source'},'Action':'sts:AssumeRole'}]}},'list-attached-role-policies':{'AttachedPolicies':[],'IsTruncated':False},'list-role-policies':{'PolicyNames':[],'IsTruncated':False}}
+responses={'get-bucket-policy':{'Policy':json.dumps(reordered)},'get-role-policy':{'PolicyDocument':policy},'get-policy':{'DefaultVersionId':'v7'},'get-policy-version':{'PolicyDocument':policy},'get-queue-attributes':{'Attributes':{'Policy':json.dumps(policy),'KmsMasterKeyId':'fixture-key','ApproximateNumberOfMessages':'0','ApproximateNumberOfMessagesNotVisible':'0'}},'get-resource-policy':{'Policy':json.dumps(policy)},'get-key-policy':{'Policy':json.dumps(policy)},'describe-task-definition':{'taskDefinition':{'taskDefinitionArn':'arn:aws:ecs:us-east-1:123456789012:task-definition/fixture:1','revision':1},'tags':[{'key':'Owner','value':'fixture'}]},'get-role':{'RoleId':'fixture-role-id','Arn':'arn:aws:iam::123456789012:role/fixture-source','CreateDate':'2026-01-01T00:00:00Z','PermissionsBoundary':None,'AssumeRolePolicyDocument':{'Statement':[{'Effect':'Allow','Principal':{'AWS':'arn:aws:iam::123456789012:role/fixture-source'},'Action':'sts:AssumeRole'}]}},'list-attached-role-policies':{'AttachedPolicies':[{'PolicyArn':'arn:aws:iam::123456789012:policy/fixture','PolicyName':'fixture'}],'IsTruncated':False},'list-role-policies':{'PolicyNames':[],'IsTruncated':False}}
 (h/'aws-state.json').write_text(json.dumps({'responses':responses})); (h/'access-original.json').write_text(json.dumps({'responses':responses}))
 PYTEST
   out=$(map "$home" collect) || fail "access collection: $out"
@@ -1626,6 +1626,7 @@ for dep in m['access_dependencies']:
  if dep.get('observation'):
   facts=snap['observations'][dep['observation']]['facts']; dep['baseline']={'format':facts['format'],'complete':True,'sha256':facts['sha256'],'raw_sha256':facts['raw_sha256'],'source':'fixture exact read','observed_at':snap['finished_at']}
   if dep['id']=='queue-check': dep['baseline']['encryption_identity']=facts['encryption_identity']
+  if dep['id'] in ('trust-check','role-check'): dep['baseline']['relationships_sha256']=facts['relationships_sha256']
  else:
   dep['applicability']='not-applicable'; dep['reason']='Synthetic fixture with no restriction in this declared class; no production claim.'
 p.write_text(json.dumps(m))
@@ -1645,6 +1646,36 @@ PYTEST
   map "$home" collect >/dev/null || fail "repeat identical read"
   view_json "$home"
   assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "identical refreshed checks preserve exact receipt binding"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'aws-state.json'; s=json.load(open(p)); s['responses']['list-attached-role-policies']['AttachedPolicies']=[]; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "removed role policy attachment"
+  view_json "$home"
+  assert_equals "configuration-drift" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["comparison"]')" "removed role attachment drifts despite unchanged trust"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="managed-check")["comparison"]')" "readable detached policy does not cover role membership"
+  assert_equals "gaps" "$(py "$home/view.json" 'd["access"]["interactions"][0]["static_coverage"]')" "removed role attachment invalidates declared coverage"
+  assert_equals "stale" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "removed role attachment invalidates request proof"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'aws-state.json'; s=json.load(open(h/'access-original.json')); s['responses']['get-role']['PermissionsBoundary']={'PermissionsBoundaryArn':'arn:aws:iam::123456789012:policy/fixture','PermissionsBoundaryType':'PermissionsBoundary'}; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "changed role boundary"
+  view_json "$home"
+  assert_equals "configuration-drift" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["comparison"]')" "changed boundary drifts despite readable replacement document"
+  assert_equals "0" "$(py "$home/view.json" 'len(next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["unobserved_policy_documents"])')" "readable boundary document cannot hide relationship drift"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'aws-state.json'; s=json.load(open(h/'access-original.json')); s['responses']['list-attached-role-policies']['IsTruncated']=True; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "incomplete role inventory"
+  view_json "$home"
+  assert_equals "insufficient-evidence" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["comparison"]')" "incomplete attachment inventory cannot match relationship baseline"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); (h/'aws-state.json').write_text((h/'access-original.json').read_text())
+PYTEST
+  map "$home" collect >/dev/null || fail "restore role relationships"
   python3 - "$home" <<'PYTEST'
 import json,sys,pathlib
 p=pathlib.Path(sys.argv[1])/'aws-state.json'; s=json.load(open(p)); s['responses']['get-queue-attributes']['Attributes']['KmsMasterKeyId']='replacement-key'; p.write_text(json.dumps(s))

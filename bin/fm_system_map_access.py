@@ -146,10 +146,10 @@ def validate_manifest(manifest, subjects, credentials, phases, error):
             fail("invalid evidence reference")
         if "baseline" in d:
             b = d["baseline"]
-            fields(b, {"format", "complete", "sha256", "raw_sha256", "encryption_identity", "source", "observed_at"})
+            fields(b, {"format", "complete", "sha256", "raw_sha256", "encryption_identity", "relationships_sha256", "source", "observed_at"})
             if b.get("format") not in ("policy", "configuration", "tags", "role") or not isinstance(b.get("complete"), bool):
                 fail("baseline requires format and explicit completeness")
-            for k in ("sha256", "raw_sha256", "encryption_identity"):
+            for k in ("sha256", "raw_sha256", "encryption_identity", "relationships_sha256"):
                 if k in b and not re.fullmatch(r"[0-9a-f]{64}", str(b[k])):
                     fail("invalid baseline digest")
             if b["complete"] and "sha256" not in b:
@@ -210,9 +210,9 @@ def validate_receipt(record, error):
         if any(not re.fullmatch(r"[0-9a-f]{64}", str(check.get(k))) for k in ("binding_digest", "observer_identity")):
             raise error("evidence.access_checks: exact binding and observer identity required")
         facts = check.get("facts", {})
-        if not isinstance(facts, dict) or set(facts) - {"format", "complete", "sha256", "raw_sha256", "encryption_identity", "kms_key_identity", "policy_identity", "principal_identities", "allow_principal_identities", "deny_principal_identities", "allow_statements", "deny_statements", "condition_operators"}:
+        if not isinstance(facts, dict) or set(facts) - {"format", "complete", "sha256", "raw_sha256", "encryption_identity", "relationships_sha256", "kms_key_identity", "policy_identity", "principal_identities", "allow_principal_identities", "deny_principal_identities", "allow_statements", "deny_statements", "condition_operators"}:
             raise error("evidence.access_checks: only safe policy/configuration metadata allowed")
-        for key in ("sha256", "raw_sha256", "encryption_identity", "kms_key_identity", "policy_identity"):
+        for key in ("sha256", "raw_sha256", "encryption_identity", "relationships_sha256", "kms_key_identity", "policy_identity"):
             if key in facts and not re.fullmatch(r"[0-9a-f]{64}", str(facts[key])):
                 raise error("evidence.access_checks: metadata fingerprints must be digests")
         for key in ("principal_identities", "allow_principal_identities", "deny_principal_identities"):
@@ -258,10 +258,12 @@ def adapters(result):
             return err
         if not data.get("RoleId") or not data.get("Arn") or not data.get("CreateDate"):
             return unknown("Role identity or creation metadata missing.")
+        boundary = data.get("PermissionsBoundary")
+        boundary_valid = boundary is None or (isinstance(boundary, dict) and isinstance(boundary.get("PermissionsBoundaryArn"), str) and bool(boundary["PermissionsBoundaryArn"]))
         facts = {"role_identity": digest(data["RoleId"]), "role_arn_identity": digest(data["Arn"]), "created_at": data["CreateDate"],
-                 "role_exists": True, "trust_configured": True, "boundary_policy_identity": digest(data["PermissionsBoundary"]["PermissionsBoundaryArn"]) if (data.get("PermissionsBoundary") or {}).get("PermissionsBoundaryArn") else None,
-                 "boundary": "unknown" if "PermissionsBoundary" not in data else "configured" if data["PermissionsBoundary"] else "not-configured",
-                 "boundary_identity": digest(data["PermissionsBoundary"]) if data.get("PermissionsBoundary") else None,
+                 "role_exists": True, "trust_configured": True, "boundary_policy_identity": digest(boundary["PermissionsBoundaryArn"]) if boundary_valid and boundary else None,
+                 "boundary": "unknown" if "PermissionsBoundary" not in data or not boundary_valid else "configured" if boundary else "not-configured",
+                 "boundary_identity": digest(boundary) if boundary_valid and boundary else None,
                  "propagation": "unobserved", "assumption": "not-demonstrated"}
         if data.get("AssumeRolePolicyDocument") is None:
             return unknown("Trust policy member missing; role existence alone is insufficient.")
@@ -269,7 +271,7 @@ def adapters(result):
             facts.update(policy_facts(data["AssumeRolePolicyDocument"]))
         except (ValueError, TypeError, KeyError):
             return unknown("Trust policy is incomplete or invalid.")
-        if "PermissionsBoundary" not in data:
+        if "PermissionsBoundary" not in data or not boundary_valid:
             facts["complete"] = False
         # Enumerate attachment and inline names only; fetch documents through
         # separately configured observations. Fail just this check on partials.
@@ -278,13 +280,22 @@ def adapters(result):
             if err:
                 facts[op] = {"outcome": err["outcome"], "error": err["error"]}
                 facts["complete"] = False
-            elif member not in listing or listing.get("IsTruncated") is not False or listing.get("NextToken") or listing.get("Marker"):
+            elif not isinstance(listing, dict) or member not in listing or listing.get("IsTruncated") is not False or listing.get("NextToken") or listing.get("Marker"):
                 facts[op] = {"outcome": "unknown", "error": "Incomplete policy inventory; bounded page was not complete."}
                 facts["complete"] = False
             else:
                 values = listing[member]
-                identities = [digest(v.get("PolicyArn")) for v in values] if member == "AttachedPolicies" else [digest({"role": b["role_name"], "policy": v}) for v in values]
-                facts[op] = {"outcome": "ok", "count": len(values), "policy_identities": identities, "sha256": digest(sorted(values, key=lambda v: json.dumps(v, sort_keys=True)))}
+                valid = isinstance(values, list) and all(isinstance(v, dict) and isinstance(v.get("PolicyArn"), str) and v["PolicyArn"] for v in values) if member == "AttachedPolicies" else isinstance(values, list) and all(isinstance(v, str) and v for v in values)
+                if not valid:
+                    facts[op] = {"outcome": "unknown", "error": "Policy inventory entries are incomplete or malformed."}
+                    facts["complete"] = False
+                    continue
+                identities = [digest(v["PolicyArn"]) for v in values] if member == "AttachedPolicies" else [digest({"role": b["role_name"], "policy": v}) for v in values]
+                facts[op] = {"outcome": "ok", "count": len(values), "policy_identities": sorted(identities), "sha256": digest(sorted(identities))}
+        if facts["complete"]:
+            facts["relationships_sha256"] = digest({"attached": facts["list-attached-role-policies"]["sha256"],
+                                                    "inline": facts["list-role-policies"]["sha256"],
+                                                    "boundary": facts["boundary_identity"]})
         # Identity/trust remains observed while the attached inventory has its
         # own incomplete state. Never infer that all attached documents were read.
         return result("ok", state="observed", facts=facts, version=digest({k: facts[k] for k in ("role_identity", "sha256", "boundary_identity", "list-attached-role-policies", "list-role-policies")}))
@@ -351,19 +362,25 @@ def adapters(result):
     return dict(zip(BINDING_FIELDS, (role, inline, managed, bucket, queue, table, key, task)))
 
 
-def compare_baseline(baseline, observation, queue=False):
+def compare_baseline(baseline, observation, queue=False, role=False):
     if not baseline or not baseline.get("complete"):
         return "incomplete-baseline"
     if queue and not baseline.get("encryption_identity"):
+        return "incomplete-baseline"
+    if role and not baseline.get("relationships_sha256"):
         return "incomplete-baseline"
     facts = observation.get("facts", {})
     if observation.get("outcome") != "ok" or facts.get("complete") is not True or not facts.get("sha256") or baseline.get("format") != facts.get("format"):
         return "insufficient-evidence"
     if queue and not facts.get("encryption_identity"):
         return "insufficient-evidence"
+    if role and not facts.get("relationships_sha256"):
+        return "insufficient-evidence"
     if baseline["sha256"] != facts["sha256"]:
         return "policy-drift" if facts["format"] == "policy" else "configuration-drift"
     if queue and baseline["encryption_identity"] != facts["encryption_identity"]:
+        return "configuration-drift"
+    if role and baseline["relationships_sha256"] != facts["relationships_sha256"]:
         return "configuration-drift"
     if baseline.get("raw_sha256") and baseline["raw_sha256"] != facts.get("raw_sha256"):
         return "representation-only"
@@ -417,7 +434,8 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
                 state = "unknown"
         declaration = next((o for o in declarations[d["subject"]].get("observe", []) if o["id"] == d.get("observation")), None)
         queue = bool(declaration and declaration["adapter"] == "aws.sqs_policy")
-        baseline = "not-applicable" if state == "not-applicable" else compare_baseline(d.get("baseline"), obs or {}, queue)
+        role = bool(declaration and declaration["adapter"] == "aws.iam_role_access")
+        baseline = "not-applicable" if state == "not-applicable" else compare_baseline(d.get("baseline"), obs or {}, queue, role)
         deps[d["id"]] = dict(d, state=state, comparison=baseline,
                               coverage="not-required" if state == "not-applicable" else "imported" if imported else "observed" if obs else "missing-evidence" if d.get("evidence") else "uncollected" if d.get("observation") else "unmapped",
                               checked_at=(obs or {}).get("checked_at"), scope=(obs or {}).get("scope"),
