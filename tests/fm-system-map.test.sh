@@ -1534,7 +1534,7 @@ PY
 }
 
 test_access_relationships_and_conservative_comparison() {
-  local home out
+  local home out before after
   home=$(new_home access)
   python3 - "$home" <<'PYTEST'
 import json,sys,hashlib
@@ -1662,6 +1662,60 @@ PYTEST
   map "$home" collect >/dev/null || fail "repeat identical read"
   view_json "$home"
   assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "identical refreshed checks preserve exact receipt binding"
+  cp "$home/data/system-map/example/manifest.json" "$home/closure-manifest.json"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'data/system-map/example/manifest.json'; m=json.load(open(p)); m['interactions'][0]['dependencies']=[d for d in m['interactions'][0]['dependencies'] if d not in ('managed-check','key-check')]; p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "['key-check', 'managed-check']" "$(py "$home/view.json" 'd["access"]["interactions"][0]["unlinked_dependencies"]')" "role and queue policy checks remain required when omitted"
+  assert_equals "gaps" "$(py "$home/view.json" 'd["access"]["interactions"][0]["static_coverage"]')" "globally observed checks do not fill missing interaction links"
+  assert_equals "stale" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "omitted checks invalidate old request proof"
+  before=$(py "$home/view.json" 'd["access"]["interactions"][0]["assertion_digest"]')
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'aws-state.json'; s=json.load(open(p)); policy=json.loads(s['responses']['get-key-policy']['Policy']); policy['Statement'][0]['Condition']['Bool']['aws:SecureTransport']='true'; s['responses']['get-key-policy']['Policy']=json.dumps(policy); p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "changed omitted key policy"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); facts=json.load(open(h/'state/system-map/example/snapshot.json'))['observations']['access-key-read']['facts']; d=next(d for d in m['access_dependencies'] if d['id']=='key-check'); d['baseline'].update(sha256=facts['sha256'],raw_sha256=facts['raw_sha256']); p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="queue-check")["comparison"]')" "queue check remains green after key baseline review"
+  after=$(py "$home/view.json" 'd["access"]["interactions"][0]["assertion_digest"]')
+  assert_not_equals "$before" "$after" "omitted key-policy version enters request assertion"
+  before=$after
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'aws-state.json'; s=json.load(open(p)); s['responses']['get-policy-version']['PolicyDocument']['Statement'][0]['Condition']['Bool']['aws:SecureTransport']='true'; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "changed omitted role policy"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); facts=json.load(open(h/'state/system-map/example/snapshot.json'))['observations']['access-managed-read']['facts'];
+for d in m['access_dependencies']:
+ if d['id'] in ('managed-check','boundary-check'): d['baseline'].update(sha256=facts['sha256'],raw_sha256=facts['raw_sha256'])
+p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["comparison"]')" "role inventory remains green after policy document review"
+  after=$(py "$home/view.json" 'd["access"]["interactions"][0]["assertion_digest"]')
+  assert_not_equals "$before" "$after" "omitted attached-policy version enters request assertion"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'aws-state.json'; s=json.load(open(p)); s['deny']=['kms']; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "denied required key policy"
+  view_json "$home"
+  assert_equals "denied" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="key-check")["state"]')" "denied transitive key check remains denied"
+  assert_equals "gaps" "$(py "$home/view.json" 'd["access"]["interactions"][0]["static_coverage"]')" "denied transitive key check cannot complete coverage"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["access"]["interactions"][0]["effective_access"]')" "denied transitive coverage never becomes effective access"
+  cp "$home/closure-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/access-original.json" "$home/aws-state.json"
+  map "$home" collect >/dev/null || fail "restore interaction closure fixture"
+  view_json "$home"
+  assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "restored links and versions requalify the original receipt"
   python3 - "$home" <<'PYTEST'
 import json,sys,pathlib
 p=pathlib.Path(sys.argv[1])/'aws-state.json'; s=json.load(open(p)); s['responses']['list-attached-role-policies']['AttachedPolicies']=[]; p.write_text(json.dumps(s))

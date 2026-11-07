@@ -124,6 +124,8 @@ Each interaction requires `id`, `title`, `caller` and `target` subject IDs, `ide
 `context_complete` defaults to false and must be explicitly true for complete declared coverage or request proof.
 Context records the concrete target constraints, service principal, transport, tag and condition inputs that matter; unresolved inputs must be described explicitly rather than assumed satisfied.
 Every interaction exposes missing dependency kinds for role existence, trust, identity/resource/key policies and boundary/session/organization/endpoint restrictions, even when no checks for those kinds were declared.
+Its required dependency closure includes the attached, inline and boundary policy checks identified by linked role reads, plus the declared key-policy check when a linked SQS read observes an active KMS key.
+Checks omitted from the interaction's declared `dependencies` remain explicit gaps even when their documents were observed elsewhere; all required checks enter the request assertion, so a changed check invalidates earlier proof.
 Incomplete context and missing or stale request receipts appear in the consolidated gap list, with shared dependency gaps listed once and linked to every affected interaction.
 An `iam:PassRole` assertion or a known role-carrying request (`lambda:CreateFunction`, `lambda:UpdateFunctionConfiguration`, `scheduler:CreateSchedule`, `scheduler:UpdateSchedule`, `ecs:RegisterTaskDefinition`, `ecs:RunTask`, `ec2:RunInstances`) additionally requires a `pass-role` dependency, including an explicit not-applicable reason when no role is passed.
 Action spelling is compared without case for this dependency check.

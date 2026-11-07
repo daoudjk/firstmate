@@ -423,7 +423,7 @@
     row("Proof", "proof", L.proof);
     append(el, dl);
     var access = v.access || { interactions: [], dependencies: [] };
-    var related = access.interactions.filter(function (i) { return i.caller === sub.id || i.target === sub.id || i.identity === sub.id || i.dependencies.some(function (id) { return access.dependencies.some(function (d) { return d.id === id && d.subject === sub.id; }); }); });
+    var related = access.interactions.filter(function (i) { return i.caller === sub.id || i.target === sub.id || i.identity === sub.id || i.required_dependencies.some(function (id) { return access.dependencies.some(function (d) { return d.id === id && d.subject === sub.id; }); }); });
     if (related.length) append(el, [h("h3", { class: "h3", text: "Required access" }), accessList(related), h("button", { type: "button", class: "btn", text: "Open consolidated access coverage", onclick: function () { showTab("access", true); } })]);
     if (sub.lineage && sub.lineage.length) append(el, lineageList(sub.lineage));
     if (sub.live_verified !== null && sub.live_verified !== undefined) {
@@ -717,7 +717,7 @@
       return v.subjects[sid] ? h("button", { type: "button", class: "btn btn--link", text: v.subjects[sid].title, onclick: function () { showTab("map", false); select(sid, true); } }) : h("span", { text: sid });
     }
     return h("ul", { class: "list access-list" }, items.map(function (i) {
-      var deps = i.dependencies.map(function (id) { return access.dependencies.find(function (d) { return d.id === id; }); });
+      var deps = i.required_dependencies.map(function (id) { return access.dependencies.find(function (d) { return d.id === id; }); });
       return h("li", { class: "item" }, h("h3", { class: "h3", text: i.title }),
         h("p", null, subjectLink(i.caller), " through ", subjectLink(i.identity), " to ", subjectLink(i.target)),
         h("p", { class: "mono", text: i.operations.join(", ") }),
@@ -726,7 +726,7 @@
         i.missing_kinds.length ? h("p", { class: "callout", text: "Unmapped checks: " + i.missing_kinds.join(", ") }) : null,
         h("details", null, h("summary", { text: "Policy, trust and configuration checks (" + deps.length + ")" }),
           h("ul", { class: "list" }, deps.map(function (d) {
-            return h("li", { class: "item" }, h("strong", { text: d.title }), " · ", d.kind,
+            return h("li", { class: "item" }, h("strong", { text: d.title }), " · ", d.kind, i.unlinked_dependencies.includes(d.id) ? " · not linked to interaction" : "",
               h("p", null, chip("prerequisite", d.state), " · ", d.comparison.replace(/-/g, " "), " · ", d.coverage),
               h("p", { text: d.reason || d.error || "Baseline observation only; no effective permission conclusion." }),
               h("p", { class: "muted", text: "Source: " + (d.source || "uncollected") + " · Resource: " + d.subject }), stamp(d.checked_at),
