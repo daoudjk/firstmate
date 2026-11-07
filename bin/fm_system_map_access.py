@@ -419,6 +419,9 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
         if first == "aws.dynamodb_table" and second == "aws.dynamodb_policy":
             return check_entry["resource_arn"] == "arn:aws:dynamodb:%s:%s:table/%s" % (region, account, version_entry["table"])
         return False
+    def bound_role_read(subject_id):
+        declared = [o for o in declarations[subject_id].get("observe", []) if o["adapter"] == "aws.iam_role_access" and same_resource(subject_id, o)]
+        return observations.get(declared[0]["id"], {}) if len(declared) == 1 else {}
     for d in manifest.get("access_dependencies", []):
         obs = observations.get(d.get("observation"))
         imported = False
@@ -495,8 +498,7 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
         d["unobserved_policy_documents"] = [pid for pid in required if pid not in observed_policies]
         d["reference_states"] = []
         for sid in d.get("references", []):
-            role_observations = [observations.get(o["id"], {}) for o in declarations[sid].get("observe", []) if o["adapter"] == "aws.iam_role_access" and same_resource(sid, o)]
-            candidate = next((o for o in role_observations if o.get("outcome") == "ok"), role_observations[0] if role_observations else {})
+            candidate = bound_role_read(sid)
             state = candidate.get("outcome", "unobserved")
             if state == "ok":
                 fresh = 0 <= now - (parse_time(candidate.get("checked_at")) or 0) <= interval * 2
@@ -532,8 +534,8 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
     interactions = []
     gaps = []
     for item in manifest.get("interactions", []):
-        identity_observations = [o for o in declarations[item["identity"]].get("observe", []) if o["adapter"] == "aws.iam_role_access"] if item["identity"] in declarations else []
-        role_facts = observations.get(identity_observations[0]["id"], {}).get("facts", {}) if len(identity_observations) == 1 else {}
+        role_read = bound_role_read(item["identity"]) if item["identity"] in declarations else {}
+        role_facts = role_read.get("facts", {}) if role_read.get("outcome") == "ok" else {}
         role_inventory = set()
         for inventory in ("list-attached-role-policies", "list-role-policies"):
             role_inventory.update(role_facts.get(inventory, {}).get("policy_identities", []))

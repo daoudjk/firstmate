@@ -1694,6 +1694,19 @@ PYTEST
   cp "$home/trust-state.json" "$home/aws-state.json"
   map "$home" collect >/dev/null || fail "restore trust references"
   python3 - "$home" <<'PYTEST'
+import json,pathlib,sys
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); role=next(s for s in m['components'] if s['id']=='access-role'); role['observe'][0]['adapter']='aws.iam_role'; role['observe'].append({'id':'other-identity-role-read','adapter':'aws.iam_role_access','binding':'other_identity_role','role':'info'}); m['interactions'][0]['dependencies'].append('boundary-check'); p.write_text(json.dumps(m)); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['other_identity_role']={'role_name':'fixture-other'}; p.write_text(json.dumps(b)); p=h/'aws-state.json'; s=json.load(open(p)); s['responses']['get-role']['PermissionsBoundary']={'PermissionsBoundaryArn':'arn:aws:iam::123456789012:policy/fixture','PermissionsBoundaryType':'PermissionsBoundary'}; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "wrong identity role inventory collection"
+  view_json "$home"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="managed-check")["comparison"]')" "readable policy document remains observed"
+  assert_equals "True" "$(py "$home/view.json" '"identity-policy" in d["access"]["interactions"][0]["missing_kinds"]')" "policy inventory from another role cannot cover identity"
+  assert_equals "True" "$(py "$home/view.json" '"boundary-check" in d["access"]["interactions"][0]["unmatched_dependencies"]')" "boundary from another role cannot cover identity"
+  cp "$home/participant-manifest.json" "$home/data/system-map/example/manifest.json"
+  cp "$home/participant-bindings.json" "$home/data/system-map/example/bindings.json"
+  cp "$home/trust-state.json" "$home/aws-state.json"
+  map "$home" collect >/dev/null || fail "restore identity role inventory"
+  python3 - "$home" <<'PYTEST'
 import json,sys,pathlib
 h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); bucket=next(s for s in m['components'] if s['id']=='access-bucket'); bucket['observe'].append({'id':'other-bucket-read','adapter':'aws.s3_policy','binding':'other_bucket','role':'info'}); check=next(d for d in m['access_dependencies'] if d['id']=='bucket-check'); m['access_dependencies'].append(dict(check,id='other-bucket-check',title='Other bucket policy',observation='other-bucket-read')); i=dict(m['interactions'][0],id='wrong-bound-resource',title='Wrong bound bucket policy',evidence='wrong-bound-request'); i['dependencies']=['other-bucket-check' if d=='bucket-check' else d for d in i['dependencies']]; m['interactions'].append(i); p.write_text(json.dumps(m)); p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['bindings']['other_bucket']={'bucket':'other-fixture'}; p.write_text(json.dumps(b))
 PYTEST
