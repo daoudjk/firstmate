@@ -33,7 +33,7 @@ Proof is `proven` (a pass for the current deployment), `unversioned` (a pass on 
 
 Differences defaults to implementation/deployment gaps, unclassified declared gaps and urgent alerts, with expected capability, the gap or disposition, impact, owner and next action.
 The concern selector exposes operational dispositions, maintenance/expiry, missing observation/proof, access coverage, unclassified declarations and the complete list with open counts.
-Counts describe ledger members rather than groups; urgent alerts also appear in their own categories, so category counts are not additive.
+Counts describe ledger members rather than groups; the default overview overlaps the category counts because it also includes urgent alerts from other categories.
 Status and text filters retain resolved history and individual source IDs, timestamps, subjects and task links inside expandable groups.
 Verification concerns remain available through the category selector, credential expiry concerns are grouped in Identity & Access, and declared operation/context unknowns appear beside Access coverage.
 Shared causes group only through explicit presentation metadata or the existing credential/proof/completion kind, with every member available.
@@ -244,7 +244,7 @@ A subject with no `version_from` cannot carry version-bound proof: a pass on it 
 Manifests, bindings, and evidence refuse fields or values that look like credential material.
 Credential records extend purpose, owner, `expires`, and `rotation` with optional `issuer` (another credential ID), `not_before`, `expiry_basis` (`observed`, `inferred`, or `unknown`), `expected_expires`, `observed_at`, `evidence`, `renewal_owner`, `restart_required` (`yes`, `no`, or `unknown`), and positive `full_window_seconds`.
 `expected_expires` records an inference without substituting it for an observed expiry; inferred dates cannot be stored in `expires`, and `expires` drives expiry alerts or safe timing when `expiry_basis` is `observed` or omitted for compatibility with existing manifests.
-The credential view shows each identity's expiry, renewal mechanism, owner, issuer, and limits.
+The Identity & Access credential table shows each credential's expiry, renewal mechanism, owner, issuer, and limits.
 For a full run the start must be strictly before the earliest chain expiry minus the entire support interval, and after every known not-before time.
 `latest_safe_start`, remaining seconds and `fits`/`does-not-fit` require observed expiries and known not-before dates throughout the issuer chain; missing validity, an inferred expiry or a cycle leaves feasibility unknown.
 An expiry within seven days opens a discrepancy under its existing stable credential ID.
