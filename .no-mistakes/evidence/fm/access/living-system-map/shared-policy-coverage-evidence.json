@@ -1,0 +1,32 @@
+{
+  "both_linked": {
+    "shared-managed-a": {
+      "static_coverage": "declared-baselines-observed",
+      "request_proof": "demonstrated",
+      "uncovered_policy_identities": [],
+      "effective_access": "unknown"
+    },
+    "shared-managed-b": {
+      "static_coverage": "declared-baselines-observed",
+      "request_proof": "demonstrated",
+      "uncovered_policy_identities": [],
+      "effective_access": "unknown"
+    }
+  },
+  "second_role_unlinked": {
+    "shared-managed-a": {
+      "static_coverage": "declared-baselines-observed",
+      "request_proof": "demonstrated",
+      "uncovered_policy_identities": [],
+      "effective_access": "unknown"
+    },
+    "shared-managed-b": {
+      "static_coverage": "gaps",
+      "request_proof": "stale",
+      "uncovered_policy_identities": [
+        "a9ce2f853420b4aa2d641c6adca958f8bc08a600097f306fd5a994b29bce793d"
+      ],
+      "effective_access": "unknown"
+    }
+  }
+}
