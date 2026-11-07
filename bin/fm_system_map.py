@@ -492,7 +492,7 @@ def validate_manifest(manifest):
         w = "manifest.prerequisites"
         if not isinstance(item, dict):
             raise MapError("prerequisites: must contain objects")
-        _check_keys(item, {"id", "title", "producer", "resource", "phases", "baseline", "observation", "evidence", "expected_state", "owners", "next_check", "authorization", "max_age_seconds"}, w)
+        _check_keys(item, {"id", "title", "producer", "resource", "phases", "baseline", "observation", "evidence", "expected_state", "owners", "next_check", "authorization"}, w)
         _unique_manifest_id(item, prerequisite_ids, w)
         for key in ("title", "resource", "next_check"):
             _req(item, key, "str", w)
@@ -512,8 +512,6 @@ def validate_manifest(manifest):
         _validate_owner_list(item.get("owners", []), w)
         if item.get("authorization", "unknown") not in ("authorized", "awaiting-authorization", "denied", "unknown", "not-required"):
             raise MapError("prerequisite.authorization: invalid state")
-        if "max_age_seconds" in item and _req(item, "max_age_seconds", "int", w) <= 0:
-            raise MapError("prerequisite.max_age_seconds: must be positive")
     gap_ids = set()
     for index, gap in enumerate(manifest.get("known_gaps", [])):
         w = "manifest.known_gaps[%d]" % index
@@ -529,12 +527,11 @@ def validate_manifest(manifest):
     credential_ids = set()
     for index, cred in enumerate(manifest.get("credentials", [])):
         w = "manifest.credentials[%d]" % index
-        _check_keys(cred, {"id", "title", "purpose", "owner", "expires", "rotation", "subjects", "kind", "note", "issuer", "not_before", "expiry_basis", "expected_expires", "observed_at", "evidence", "renewal_group", "renewal_owner", "restart_required", "full_window_seconds"}, w)
+        _check_keys(cred, {"id", "title", "purpose", "owner", "expires", "rotation", "subjects", "kind", "note", "issuer", "not_before", "expiry_basis", "expected_expires", "observed_at", "evidence", "renewal_owner", "restart_required", "full_window_seconds"}, w)
         _unique_manifest_id(cred, credential_ids, w)
         _req(cred, "title", "str", w)
         _req(cred, "purpose", "str", w)
-        for key in ("issuer", "renewal_group"):
-            _req(cred, key, "id", w, optional=True)
+        _req(cred, "issuer", "id", w, optional=True)
         for key in ("renewal_owner", "evidence"):
             _req(cred, key, "str", w, optional=True)
         if "expires" in cred and parse_iso(cred["expires"]) is None:
@@ -1372,18 +1369,20 @@ def prerequisite_view(manifest, bindings, subjects, evidence, observations, inte
                 identity = observation_binding_digest(declared, bindings) if not binding_problem(declared["adapter"], entry) else None
             scope = rec.get("scope")
             provenance, detail = rec["provenance"], rec["summary"]
-            if identity and rec.get("resource_identities", {}).get(item["producer"]) == identity:
+            if (identity and rec.get("resource_identities", {}).get(item["producer"]) == identity
+                    and subject["version_state"] == "observed"
+                    and rec.get("versions", {}).get(item["producer"]) == subject["version"]):
                 state = rec["prerequisites"][item["id"]]
                 coverage, checked = "imported", rec.get("observed_at", rec["recorded_at"])
                 if rec.get("historical"):
                     state = "stale"
             else:
-                coverage, detail = "missing-evidence", "Named receipt has no assessment for the current bound resource."
+                coverage, detail = "missing-evidence", "Named receipt has no assessment for the current observed version and bound resource."
         elif item.get("evidence"):
             coverage, detail = "missing-evidence", "Named receipt is missing or contains no assessment of this prerequisite."
         observed_state = rec["prerequisites"][item["id"]] if coverage == "imported" else state
         age = now_ts() - (parse_iso(checked) or 0) if checked else None
-        if age is not None and age > item.get("max_age_seconds", interval * 2):
+        if age is not None and age > interval * 2:
             state = "stale"
         items.append(dict(item, state=state, observed_state=observed_state, coverage=coverage, checked_at=checked,
                           scope=scope, provenance=provenance, detail=detail,

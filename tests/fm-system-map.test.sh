@@ -922,6 +922,7 @@ import datetime,json,sys
 p=sys.argv[1]; manifest=json.load(open(p)); now=datetime.datetime.now(datetime.timezone.utc)
 for id,title,days in [('expired-ui','Expired certificate',-1),('soon-ui','Soon certificate',2),('future-ui','Future certificate',30)]:
     manifest['credentials'].append({'id':id,'title':title,'purpose':'Rendering regression','owner':'Fixture owner','expires':(now+datetime.timedelta(days=days)).isoformat(),'expiry_basis':'observed'})
+manifest['credentials'].append({'id':'secondary-ui','title':'Second certificate','purpose':'Separate renewal','owner':'Second owner','renewal_owner':'Issuer team','rotation':'Manual swap','issuer':'api-cert'})
 json.dump(manifest,open(p,'w'))
 PY
   map "$home" collect >/dev/null || fail "collect failed"
@@ -986,7 +987,7 @@ class CredentialCells(HTMLParser):
             self.cell = False
         elif self.table and tag == 'tr':
             if self.row_cells:
-                self.rows[self.row_cells[0]] = self.chip
+                self.rows[self.row_cells[0]] = {'chip': self.chip, 'cells': self.row_cells}
             self.row = False
         elif self.table and tag == 'table':
             self.table = False
@@ -997,9 +998,13 @@ class CredentialCells(HTMLParser):
 cells = CredentialCells()
 cells.feed(open(sys.argv[1]).read())
 assert 'Mechanism: Reissue from the platform CA' in ' '.join(cells.cells)
-assert cells.rows['Expired certificate'] == 'chip--bad', cells.rows
-assert cells.rows['Soon certificate'] == 'chip--warn', cells.rows
-assert cells.rows['Future certificate'] == 'chip--ok', cells.rows
+assert cells.rows['Expired certificate']['chip'] == 'chip--bad', cells.rows
+assert cells.rows['Soon certificate']['chip'] == 'chip--warn', cells.rows
+assert cells.rows['Future certificate']['chip'] == 'chip--ok', cells.rows
+secondary = cells.rows['Second certificate']['cells']
+assert 'Second owner' in secondary[2] and 'Renewal owner: Issuer team' in secondary[2]
+assert 'Mechanism: Manual swap' in secondary[2]
+assert 'Issuer: api-cert' in secondary[3]
 PY
   fi
   out=$(http GET "$base/../config/system-map")
@@ -1106,7 +1111,7 @@ PY
   python3 - "$home/receipt.json" "$home/view.json" <<'PY'
 import json, sys, datetime
 identity=json.load(open(sys.argv[2]))['subjects']['worker-host']['resource_identity']
-json.dump({'schema':'fm-system-map.evidence.v1','id':'owner-report','subjects':['console'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Owner has not tested installation.','scope':'retained owner report only','versions':{'console':'locally-built-v2'},'resource_identities':{'worker-host':identity},'prerequisites':{'owner-check':'not-tested'},'provenance':{'kind':'imported-report','source':'fixture owner'}},open(sys.argv[1],'w'))
+json.dump({'schema':'fm-system-map.evidence.v1','id':'owner-report','subjects':['console'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Owner has not tested installation.','scope':'retained owner report only','versions':{'console':'locally-built-v2','worker-host':'ami-0123456789abcdef0'},'resource_identities':{'worker-host':identity},'prerequisites':{'owner-check':'not-tested'},'provenance':{'kind':'imported-report','source':'fixture owner'}},open(sys.argv[1],'w'))
 PY
   map "$home" evidence add example "$home/receipt.json" >/dev/null || fail "owner receipt rejected"
   view_json "$home"
@@ -1206,6 +1211,47 @@ PY
   pass "lineage reports retain metadata without claiming an unobserved version"
 }
 
+test_prerequisite_receipt_requires_current_version() {
+  local home rc=0 out
+  home=$(new_home prerequisite-version)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p))
+next(item for item in manifest['prerequisites'] if item['id']=='migration-worker-record')['evidence']='worker-assessment'
+json.dump(manifest,open(p,'w'))
+PY
+  map "$home" collect >/dev/null || fail "prerequisite version fixture collection failed"
+  view_json "$home"
+  python3 - "$home/view.json" "$home/worker-assessment.json" <<'PY'
+import datetime,json,sys
+worker=json.load(open(sys.argv[1]))['subjects']['worker-host']
+receipt={'schema':'fm-system-map.evidence.v1','id':'worker-assessment','subjects':['worker-host'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Owner assessed current worker.','scope':'example worker','versions':{'worker-host':worker['version']},'resource_identities':{'worker-host':worker['resource_identity']},'prerequisites':{'migration-worker-record':'present'},'provenance':{'kind':'imported-report','source':'fixture owner'}}
+json.dump(receipt,open(sys.argv[2],'w'))
+PY
+  map "$home" evidence add example "$home/worker-assessment.json" >/dev/null || fail "worker assessment rejected"
+  view_json "$home"
+  assert_equals "present" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "migration-worker-record"][0]["state"]')" "matching version and resource qualify the assessment"
+  aws_state "$home" '{"ami":"ami-abcdef01234567890"}'
+  map "$home" collect >/dev/null || fail "same-instance new-image collection failed"
+  view_json "$home"
+  assert_equals "ami-abcdef01234567890" "$(py "$home/view.json" 'd["subjects"]["worker-host"]["version"]')" "worker image changed on the same instance"
+  assert_equals "unknown" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "migration-worker-record"][0]["state"]')" "old version assessment cannot qualify the new image"
+  assert_equals "missing-evidence" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "migration-worker-record"][0]["coverage"]')" "version mismatch stays unqualified"
+  aws_state "$home" '{"deny":["ec2"]}'
+  map "$home" collect >/dev/null || fail "denied-version collection failed"
+  view_json "$home"
+  assert_equals "unknown" "$(py "$home/view.json" '[p for p in d["readiness"]["prerequisites"] if p["id"] == "migration-worker-record"][0]["state"]')" "unobserved current version cannot qualify the receipt"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); manifest['prerequisites'][0]['max_age_seconds']=86400
+json.dump(manifest,open(p,'w'))
+PY
+  out=$(map "$home" validate 2>&1) || rc=$?
+  expect_code 1 "$rc" "per-prerequisite freshness override is unsupported"
+  assert_contains "$out" "unknown field 'max_age_seconds'" "freshness uses the shared cadence"
+  pass "prerequisite receipts require current observed versions and shared freshness"
+}
+
 test_sample_lifecycle_coverage() {
   local home
   home=$(new_home sample-lifecycle)
@@ -1268,7 +1314,7 @@ test_credential_full_window() {
 import datetime,json,sys
 p=sys.argv[1]; m=json.load(open(p)); now=datetime.datetime.now(datetime.timezone.utc)
 iso=lambda t:t.isoformat()
-m['credentials']=[{'id':'issuer','title':'Issuer','purpose':'Test issuer','kind':'ca','not_before':iso(now-datetime.timedelta(seconds=60)),'expires':iso(now+datetime.timedelta(seconds=1800)),'expiry_basis':'observed'}, {'id':'leaf','title':'Leaf','purpose':'Test identity','kind':'tls-leaf','not_before':iso(now-datetime.timedelta(seconds=60)),'issuer':'issuer','expires':iso(now+datetime.timedelta(seconds=7200)), 'expiry_basis':'observed','full_window_seconds':3600,'restart_required':'yes','renewal_group':'shared','renewal_owner':'fixture owner'}]
+m['credentials']=[{'id':'issuer','title':'Issuer','purpose':'Test issuer','kind':'ca','not_before':iso(now-datetime.timedelta(seconds=60)),'expires':iso(now+datetime.timedelta(seconds=1800)),'expiry_basis':'observed'}, {'id':'leaf','title':'Leaf','purpose':'Test identity','kind':'tls-leaf','not_before':iso(now-datetime.timedelta(seconds=60)),'issuer':'issuer','expires':iso(now+datetime.timedelta(seconds=7200)), 'expiry_basis':'observed','full_window_seconds':3600,'restart_required':'yes','renewal_owner':'fixture owner'}]
 json.dump(m,open(p,'w'))
 PY
   view_json "$home"
@@ -1306,6 +1352,15 @@ p=sys.argv[1]; m=json.load(open(p)); m['credentials'][0]['kind']='ca'; m['creden
 PY
   view_json "$home"
   assert_equals "fits" "$(py "$home/view.json" 'd["credentials"][1]["full_window"]')" "entire observed chain has full interval"
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); manifest['credentials'][1]['renewal_group']='shared'
+json.dump(manifest,open(p,'w'))
+PY
+  local rc=0 out
+  out=$(map "$home" validate 2>&1) || rc=$?
+  expect_code 1 "$rc" "renewal grouping is unsupported"
+  assert_contains "$out" "unknown field 'renewal_group'" "each credential owns its renewal metadata"
   pass "full-window timing accounts for issuer validity and inference"
 }
 
@@ -1394,7 +1449,7 @@ PY
   python3 - "$home/view.json" "$home/historical-receipt.json" <<'PY'
 import datetime,json,sys
 identity=json.load(open(sys.argv[1]))['subjects']['worker-host']['resource_identity']
-receipt={'schema':'fm-system-map.evidence.v1','id':'historical-owner-report','subjects':['worker-host'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Earlier bound worker assessment.','scope':'example worker','historical':True,'resource_identities':{'worker-host':identity},'prerequisites':{'migration-worker-record':'present'},'provenance':{'kind':'imported-report','source':'fixture owner'}}
+receipt={'schema':'fm-system-map.evidence.v1','id':'historical-owner-report','subjects':['worker-host'],'result':'not-run','recorded_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'summary':'Earlier bound worker assessment.','scope':'example worker','historical':True,'versions':{'worker-host':'ami-0123456789abcdef0'},'resource_identities':{'worker-host':identity},'prerequisites':{'migration-worker-record':'present'},'provenance':{'kind':'imported-report','source':'fixture owner'}}
 json.dump(receipt,open(sys.argv[2],'w'))
 PY
   map "$home" evidence add example "$home/historical-receipt.json" >/dev/null || fail "historical receipt rejected"
@@ -1478,6 +1533,7 @@ PY
 
 test_proactive_prerequisites_and_lineage
 test_lineage_report_requires_current_binding
+test_prerequisite_receipt_requires_current_version
 test_sample_lifecycle_coverage
 test_credential_full_window
 test_inferred_expiry_does_not_alert

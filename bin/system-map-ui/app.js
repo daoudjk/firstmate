@@ -711,12 +711,6 @@
     clear(body);
     if (!v) return;
     var creds = v.credentials || v.manifest.credentials || [];
-    var groups = clear($("renewal-groups")), grouped = {};
-    creds.forEach(function (c) { if (c.renewal_group) (grouped[c.renewal_group] = grouped[c.renewal_group] || []).push(c); });
-    Object.keys(grouped).forEach(function (key) {
-      var members = grouped[key];
-      append(groups, h("p", { class: "callout", text: key + " · " + members.length + " identities share renewal. Owner: " + (members[0].renewal_owner || members[0].owner || "unknown") + ". " + (members[0].rotation || "Renewal mechanism unknown.") }));
-    });
     if (!creds.length) body.appendChild(h("tr", null, h("td", { colspan: "5", class: "muted", text: "No credentials described." })));
     creds.forEach(function (c) {
       var exp = (c.expiry_basis || "observed") === "observed" ? parseTime(c.expires) : null, soon = exp !== null && exp - Date.now() < 7 * 86400000;

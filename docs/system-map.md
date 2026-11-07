@@ -95,11 +95,11 @@ Optional manifest `prerequisites` is a list of `{id, title, producer, resource, 
 Optional `observation` must belong to that producer; optional `evidence` names an existing evidence ID whose `prerequisites` map assesses this prerequisite.
 Optional `expected_state` tests the observation's resource state, `owners` uses the existing owner/task shape, and `authorization` is independently `authorized`, `awaiting-authorization`, `denied`, `unknown` (default), or `not-required`.
 A successful read yields `present` or `mismatch`; `absent`, `denied`, `error`, `unknown`, `not-tested` and `stale` remain separate.
-`max_age_seconds` is a positive optional freshness bound, defaulting to twice the current collection interval; stale records retain their earlier `observed_state` and time.
+Freshness follows twice the current collection interval; stale records retain their earlier `observed_state` and time.
 The view distinguishes `observed`, `imported`, `uncovered`, `uncollected` and `missing-evidence` coverage, and flags phases with no prerequisites declared.
 An observation takes precedence over an imported assessment, including when it fails; neither presence nor authorization grants phase proof.
 Imported assessments carry a `prerequisites` map from prerequisite ID to `present`, `absent`, `denied`, `unknown`, or `not-tested` on an ordinary evidence record, plus a required textual `scope`.
-An imported assessment qualifies only when its existing `resource_identities` entry for the producer matches the current bound observation digest, or the producer's current version identity when no observation is declared; missing bindings or identities leave it unknown with missing evidence coverage.
+An imported assessment qualifies only when its existing `resource_identities` entry for the producer matches the current bound observation digest, or the producer's current version identity when no observation is declared, and its `versions` entry matches the producer's current observed version; missing or mismatched versions, bindings or identities leave it unknown with missing evidence coverage.
 They retain that record's observed/recorded time and provenance and never become collector observations; future-dated prerequisite assessments are rejected at intake.
 Only the new prerequisite references are validated at intake; the existing deferred criterion/phase receipt-validation work remains separate.
 
@@ -123,9 +123,9 @@ A record proves a version-tracked subject only for the exact observed version an
 A subject with no `version_from` cannot carry version-bound proof: a pass on it shows as `unversioned` ("passed, not version-bound"), a criterion that depends on it shows `unversioned` rather than passed, and landed work on it is never reported as live-verified.
 
 Manifests, bindings, and evidence refuse fields or values that look like credential material.
-Credential records extend purpose, owner, `expires`, and `rotation` with optional `issuer` (another credential ID), `not_before`, `expiry_basis` (`observed`, `inferred`, or `unknown`), `expected_expires`, `observed_at`, `evidence`, `renewal_group`, `renewal_owner`, `restart_required` (`yes`, `no`, or `unknown`), and positive `full_window_seconds`.
+Credential records extend purpose, owner, `expires`, and `rotation` with optional `issuer` (another credential ID), `not_before`, `expiry_basis` (`observed`, `inferred`, or `unknown`), `expected_expires`, `observed_at`, `evidence`, `renewal_owner`, `restart_required` (`yes`, `no`, or `unknown`), and positive `full_window_seconds`.
 `expected_expires` records an inference without substituting it for an observed expiry; inferred dates cannot be stored in `expires`, and `expires` drives expiry alerts or safe timing when `expiry_basis` is `observed` or omitted for compatibility with existing manifests.
-The credential view groups renewal dependencies while retaining each identity's expiry, renewal mechanism, owner, and limits, including identities outside a group.
+The credential view shows each identity's expiry, renewal mechanism, owner, issuer, and limits.
 For a full run the start must be strictly before the earliest chain expiry minus the entire support interval, and after every known not-before time.
 `latest_safe_start`, remaining seconds and `fits`/`does-not-fit` require observed expiries throughout the issuer chain and known not-before dates for certificates; missing validity, an inferred expiry or a cycle leaves feasibility unknown.
 An expiry within seven days opens a discrepancy under its existing stable credential ID.
