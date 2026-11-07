@@ -1,0 +1,138 @@
+{
+  "project": "example",
+  "collector": "partial",
+  "phases": [
+    {
+      "id": "submit",
+      "coverage": "declared"
+    },
+    {
+      "id": "wake",
+      "coverage": "declared"
+    },
+    {
+      "id": "enroll",
+      "coverage": "declared"
+    },
+    {
+      "id": "launch",
+      "coverage": "declared"
+    },
+    {
+      "id": "run",
+      "coverage": "declared"
+    },
+    {
+      "id": "score",
+      "coverage": "declared"
+    },
+    {
+      "id": "cleanup",
+      "coverage": "declared"
+    },
+    {
+      "id": "stop",
+      "coverage": "declared"
+    },
+    {
+      "id": "zero",
+      "coverage": "declared"
+    }
+  ],
+  "prerequisites": [
+    {
+      "id": "submission-api",
+      "state": "denied",
+      "coverage": "observed",
+      "authorization": "awaiting-authorization",
+      "baseline": "both",
+      "next_check": "Verify the API was at zero before submission, then obtain scoped submission proof from the owner."
+    },
+    {
+      "id": "console-source",
+      "state": "absent",
+      "coverage": "observed",
+      "authorization": "unknown",
+      "baseline": "both",
+      "next_check": "Confirm this checkout is the intended source; assess installation separately."
+    },
+    {
+      "id": "console-config",
+      "state": "unknown",
+      "coverage": "uncovered",
+      "authorization": "unknown",
+      "baseline": "both",
+      "next_check": "Identify and bind the installed configuration resource, then obtain a matching scoped owner receipt; checkout presence is only source evidence."
+    },
+    {
+      "id": "wake-queue",
+      "state": "denied",
+      "coverage": "observed",
+      "authorization": "unknown",
+      "baseline": "both",
+      "next_check": "Check queue state and obtain a wake receipt."
+    },
+    {
+      "id": "enroll-control",
+      "state": "denied",
+      "coverage": "observed",
+      "authorization": "unknown",
+      "baseline": "both",
+      "next_check": "Verify the switch stayed halted through enrollment, then record its lift afterward in a scoped owner receipt."
+    },
+    {
+      "id": "worker-host",
+      "state": "denied",
+      "coverage": "observed",
+      "authorization": "unknown",
+      "baseline": "both",
+      "next_check": "Check worker state and obtain phase-specific run evidence."
+    },
+    {
+      "id": "results-store",
+      "state": "denied",
+      "coverage": "observed",
+      "authorization": "unknown",
+      "baseline": "both",
+      "next_check": "Check table metadata and obtain scoring and cleanup receipts."
+    },
+    {
+      "id": "api-stop",
+      "state": "denied",
+      "coverage": "observed",
+      "authorization": "unknown",
+      "baseline": "both",
+      "next_check": "After the stop phase, check that API scaling returned to zero and obtain a scoped stop receipt."
+    },
+    {
+      "id": "migration-worker-record",
+      "state": "unknown",
+      "coverage": "uncovered",
+      "authorization": "unknown",
+      "baseline": "migration",
+      "next_check": "Ask the owner for the migration inventory; fresh commissioning does not require this record."
+    }
+  ],
+  "credentials": [
+    {
+      "id": "issuer",
+      "issuer": null,
+      "expiry_basis": "observed",
+      "expires": "2026-11-07T07:54:51.158768+00:00",
+      "full_window": "unknown",
+      "latest_safe_start": null,
+      "renewal_owner": "Issuer team",
+      "restart_required": "no"
+    },
+    {
+      "id": "api-cert",
+      "issuer": "issuer",
+      "expiry_basis": "observed",
+      "expires": "2026-11-07T09:54:51.158768+00:00",
+      "full_window": "fits",
+      "latest_safe_start": "2026-11-07T06:54:51Z",
+      "renewal_owner": "Platform owner",
+      "restart_required": "yes"
+    }
+  ]
+}
