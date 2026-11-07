@@ -261,6 +261,7 @@ details.edit summary { cursor: pointer; font-weight: 700; color: var(--text-stro
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 
 /* Access metadata keeps hashes and request context readable on narrow screens. */
+.access-list .item, .access-gaps .item { min-width: 0; overflow-wrap: anywhere; }
 .access-list .mono, .access-context { overflow-wrap: anywhere; white-space: pre-wrap; }
 .access-context { max-width: 100%; font-size: .85rem; }
 
