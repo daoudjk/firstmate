@@ -1561,6 +1561,8 @@ for kind in ['permissions-boundary','session-policy','organization-policy','endp
  deps.append({'id':kind,'title':kind,'kind':kind,'subject':'access-role','owners':owners,'next_check':'Owner must supply restriction evidence.'})
 m['access_dependencies']=deps
 m['interactions']=[{'id':'console-request','title':'Console to exact bucket','caller':'access-role','identity':'access-role','target':'access-bucket','operations':['s3:GetObject'],'phases':[m['lifecycle']['phases'][0]['id']],'dependencies':[d['id'] for d in deps],'context':{'transport':'TLS','unknown_condition_context':'explicitly unobserved'},'analysis_scope':'Exact configured action and target; no effective IAM evaluation.','owners':owners,'next_check':'Owner supplies actual current-version request receipt.'}]
+role_request=dict(m['interactions'][0],id='lowercase-role-request',title='Synthetic role-carrying request',operations=['lambda:createfunction'])
+m['interactions'].append(role_request)
 p.write_text(json.dumps(m))
 p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['scope']['expected_account']='123456789012'; b['bindings'].update({'access_role':{'role_name':'fixture-target'},'source_role':{'role_name':'fixture-source'},'access_bucket':{'bucket':'fixture'},'access_inline':{'role_name':'fixture-target','policy_name':'fixture-inline'},'access_managed':{'policy_arn':'arn:aws:iam::123456789012:policy/fixture'},'access_queue':{'queue_url':'https://sqs.us-east-1.amazonaws.com/123456789012/fixture'},'access_table':{'resource_arn':'arn:aws:dynamodb:us-east-1:123456789012:table/fixture'},'access_kms':{'key_id':'fixture-key'},'access_tags':{'task_definition':'fixture:1'}}); p.write_text(json.dumps(b))
 reordered=json.loads(json.dumps(policy)); reordered['Statement'][0]['Principal']['AWS'].reverse(); reordered['Statement'][0]['Action'].reverse()
@@ -1573,6 +1575,8 @@ PYTEST
   assert_equals "incomplete-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="tags-check")["comparison"]')" "unrequested historical tags are incomplete"
   assert_equals "unknown" "$(py "$home/view.json" 'd["access"]["interactions"][0]["effective_access"]')" "observed policy does not imply effective permission"
   assert_equals "not-demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "request proof stays separate"
+  assert_equals "['pass-role']" "$(py "$home/view.json" 'next(i for i in d["access"]["interactions"] if i["id"]=="lowercase-role-request")["missing_kinds"]')" "lowercase role-carrying action requires PassRole coverage"
+  assert_equals "[]" "$(py "$home/view.json" 'd["access"]["interactions"][0]["missing_kinds"]')" "ordinary read needs no PassRole dependency"
   assert_equals "4" "$(py "$home/view.json" 'len([g for g in d["access"]["gaps"] if g.get("state")=="unobserved"])')" "all independent restriction gaps appear together"
   assert_equals "observed" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "exact trust reference is observed"
   assert_grep 'include TAGS' "$home/aws.log" "tag collector explicitly requests tags"
@@ -1704,6 +1708,8 @@ PYTEST
   map "$home" collect >/dev/null || fail "changed trust check"
   view_json "$home"
   assert_equals "policy-drift" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["comparison"]')" "changed trust denial is semantic drift"
+  assert_equals "denied-reference" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="trust-check")["reference_states"][0]["state"]')" "a principal present only in Deny is not an observed Allow reference"
+  assert_equals "unknown" "$(py "$home/view.json" 'd["access"]["interactions"][0]["effective_access"]')" "denied-only reference does not claim effective access"
   assert_equals "unobserved" "$(py "$home/view.json" 'd["access"]["interactions"][0]["propagation"]')" "matching GetRole never proves downstream propagation"
   pass "access view batches gaps, classifies policy/tag drift, and qualifies exact trust dependencies"
 }

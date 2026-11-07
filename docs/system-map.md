@@ -115,7 +115,8 @@ For an SQS policy observation, a complete baseline also needs `encryption_identi
 If the queue uses a KMS key, its dependency must name `key_dependency`, an observed `key-policy` dependency whose KMS binding identifies that same key; otherwise coverage remains insufficient.
 The access adapters produce the digests to retain in a reviewed baseline; neither collection nor comparison adopts observations into intent.
 An incomplete or absent baseline remains `incomplete-baseline`, even when a new read succeeds.
-Policy dependencies may name exact literal principal subjects in `references`; their current role ARN fingerprints must match the observed policy's literal principals.
+Policy dependencies may name exact literal principal subjects in `references`; their current role ARN fingerprints must match a literal principal in an Allow statement.
+The view distinguishes a principal found only in Deny statements as `denied-reference`, without interpreting the policy's effective permissions.
 Missing, denied, stale and wrong-reference principals stay distinct, with creation, identity and version metadata; role presence and a matching reference prove neither AWS propagation nor actual assumption.
 
 Each interaction requires `id`, `title`, `caller` and `target` subject IDs, `identity` (an existing subject or credential ID), nonempty `operations` (`service:operation` strings), `phases`, dependency IDs in `dependencies`, explicit `context`, `analysis_scope`, nonempty `owners`, and `next_check`.
@@ -124,6 +125,7 @@ Context records the concrete target constraints, service principal, transport, t
 Every interaction exposes missing dependency kinds for role existence, trust, identity/resource/key policies and boundary/session/organization/endpoint restrictions, even when no checks for those kinds were declared.
 Incomplete context and missing or stale request receipts appear in the consolidated gap list, with shared dependency gaps listed once and linked to every affected interaction.
 An `iam:PassRole` assertion or a known role-carrying request (`lambda:CreateFunction`, `lambda:UpdateFunctionConfiguration`, `scheduler:CreateSchedule`, `scheduler:UpdateSchedule`, `ecs:RegisterTaskDefinition`, `ecs:RunTask`, `ec2:RunInstances`) additionally requires a `pass-role` dependency, including an explicit not-applicable reason when no role is passed.
+Action spelling is compared without case for this dependency check.
 Other callers declare that dependency whenever passing a role is part of their service request.
 Use reasoned not-applicable references when a restriction cannot apply; an uncollected or unmapped restriction is never not-applicable by default.
 The derived `access` view lists all gaps together, every interaction, its shared checks, and lifecycle phases without declared interactions.
@@ -163,7 +165,7 @@ Explicit denies, unknown condition inputs and unobserved restrictions therefore 
 
 Owner receipts or imported reports can supply `access_checks` mapping dependency IDs to `{outcome, binding_digest, observer_identity, version, facts, error?}`.
 The two identities are SHA-256 fingerprints: the exact observation binding (or producer version binding when no observation is declared) and the observing identity.
-Successful `facts` contains `format`, explicit boolean `complete`, and canonical `sha256`, plus optional `raw_sha256`, SQS encryption and KMS key fingerprints, `policy_identity`, `principal_identities`, Allow/Deny counts and condition operator names; policy values are refused.
+Successful `facts` contains `format`, explicit boolean `complete`, and canonical `sha256`, plus optional `raw_sha256`, SQS encryption and KMS key fingerprints, `policy_identity`, all/Allow/Deny principal fingerprints, Allow/Deny counts and condition operator names; policy values are refused.
 An assessment requires original `observed_at`, explicit `scope`, a nonhistorical owner receipt/report and matching producer `versions` and `resource_identities`, with a fresh independently observed producer version and deployment.
 Qualified assessments are labeled `imported`, retaining source, time, scope and observing identity; missing, stale or mismatched evidence remains `missing-evidence` and unknown.
 Any collected result, including denial or an incomplete read, takes precedence over an imported assessment.

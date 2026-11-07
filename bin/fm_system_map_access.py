@@ -14,9 +14,9 @@ KINDS = {"role-existence", "trust", "identity-policy", "resource-policy", "key-p
          "permissions-boundary", "session-policy", "organization-policy", "endpoint-policy",
          "pass-role", "configuration", "tags"}
 REQUIRED_KINDS = KINDS - {"pass-role", "configuration", "tags"}
-PASS_ROLE_OPERATIONS = {"lambda:CreateFunction", "lambda:UpdateFunctionConfiguration",
-                        "scheduler:CreateSchedule", "scheduler:UpdateSchedule",
-                        "ecs:RegisterTaskDefinition", "ecs:RunTask", "ec2:RunInstances"}
+PASS_ROLE_OPERATIONS = {"lambda:createfunction", "lambda:updatefunctionconfiguration",
+                        "scheduler:createschedule", "scheduler:updateschedule",
+                        "ecs:registertaskdefinition", "ecs:runtask", "ec2:runinstances"}
 BINDING_FIELDS = {
     "aws.iam_role_access": {"role_name": "str"},
     "aws.iam_inline_policy": {"role_name": "str", "policy_name": "str"},
@@ -68,18 +68,25 @@ def policy_facts(document):
     if isinstance(statements, dict):
         statements = [statements]
     principals = []
+    allow_principals = []
+    deny_principals = []
     for statement in statements:
         principal = statement.get("Principal", {})
+        identities = []
         if isinstance(principal, dict):
             for value in principal.values():
-                principals.extend(value if isinstance(value, list) else [value])
+                identities.extend(value if isinstance(value, list) else [value])
         elif isinstance(principal, str):
-            principals.append(principal)
+            identities.append(principal)
+        principals.extend(identities)
+        (allow_principals if statement["Effect"] == "Allow" else deny_principals).extend(identities)
     # No policy values, principal names or condition values are exposed by the
     # projection. The private owner retains original request/response documents.
     return {"format": "policy", "complete": True, "sha256": digest(canonical),
             "raw_sha256": digest(document), "statements": len(statements),
             "principal_identities": sorted(digest(v) for v in principals),
+            "allow_principal_identities": sorted(digest(v) for v in allow_principals),
+            "deny_principal_identities": sorted(digest(v) for v in deny_principals),
             "allow_statements": sum(s.get("Effect") == "Allow" for s in statements),
             "deny_statements": sum(s.get("Effect") == "Deny" for s in statements),
             "condition_operators": sorted({k for s in statements for k in s.get("Condition", {})}),
@@ -203,13 +210,14 @@ def validate_receipt(record, error):
         if any(not re.fullmatch(r"[0-9a-f]{64}", str(check.get(k))) for k in ("binding_digest", "observer_identity")):
             raise error("evidence.access_checks: exact binding and observer identity required")
         facts = check.get("facts", {})
-        if not isinstance(facts, dict) or set(facts) - {"format", "complete", "sha256", "raw_sha256", "encryption_identity", "kms_key_identity", "policy_identity", "principal_identities", "allow_statements", "deny_statements", "condition_operators"}:
+        if not isinstance(facts, dict) or set(facts) - {"format", "complete", "sha256", "raw_sha256", "encryption_identity", "kms_key_identity", "policy_identity", "principal_identities", "allow_principal_identities", "deny_principal_identities", "allow_statements", "deny_statements", "condition_operators"}:
             raise error("evidence.access_checks: only safe policy/configuration metadata allowed")
         for key in ("sha256", "raw_sha256", "encryption_identity", "kms_key_identity", "policy_identity"):
             if key in facts and not re.fullmatch(r"[0-9a-f]{64}", str(facts[key])):
                 raise error("evidence.access_checks: metadata fingerprints must be digests")
-        if "principal_identities" in facts and (not isinstance(facts["principal_identities"], list) or any(not re.fullmatch(r"[0-9a-f]{64}", str(v)) for v in facts["principal_identities"])):
-            raise error("evidence.access_checks: principal identities must be digests")
+        for key in ("principal_identities", "allow_principal_identities", "deny_principal_identities"):
+            if key in facts and (not isinstance(facts[key], list) or any(not re.fullmatch(r"[0-9a-f]{64}", str(v)) for v in facts[key])):
+                raise error("evidence.access_checks: principal identities must be digests")
         if any(k in facts and (not isinstance(facts[k], int) or isinstance(facts[k], bool) or facts[k] < 0) for k in ("allow_statements", "deny_statements")):
             raise error("evidence.access_checks: statement counts must be nonnegative integers")
         if "condition_operators" in facts and (not isinstance(facts["condition_operators"], list) or any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9:]{0,127}", v) for v in facts["condition_operators"])):
@@ -446,16 +454,26 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
             state = candidate.get("outcome", "unobserved")
             if state == "ok":
                 fresh = 0 <= now - (parse_time(candidate.get("checked_at")) or 0) <= interval * 2
-                state = "stale" if not fresh else "observed" if candidate.get("facts", {}).get("role_arn_identity") in facts.get("principal_identities", []) else "wrong-reference"
+                identity = candidate.get("facts", {}).get("role_arn_identity")
+                if not fresh:
+                    state = "stale"
+                elif not identity or "allow_principal_identities" not in facts or "deny_principal_identities" not in facts:
+                    state = "unknown"
+                elif identity in facts["allow_principal_identities"]:
+                    state = "observed"
+                elif identity in facts["deny_principal_identities"]:
+                    state = "denied-reference"
+                else:
+                    state = "wrong-reference"
             d["reference_states"].append({"subject": sid, "state": state, "created_at": candidate.get("facts", {}).get("created_at"), "resource_identity": candidate.get("binding_digest"), "version": candidate.get("version"), "propagation": "unobserved"})
-        if d["state"] == "observed" and (d["unobserved_policy_documents"] or any(r["state"] != "observed" for r in d["reference_states"])):
+        if d["state"] == "observed" and d["comparison"] in ("matches-baseline", "representation-only") and (d["unobserved_policy_documents"] or any(r["state"] != "observed" for r in d["reference_states"])):
             d["comparison"] = "insufficient-evidence"
     interactions = []
     gaps = []
     for item in manifest.get("interactions", []):
         linked = [deps[d] for d in item["dependencies"]]
         missing_kinds = sorted(REQUIRED_KINDS - {d["kind"] for d in linked})
-        if ({"iam:PassRole"} | PASS_ROLE_OPERATIONS) & set(item["operations"]) and "pass-role" not in {d["kind"] for d in linked}:
+        if ({"iam:passrole"} | PASS_ROLE_OPERATIONS) & {operation.lower() for operation in item["operations"]} and "pass-role" not in {d["kind"] for d in linked}:
             missing_kinds.append("pass-role")
         missing = [d["id"] for d in linked if d["state"] != "not-applicable" and (d["state"] != "observed" or d["comparison"] not in ("matches-baseline", "representation-only"))]
         participants = set([item["caller"], item["target"], item["identity"]]) & set(subjects)
