@@ -917,6 +917,13 @@ PY
 test_ui_annotations_and_intent_edits() {
   local home port pid base page out
   home=$(new_home ui)
+  python3 - "$home/data/system-map/example/manifest.json" <<'PY'
+import datetime,json,sys
+p=sys.argv[1]; manifest=json.load(open(p)); now=datetime.datetime.now(datetime.timezone.utc)
+for id,title,days in [('expired-ui','Expired certificate',-1),('soon-ui','Soon certificate',2),('future-ui','Future certificate',30)]:
+    manifest['credentials'].append({'id':id,'title':title,'purpose':'Rendering regression','owner':'Fixture owner','expires':(now+datetime.timedelta(days=days)).isoformat(),'expiry_basis':'observed'})
+json.dump(manifest,open(p,'w'))
+PY
   map "$home" collect >/dev/null || fail "collect failed"
   cp "$home/state/system-map/example/snapshot.json" "$home/snapshot.before"
   port=$(free_port)
@@ -946,7 +953,7 @@ PY
     google-chrome --headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage \
       --user-data-dir="$home/chrome-profile" --virtual-time-budget=1500 --dump-dom \
       "$base/#tab=cred" > "$home/rendered.html" 2> "$home/chrome.log" || fail "browser could not render credential view"
-    python3 - "$home/rendered.html" <<'PY' || fail "ungrouped credential renewal mechanism is hidden"
+    python3 - "$home/rendered.html" <<'PY' || fail "credential table rendered incorrect renewal or expiry states"
 from html.parser import HTMLParser
 import sys
 class CredentialCells(HTMLParser):
@@ -954,23 +961,45 @@ class CredentialCells(HTMLParser):
         super().__init__()
         self.table = False
         self.cell = False
+        self.row = False
+        self.column = -1
         self.cells = []
+        self.rows = {}
     def handle_starttag(self, tag, attrs):
         if tag == 'table' and ('id', 'cred-table') in attrs:
             self.table = True
+        elif self.table and tag == 'tr':
+            self.row = True
+            self.column = -1
+            self.row_cells = []
+            self.chip = None
         elif self.table and tag == 'td':
             self.cell = True
+            self.column += 1
+            self.cell_text = []
+        elif self.cell and self.column == 3 and tag == 'span':
+            classes = dict(attrs).get('class', '').split()
+            self.chip = next((name for name in classes if name.startswith('chip--')), self.chip)
     def handle_endtag(self, tag):
         if self.table and tag == 'td':
+            self.row_cells.append(''.join(self.cell_text).strip())
             self.cell = False
+        elif self.table and tag == 'tr':
+            if self.row_cells:
+                self.rows[self.row_cells[0]] = self.chip
+            self.row = False
         elif self.table and tag == 'table':
             self.table = False
     def handle_data(self, data):
         if self.cell:
             self.cells.append(data)
+            self.cell_text.append(data)
 cells = CredentialCells()
 cells.feed(open(sys.argv[1]).read())
 assert 'Mechanism: Reissue from the platform CA' in ' '.join(cells.cells)
+assert cells.rows['Expired certificate'] == 'chip--bad', cells.rows
+assert cells.rows['Soon certificate'] == 'chip--warn', cells.rows
+assert cells.rows['Future certificate'] == 'chip--ok', cells.rows
 PY
   fi
   out=$(http GET "$base/../config/system-map")
@@ -1158,10 +1187,15 @@ receipt={'schema':'fm-system-map.evidence.v1','id':'lineage-report','subjects':[
 json.dump(receipt,open(sys.argv[2],'w'))
 PY
   map "$home" evidence add example "$home/lineage-receipt.json" >/dev/null || fail "lineage receipt rejected"
+  view_json "$home"
+  assert_equals "mismatch" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["status"]')" "observed installed version can establish a mismatch"
   aws_state "$home" '{"deny":["ec2"]}'
   map "$home" collect >/dev/null || fail "unobserved lineage collection failed"
   view_json "$home"
-  assert_equals "mismatch" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["status"]')" "report for current binding can describe a mismatch"
+  assert_equals "reported" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["status"]')" "same-binding receipt cannot prove a current mismatch after denial"
+  assert_equals "None" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["version"]')" "denied read leaves the installed version unobserved"
+  assert_equals "ami-old" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["reported_version"]')" "receipt-reported version remains visible after denial"
+  assert_equals "fixture owner" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["provenance"]["source"]')" "receipt provenance remains visible after denial"
   python3 - "$home/data/system-map/example/bindings.json" <<'PY'
 import json,sys
 p=sys.argv[1]; bindings=json.load(open(p)); bindings['bindings']['worker_host']['instance_id']='i-abcdef01234567890'; json.dump(bindings,open(p,'w'))
@@ -1169,7 +1203,7 @@ PY
   view_json "$home"
   assert_equals "stale" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["status"]')" "report for previous binding cannot claim a current mismatch"
   assert_equals "ami-old" "$(py "$home/view.json" 'd["subjects"]["api"]["lineage"][0]["reported_version"]')" "stale report keeps its version metadata"
-  pass "lineage reports require the current resource binding"
+  pass "lineage reports retain metadata without claiming an unobserved version"
 }
 
 test_sample_lifecycle_coverage() {

@@ -1586,8 +1586,6 @@ def build_view(home, cfg, project):
                             identity = observation_binding_digest(version_source, bindings)
                 current_report = bool(not rec.get("historical") and identity and rec.get("resource_identities", {}).get(item["subject"]) == identity)
                 state = "reported" if current_report else "stale"
-                if current_report and item.get("expected") and reported != item["expected"]:
-                    state = "mismatch"
             lineage.append(dict(item, status=state, version=target["version"], reported_version=reported,
                                 provenance=rec.get("provenance") if rec else None, recorded_at=rec.get("recorded_at") if rec else None,
                                 resource_identity=target["resource_identity"],

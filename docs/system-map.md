@@ -105,7 +105,7 @@ Only the new prerequisite references are validated at intake; the existing defer
 
 Optional subject `lineage` is a list of `{stage, subject, expected?, evidence?, note?}` records.
 `stage` is `source`, `artifact`, `installed`, or `config`, and `subject` names the independently tracked subject for that stage.
-The view carries its current observed version, resource identity, observations and four layers; `expected` yields an explicit mismatch when versions differ.
+The view carries its current observed version, resource identity, observations and four layers; `expected` yields an explicit mismatch only when the current observed version differs.
 An optional evidence ID can supply a separately labeled `reported_version` from that receipt's `versions[subject]` when no version is observed.
 Reported or historical lineage never changes deployment or qualifies as live proof; receipt-reported lineage without a matching current resource binding stays stale, and a source revision or built artifact alone establishes no installed version.
 Stages with no observed version or receipt remain unknown; unqualified receipt reports remain visible as stale.
