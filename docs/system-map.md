@@ -107,6 +107,7 @@ Only the new prerequisite references are validated at intake; the existing defer
 
 Optional `access_dependencies` holds shared checks referenced by optional `interactions`; these extend the manifest rather than create a second ledger.
 Each dependency requires `id`, `title`, `kind`, `subject`, nonempty `owners` (the existing owner/task shape), and `next_check`.
+`participant` names `caller`, `identity`, or `target` for a dependency used by an interaction; omitting it leaves that dependency's participant mapping unknown.
 Its optional `observation` belongs to that subject; optional `evidence` references an owner receipt through the existing evidence store.
 `kind` is `role-existence`, `trust`, `identity-policy`, `resource-policy`, `key-policy`, `permissions-boundary`, `session-policy`, `organization-policy`, `endpoint-policy`, `pass-role`, `configuration`, or `tags`.
 `applicability` defaults to `required`; `not-applicable` requires a specific `reason` and cannot carry an observation or baseline.
@@ -124,6 +125,10 @@ Each interaction requires `id`, `title`, `caller` and `target` subject IDs, `ide
 `context_complete` defaults to false and must be explicitly true for complete declared coverage or request proof.
 Context records the concrete target constraints, service principal, transport, tag and condition inputs that matter; unresolved inputs must be described explicitly rather than assumed satisfied.
 Every interaction exposes missing dependency kinds for role existence, trust, identity/resource/key policies and boundary/session/organization/endpoint restrictions, even when no checks for those kinds were declared.
+Role, trust, identity-policy, boundary, session-policy and pass-role checks map to `identity`; resource and key policies map to `target`.
+Organization, endpoint, configuration and tag checks can name any participant, but their subject must be that participant.
+Attached, inline and boundary policy subjects may differ from the identity only when the identity's single complete role read establishes the corresponding policy membership; an SQS key-policy subject may differ from the target only through that target queue's active `key_dependency`.
+Other subject mismatches and ambiguous or missing role mappings remain gaps, even when a check's kind and baseline match.
 Its required dependency closure includes the attached, inline and boundary policy checks identified by linked role reads, plus the declared key-policy check when a linked SQS read observes an active KMS key.
 Checks omitted from the interaction's declared `dependencies` remain explicit gaps even when their documents were observed elsewhere; all required checks enter the request assertion, so a changed check invalidates earlier proof.
 Incomplete context and missing or stale request receipts appear in the consolidated gap list, with shared dependency gaps listed once and linked to every affected interaction.

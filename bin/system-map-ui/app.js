@@ -726,7 +726,7 @@
         i.missing_kinds.length ? h("p", { class: "callout", text: "Unmapped checks: " + i.missing_kinds.join(", ") }) : null,
         h("details", null, h("summary", { text: "Policy, trust and configuration checks (" + deps.length + ")" }),
           h("ul", { class: "list" }, deps.map(function (d) {
-            return h("li", { class: "item" }, h("strong", { text: d.title }), " · ", d.kind, i.unlinked_dependencies.includes(d.id) ? " · not linked to interaction" : "",
+            return h("li", { class: "item" }, h("strong", { text: d.title }), " · ", d.kind, i.unlinked_dependencies.includes(d.id) ? " · not linked to interaction" : "", i.unmatched_dependencies.includes(d.id) ? " · participant relationship unknown" : "",
               h("p", null, chip("prerequisite", d.state), " · ", d.comparison.replace(/-/g, " "), " · ", d.coverage),
               h("p", { text: d.reason || d.error || "Baseline observation only; no effective permission conclusion." }),
               h("p", { class: "muted", text: "Source: " + (d.source || "uncollected") + " · Resource: " + d.subject }), stamp(d.checked_at),

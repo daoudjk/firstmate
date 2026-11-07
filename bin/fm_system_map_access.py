@@ -125,13 +125,15 @@ def validate_manifest(manifest, subjects, credentials, phases, error):
     subject_map = {s["id"]: s for s in manifest["components"] + manifest["connections"]}
     deps = set()
     for d in records("access_dependencies"):
-        fields(d, {"id", "title", "kind", "subject", "observation", "baseline", "applicability", "reason", "owners", "next_check", "references", "key_dependency", "evidence"})
+        fields(d, {"id", "title", "kind", "subject", "participant", "observation", "baseline", "applicability", "reason", "owners", "next_check", "references", "key_dependency", "evidence"})
         identifier(d, deps)
         for k in ("title", "next_check"):
             text(d, k)
         owners(d)
         if d.get("subject") not in subjects or d.get("kind") not in KINDS:
             fail("dependency must name an existing subject and kind")
+        if "participant" in d and d["participant"] not in ("caller", "identity", "target"):
+            fail("dependency participant must be caller, identity or target")
         if d.get("applicability", "required") not in ("required", "not-applicable"):
             fail("invalid applicability")
         if d.get("applicability") == "not-applicable":
@@ -487,6 +489,7 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
         if d["state"] == "observed" and d["comparison"] in ("matches-baseline", "representation-only") and (d["unobserved_policy_documents"] or any(r["state"] != "observed" for r in d["reference_states"])):
             d["comparison"] = "insufficient-evidence"
     policy_checks = {}
+    policy_identities = {}
     for d in deps.values():
         if d["kind"] not in ("identity-policy", "permissions-boundary"):
             continue
@@ -499,9 +502,16 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
             identity = digest(entry["policy_arn"])
         if identity:
             policy_checks.setdefault((d["kind"], identity), []).append(d["id"])
+            policy_identities[d["id"]] = identity
     interactions = []
     gaps = []
     for item in manifest.get("interactions", []):
+        identity_observations = [o for o in declarations[item["identity"]].get("observe", []) if o["adapter"] == "aws.iam_role_access"] if item["identity"] in declarations else []
+        role_facts = observations.get(identity_observations[0]["id"], {}).get("facts", {}) if len(identity_observations) == 1 else {}
+        role_inventory = set()
+        for inventory in ("list-attached-role-policies", "list-role-policies"):
+            role_inventory.update(role_facts.get(inventory, {}).get("policy_identities", []))
+        boundary_identity = role_facts.get("boundary_policy_identity")
         declared = set(item["dependencies"])
         required = set(declared)
         for did in declared:
@@ -517,10 +527,48 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
         unlinked = sorted(required - declared)
         required_ids = item["dependencies"] + unlinked
         linked = [deps[did] for did in required_ids]
-        missing_kinds = sorted(REQUIRED_KINDS - {d["kind"] for d in linked})
-        if ({"iam:passrole"} | PASS_ROLE_OPERATIONS) & {operation.lower() for operation in item["operations"]} and "pass-role" not in {d["kind"] for d in linked}:
+        def participant_match(d):
+            slot = d.get("participant")
+            if slot not in ("caller", "identity", "target"):
+                return False
+            subject = item[slot]
+            kind = d["kind"]
+            declaration = next((o for o in declarations[d["subject"]].get("observe", []) if o["id"] == d.get("observation")), None)
+            adapter = declaration["adapter"] if declaration else None
+            if kind in ("role-existence", "trust", "identity-policy", "permissions-boundary", "session-policy", "pass-role") and slot != "identity":
+                return False
+            if kind == "resource-policy" and slot != "target":
+                return False
+            if kind == "key-policy" and slot != "target":
+                return False
+            if kind == "identity-policy":
+                if d["subject"] == subject and not adapter:
+                    return True
+                if adapter not in ("aws.iam_inline_policy", "aws.iam_managed_policy"):
+                    return False
+                return bool(role_facts.get("complete") and policy_identities.get(d["id"]) in role_inventory)
+            if kind == "permissions-boundary":
+                if d["subject"] == subject and not adapter:
+                    return True
+                if adapter != "aws.iam_managed_policy":
+                    return False
+                return bool(role_facts.get("complete") and boundary_identity and policy_identities.get(d["id"]) == boundary_identity)
+            if kind == "key-policy":
+                if d["subject"] == subject:
+                    return adapter in (None, "aws.kms_policy")
+                return any(q["subject"] == item["target"] and q.get("key_dependency") == d["id"] and q["facts"].get("kms_key_identity") for q in linked)
+            if kind in ("role-existence", "trust"):
+                return d["subject"] == subject and adapter in (None, "aws.iam_role_access")
+            if kind == "resource-policy":
+                return d["subject"] == subject and adapter in (None, "aws.s3_policy", "aws.sqs_policy", "aws.dynamodb_policy")
+            if d["subject"] == subject:
+                return True
+            return False
+        matched = {d["id"] for d in linked if participant_match(d)}
+        missing_kinds = sorted(REQUIRED_KINDS - {d["kind"] for d in linked if d["id"] in matched})
+        if ({"iam:passrole"} | PASS_ROLE_OPERATIONS) & {operation.lower() for operation in item["operations"]} and "pass-role" not in {d["kind"] for d in linked if d["id"] in matched}:
             missing_kinds.append("pass-role")
-        missing = [d["id"] for d in linked if d["id"] in unlinked or (d["state"] != "not-applicable" and (d["state"] != "observed" or d["comparison"] not in ("matches-baseline", "representation-only")))]
+        missing = [d["id"] for d in linked if d["id"] in unlinked or d["id"] not in matched or (d["state"] != "not-applicable" and (d["state"] != "observed" or d["comparison"] not in ("matches-baseline", "representation-only")))]
         participants = set([item["caller"], item["target"], item["identity"]]) & set(subjects)
         participant_gaps = []
         for sid in sorted(participants):
@@ -551,7 +599,7 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
             if current and not missing and not missing_kinds and item.get("context_complete") is True:
                 proof = {"pass": "demonstrated", "fail": "failed", "not-run": "not-demonstrated"}[rec["result"]]
         status = "gaps" if missing or missing_kinds or item.get("context_complete") is not True else "declared-baselines-observed"
-        interactions.append(dict(item, required_dependencies=required_ids, unlinked_dependencies=unlinked, static_coverage=status, missing_dependencies=missing,
+        interactions.append(dict(item, required_dependencies=required_ids, unlinked_dependencies=unlinked, unmatched_dependencies=sorted(set(required_ids) - matched), static_coverage=status, missing_dependencies=missing,
                                  missing_kinds=missing_kinds, participant_gaps=participant_gaps, assertion_digest=assertion,
                                  request_proof=proof, evidence_record=rec,
                                  effective_access="unknown", propagation="unobserved", context_coverage="declared-complete" if item.get("context_complete") is True else "unobserved"))
@@ -563,7 +611,7 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
             gaps.append({"interaction": item["id"], "kind": "actual-request", "state": proof, "owners": item["owners"], "next_check": "Supply a current exact-version and binding request receipt through the existing owner."})
         for did in missing:
             d = deps[did]
-            gaps.append({"interaction": item["id"], "dependency": did, "subject": d["subject"], "state": d["state"], "comparison": d["comparison"], "title": d["title"], "kind": d["kind"], "owners": d["owners"], "next_check": ("Link this required check to the interaction. " if did in unlinked else "") + d["next_check"]})
+            gaps.append({"interaction": item["id"], "dependency": did, "subject": d["subject"], "state": d["state"], "comparison": d["comparison"], "title": d["title"], "kind": d["kind"], "owners": d["owners"], "next_check": ("Link this required check to the interaction. " if did in unlinked else "Map this check to the correct participant and observed relationship. " if did not in matched else "") + d["next_check"]})
         for kind in missing_kinds:
             gaps.append({"interaction": item["id"], "kind": kind, "state": "unmapped", "owners": item["owners"], "next_check": "Declare " + kind + " coverage or a reasoned not-applicable dependency. " + item["next_check"]})
     phases = [{"id": p["id"], "title": p["title"], "interactions": [i["id"] for i in interactions if p["id"] in i["phases"]]} for p in manifest.get("lifecycle", {}).get("phases", [])]
