@@ -129,8 +129,11 @@ Role, trust, identity-policy, boundary, session-policy and pass-role checks map 
 Organization, endpoint, configuration and tag checks can name any participant, but their subject must be that participant.
 Attached, inline and boundary policy subjects may differ from the identity only when the identity's single complete role read establishes the corresponding policy membership; an SQS key-policy subject may differ from the target only through that target queue's active `key_dependency`.
 Other subject mismatches and ambiguous or missing role mappings remain gaps, even when a check's kind and baseline match.
-Its required dependency closure comes from the current bound identity-role inventory, including every attached, inline and boundary policy check, plus the declared key-policy check when a linked SQS read observes an active KMS key. Missing policy documents remain individual gaps even when role existence and trust come from owner receipts; incomplete role inventory stays unknown. The identity-role inventory also enters the request assertion.
-Checks omitted from the interaction's declared `dependencies` remain explicit gaps even when their documents were observed elsewhere; all required checks enter the request assertion, so a changed check invalidates earlier proof.
+Its required dependency closure comes from the current bound identity-role inventory, requiring a qualified check for each attached or inline policy identity and the boundary policy identity, plus the declared key-policy check when a linked SQS read observes an active KMS key.
+Missing policy documents remain individual gaps even when role existence and trust come from owner receipts; incomplete role inventory stays unknown.
+The identity-role inventory also enters the request assertion.
+A policy identity needs one participant-bound linked check; duplicate checks for the same managed policy on another role neither create a gap nor cover a missing or denied linked check.
+Required checks omitted from the interaction's declared `dependencies` remain explicit gaps even when their documents were observed elsewhere; the required checks enter the request assertion, so a changed check invalidates earlier proof.
 Incomplete context and missing or stale request receipts appear in the consolidated gap list, with shared dependency gaps listed once and linked to every affected interaction.
 An `iam:PassRole` assertion or a known role-carrying request (`lambda:CreateFunction`, `lambda:UpdateFunctionConfiguration`, `scheduler:CreateSchedule`, `scheduler:UpdateSchedule`, `ecs:RegisterTaskDefinition`, `ecs:RunTask`, `ec2:RunInstances`) additionally requires a `pass-role` dependency, including an explicit not-applicable reason when no role is passed.
 Action spelling is compared without case for this dependency check.
@@ -155,7 +158,7 @@ The fixed access adapters use only these exact configured bindings and API calls
 
 Role policy lists read one bounded service page with CLI pagination disabled; truncation, continuation markers or a missing completeness member leave the inventory incomplete.
 Incomplete or malformed role membership and boundary metadata cannot match a relationship baseline.
-Each attached/inline policy and configured boundary needs a separately declared current policy observation with a matching baseline; listing an attachment never means its document was read.
+Each attached or inline policy and configured boundary needs a separately declared policy-document check with a matching baseline and either a current observation or a qualified owner assessment; listing an attachment never means its document was read.
 The map does not enumerate accounts, collect secret values, pivot identities, simulate requests, grant permissions or retry denied reads under another identity.
 Independent configured checks finish despite another check being missing, denied or incomplete, subject to the existing collection deadline and per-call timeout.
 Access reads retain projected facts, hashes, collection scope and observing identity in the current snapshot and successful observation history.
