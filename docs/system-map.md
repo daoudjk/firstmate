@@ -111,6 +111,8 @@ Its optional `observation` belongs to that subject; optional `evidence` referenc
 `kind` is `role-existence`, `trust`, `identity-policy`, `resource-policy`, `key-policy`, `permissions-boundary`, `session-policy`, `organization-policy`, `endpoint-policy`, `pass-role`, `configuration`, or `tags`.
 `applicability` defaults to `required`; `not-applicable` requires a specific `reason` and cannot carry an observation or baseline.
 An optional `baseline` records `format` (`policy`, `configuration`, `tags`, or `role`), explicit boolean `complete`, `source`, the original `observed_at`, and canonical `sha256` (required when complete) plus optional `raw_sha256`.
+For an SQS policy observation, a complete baseline also needs `encryption_identity`, the digest of the observed `KmsMasterKeyId` and `SqsManagedSseEnabled` attributes.
+If the queue uses a KMS key, its dependency must name `key_dependency`, an observed `key-policy` dependency whose KMS binding identifies that same key; otherwise coverage remains insufficient.
 The access adapters produce the digests to retain in a reviewed baseline; neither collection nor comparison adopts observations into intent.
 An incomplete or absent baseline remains `incomplete-baseline`, even when a new read succeeds.
 Policy dependencies may name exact literal principal subjects in `references`; their current role ARN fingerprints must match the observed policy's literal principals.
@@ -154,13 +156,14 @@ In particular, omitted task tags cannot become an empty historical tag baseline.
 Policy comparison parses JSON and ignores object key order, statement order and array order only in IAM Action/NotAction, Resource/NotResource and Principal/NotPrincipal members.
 It preserves scalar versus list types, identifiers, condition values and arbitrary arrays, with no condition evaluation or general IAM simulation.
 Equal canonical digests with different raw digests are `representation-only`; different digests are `policy-drift` or `configuration-drift`; incomplete reads or incompatible formats are `insufficient-evidence`.
+An SQS encryption identity change is `configuration-drift` even when its queue policy is unchanged, and it invalidates dependent interaction proof.
 These are conservative document comparisons, not effective-permission verdicts.
 `declared-baselines-observed` means every declared check and required kind has current baseline coverage; `effective_access` always remains `unknown`.
 Explicit denies, unknown condition inputs and unobserved restrictions therefore cannot be converted into an Allow claim by document presence.
 
 Owner receipts or imported reports can supply `access_checks` mapping dependency IDs to `{outcome, binding_digest, observer_identity, version, facts, error?}`.
 The two identities are SHA-256 fingerprints: the exact observation binding (or producer version binding when no observation is declared) and the observing identity.
-Successful `facts` contains `format`, explicit boolean `complete`, and canonical `sha256`, plus optional `raw_sha256`, `policy_identity`, `principal_identities`, Allow/Deny counts and condition operator names; policy values are refused.
+Successful `facts` contains `format`, explicit boolean `complete`, and canonical `sha256`, plus optional `raw_sha256`, SQS encryption and KMS key fingerprints, `policy_identity`, `principal_identities`, Allow/Deny counts and condition operator names; policy values are refused.
 An assessment requires original `observed_at`, explicit `scope`, a nonhistorical owner receipt/report and matching producer `versions` and `resource_identities`, with a fresh independently observed producer version and deployment.
 Qualified assessments are labeled `imported`, retaining source, time, scope and observing identity; missing, stale or mismatched evidence remains `missing-evidence` and unknown.
 Any collected result, including denial or an incomplete read, takes precedence over an imported assessment.

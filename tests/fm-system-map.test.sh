@@ -1551,9 +1551,10 @@ components.append({"id":"trust-source","title":"Required trust principal","obser
 for oid,adapter,binding in [('access-bucket','aws.s3_policy','access_bucket'),('access-inline','aws.iam_inline_policy','access_inline'),('access-managed','aws.iam_managed_policy','access_managed'),('access-queue','aws.sqs_policy','access_queue'),('access-table','aws.dynamodb_policy','access_table'),('access-key','aws.kms_policy','access_kms'),('access-tags','aws.ecs_task_metadata','access_tags')]:
  components.append({'id':oid,'title':oid,'observe':[{'id':oid+'-read','adapter':adapter,'binding':binding,'role':'version'}],'version_from':oid+'-read'})
 deps=[]
-for did,kind,subject in [('bucket-check','resource-policy','access-bucket'),('trust-check','trust','access-role'),('role-check','role-existence','trust-source'),('inline-check','identity-policy','access-inline'),('key-check','key-policy','access-key'),('tags-check','tags','access-tags')]:
+for did,kind,subject in [('bucket-check','resource-policy','access-bucket'),('trust-check','trust','access-role'),('role-check','role-existence','trust-source'),('inline-check','identity-policy','access-inline'),('key-check','key-policy','access-key'),('queue-check','resource-policy','access-queue'),('tags-check','tags','access-tags')]:
  d={'id':did,'title':did,'kind':kind,'subject':subject,'observation':next(c for c in components if c['id']==subject)['observe'][0]['id'],'baseline':dict(base),'owners':owners,'next_check':'Read exact configured metadata with existing identity.'}
  if did=='trust-check': d['references']=['trust-source']
+ if did=='queue-check': d['key_dependency']='key-check'; d['baseline']['encryption_identity']=sha({'KmsMasterKeyId':'fixture-key','SqsManagedSseEnabled':None})
  if did=='tags-check': d['baseline']={'format':'tags','complete':False,'source':'retained request omitted include=TAGS','observed_at':'2026-01-01T00:00:00Z'}
  deps.append(d)
 for kind in ['permissions-boundary','session-policy','organization-policy','endpoint-policy']:
@@ -1563,7 +1564,7 @@ m['interactions']=[{'id':'console-request','title':'Console to exact bucket','ca
 p.write_text(json.dumps(m))
 p=h/'data/system-map/example/bindings.json'; b=json.load(open(p)); b['scope']['expected_account']='123456789012'; b['bindings'].update({'access_role':{'role_name':'fixture-target'},'source_role':{'role_name':'fixture-source'},'access_bucket':{'bucket':'fixture'},'access_inline':{'role_name':'fixture-target','policy_name':'fixture-inline'},'access_managed':{'policy_arn':'arn:aws:iam::123456789012:policy/fixture'},'access_queue':{'queue_url':'https://sqs.us-east-1.amazonaws.com/123456789012/fixture'},'access_table':{'resource_arn':'arn:aws:dynamodb:us-east-1:123456789012:table/fixture'},'access_kms':{'key_id':'fixture-key'},'access_tags':{'task_definition':'fixture:1'}}); p.write_text(json.dumps(b))
 reordered=json.loads(json.dumps(policy)); reordered['Statement'][0]['Principal']['AWS'].reverse(); reordered['Statement'][0]['Action'].reverse()
-responses={'get-bucket-policy':{'Policy':json.dumps(reordered)},'get-role-policy':{'PolicyDocument':policy},'get-policy':{'DefaultVersionId':'v7'},'get-policy-version':{'PolicyDocument':policy},'get-queue-attributes':{'Attributes':{'Policy':json.dumps(policy),'ApproximateNumberOfMessages':'0','ApproximateNumberOfMessagesNotVisible':'0'}},'get-resource-policy':{'Policy':json.dumps(policy)},'get-key-policy':{'Policy':json.dumps(policy)},'describe-task-definition':{'taskDefinition':{'taskDefinitionArn':'arn:aws:ecs:us-east-1:123456789012:task-definition/fixture:1','revision':1},'tags':[{'key':'Owner','value':'fixture'}]},'get-role':{'RoleId':'fixture-role-id','Arn':'arn:aws:iam::123456789012:role/fixture-source','CreateDate':'2026-01-01T00:00:00Z','PermissionsBoundary':None,'AssumeRolePolicyDocument':{'Statement':[{'Effect':'Allow','Principal':{'AWS':'arn:aws:iam::123456789012:role/fixture-source'},'Action':'sts:AssumeRole'}]}},'list-attached-role-policies':{'AttachedPolicies':[],'IsTruncated':False},'list-role-policies':{'PolicyNames':[],'IsTruncated':False}}
+responses={'get-bucket-policy':{'Policy':json.dumps(reordered)},'get-role-policy':{'PolicyDocument':policy},'get-policy':{'DefaultVersionId':'v7'},'get-policy-version':{'PolicyDocument':policy},'get-queue-attributes':{'Attributes':{'Policy':json.dumps(policy),'KmsMasterKeyId':'fixture-key','ApproximateNumberOfMessages':'0','ApproximateNumberOfMessagesNotVisible':'0'}},'get-resource-policy':{'Policy':json.dumps(policy)},'get-key-policy':{'Policy':json.dumps(policy)},'describe-task-definition':{'taskDefinition':{'taskDefinitionArn':'arn:aws:ecs:us-east-1:123456789012:task-definition/fixture:1','revision':1},'tags':[{'key':'Owner','value':'fixture'}]},'get-role':{'RoleId':'fixture-role-id','Arn':'arn:aws:iam::123456789012:role/fixture-source','CreateDate':'2026-01-01T00:00:00Z','PermissionsBoundary':None,'AssumeRolePolicyDocument':{'Statement':[{'Effect':'Allow','Principal':{'AWS':'arn:aws:iam::123456789012:role/fixture-source'},'Action':'sts:AssumeRole'}]}},'list-attached-role-policies':{'AttachedPolicies':[],'IsTruncated':False},'list-role-policies':{'PolicyNames':[],'IsTruncated':False}}
 (h/'aws-state.json').write_text(json.dumps({'responses':responses})); (h/'access-original.json').write_text(json.dumps({'responses':responses}))
 PYTEST
   out=$(map "$home" collect) || fail "access collection: $out"
@@ -1620,6 +1621,7 @@ h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json
 for dep in m['access_dependencies']:
  if dep.get('observation'):
   facts=snap['observations'][dep['observation']]['facts']; dep['baseline']={'format':facts['format'],'complete':True,'sha256':facts['sha256'],'raw_sha256':facts['raw_sha256'],'source':'fixture exact read','observed_at':snap['finished_at']}
+  if dep['id']=='queue-check': dep['baseline']['encryption_identity']=facts['encryption_identity']
  else:
   dep['applicability']='not-applicable'; dep['reason']='Synthetic fixture with no restriction in this declared class; no production claim.'
 p.write_text(json.dumps(m))
@@ -1639,6 +1641,26 @@ PYTEST
   map "$home" collect >/dev/null || fail "repeat identical read"
   view_json "$home"
   assert_equals "demonstrated" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "identical refreshed checks preserve exact receipt binding"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+p=pathlib.Path(sys.argv[1])/'aws-state.json'; s=json.load(open(p)); s['responses']['get-queue-attributes']['Attributes']['KmsMasterKeyId']='replacement-key'; p.write_text(json.dumps(s))
+PYTEST
+  map "$home" collect >/dev/null || fail "changed queue encryption key"
+  view_json "$home"
+  assert_equals "configuration-drift" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="queue-check")["comparison"]')" "changed key with unchanged queue policy drifts"
+  assert_equals "matches-baseline" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="key-check")["comparison"]')" "old key policy read alone cannot cover the queue"
+  assert_equals "stale" "$(py "$home/view.json" 'd["access"]["interactions"][0]["request_proof"]')" "changed queue key invalidates request proof"
+  python3 - "$home" <<'PYTEST'
+import json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); v=json.load(open(h/'view.json')); d=next(d for d in m['access_dependencies'] if d['id']=='queue-check'); observed=next(d for d in v['access']['dependencies'] if d['id']=='queue-check'); d['baseline']['encryption_identity']=observed['facts']['encryption_identity']; p.write_text(json.dumps(m))
+PYTEST
+  view_json "$home"
+  assert_equals "insufficient-evidence" "$(py "$home/view.json" 'next(d for d in d["access"]["dependencies"] if d["id"]=="queue-check")["comparison"]')" "updated queue baseline cannot keep old key-policy relationship green"
+  python3 - "$home" <<'PYTEST'
+import hashlib,json,sys,pathlib
+h=pathlib.Path(sys.argv[1]); (h/'aws-state.json').write_text((h/'access-original.json').read_text()); p=h/'data/system-map/example/manifest.json'; m=json.load(open(p)); d=next(d for d in m['access_dependencies'] if d['id']=='queue-check'); d['baseline']['encryption_identity']=hashlib.sha256(json.dumps({'KmsMasterKeyId':'fixture-key','SqsManagedSseEnabled':None},sort_keys=True,separators=(',',':')).encode()).hexdigest(); p.write_text(json.dumps(m))
+PYTEST
+  map "$home" collect >/dev/null || fail "restore queue key"
   python3 - "$home" <<'PYTEST'
 import json,sys,pathlib,datetime
 h=pathlib.Path(sys.argv[1]);p=h/'data/system-map/example/manifest.json';m=json.load(open(p));d=next(d for d in m['access_dependencies'] if d['id']=='endpoint-policy');d.pop('applicability');d.pop('reason');d['evidence']='fixture-owner-check';d['baseline']={'format':'configuration','complete':True,'sha256':'0'*64,'raw_sha256':'0'*64,'source':'fixture owner endpoint policy hash','observed_at':datetime.datetime.now(datetime.timezone.utc).isoformat()};p.write_text(json.dumps(m))

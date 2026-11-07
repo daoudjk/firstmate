@@ -118,7 +118,7 @@ def validate_manifest(manifest, subjects, credentials, phases, error):
     subject_map = {s["id"]: s for s in manifest["components"] + manifest["connections"]}
     deps = set()
     for d in records("access_dependencies"):
-        fields(d, {"id", "title", "kind", "subject", "observation", "baseline", "applicability", "reason", "owners", "next_check", "references", "evidence"})
+        fields(d, {"id", "title", "kind", "subject", "observation", "baseline", "applicability", "reason", "owners", "next_check", "references", "key_dependency", "evidence"})
         identifier(d, deps)
         for k in ("title", "next_check"):
             text(d, k)
@@ -139,10 +139,10 @@ def validate_manifest(manifest, subjects, credentials, phases, error):
             fail("invalid evidence reference")
         if "baseline" in d:
             b = d["baseline"]
-            fields(b, {"format", "complete", "sha256", "raw_sha256", "source", "observed_at"})
+            fields(b, {"format", "complete", "sha256", "raw_sha256", "encryption_identity", "source", "observed_at"})
             if b.get("format") not in ("policy", "configuration", "tags", "role") or not isinstance(b.get("complete"), bool):
                 fail("baseline requires format and explicit completeness")
-            for k in ("sha256", "raw_sha256"):
+            for k in ("sha256", "raw_sha256", "encryption_identity"):
                 if k in b and not re.fullmatch(r"[0-9a-f]{64}", str(b[k])):
                     fail("invalid baseline digest")
             if b["complete"] and "sha256" not in b:
@@ -154,6 +154,17 @@ def validate_manifest(manifest, subjects, credentials, phases, error):
                 datetime.fromisoformat(b["observed_at"].replace("Z", "+00:00"))
             except (KeyError, ValueError, TypeError, AttributeError):
                 fail("baseline requires original observed_at")
+    dependency_map = {d["id"]: d for d in manifest.get("access_dependencies", [])}
+    for d in dependency_map.values():
+        if "key_dependency" not in d:
+            continue
+        key = dependency_map.get(d["key_dependency"]) if isinstance(d["key_dependency"], str) else None
+        if not key or key["kind"] != "key-policy" or not key.get("observation"):
+            fail("key_dependency must name an observed key-policy dependency")
+        queue_observation = next((o for o in subject_map[d["subject"]].get("observe", []) if o["id"] == d.get("observation")), None)
+        key_observation = next(o for o in subject_map[key["subject"]]["observe"] if o["id"] == key["observation"])
+        if not queue_observation or queue_observation["adapter"] != "aws.sqs_policy" or key_observation["adapter"] != "aws.kms_policy":
+            fail("key_dependency must link an SQS read to a KMS policy read")
     seen = set()
     for i in records("interactions"):
         fields(i, {"id", "title", "caller", "identity", "target", "operations", "phases", "dependencies", "context", "context_complete", "analysis_scope", "owners", "next_check", "evidence"})
@@ -192,9 +203,9 @@ def validate_receipt(record, error):
         if any(not re.fullmatch(r"[0-9a-f]{64}", str(check.get(k))) for k in ("binding_digest", "observer_identity")):
             raise error("evidence.access_checks: exact binding and observer identity required")
         facts = check.get("facts", {})
-        if not isinstance(facts, dict) or set(facts) - {"format", "complete", "sha256", "raw_sha256", "policy_identity", "principal_identities", "allow_statements", "deny_statements", "condition_operators"}:
+        if not isinstance(facts, dict) or set(facts) - {"format", "complete", "sha256", "raw_sha256", "encryption_identity", "kms_key_identity", "policy_identity", "principal_identities", "allow_statements", "deny_statements", "condition_operators"}:
             raise error("evidence.access_checks: only safe policy/configuration metadata allowed")
-        for key in ("sha256", "raw_sha256", "policy_identity"):
+        for key in ("sha256", "raw_sha256", "encryption_identity", "kms_key_identity", "policy_identity"):
             if key in facts and not re.fullmatch(r"[0-9a-f]{64}", str(facts[key])):
                 raise error("evidence.access_checks: metadata fingerprints must be digests")
         if "principal_identities" in facts and (not isinstance(facts["principal_identities"], list) or any(not re.fullmatch(r"[0-9a-f]{64}", str(v)) for v in facts["principal_identities"])):
@@ -302,7 +313,9 @@ def adapters(result):
         except (ValueError, TypeError, KeyError):
             return unknown("Queue policy invalid.")
         facts["encryption_identity"] = digest({k: data["Attributes"].get(k) for k in ("KmsMasterKeyId", "SqsManagedSseEnabled")})
-        return result("ok", state="observed", facts=facts, version=facts["sha256"])
+        if data["Attributes"].get("KmsMasterKeyId"):
+            facts["kms_key_identity"] = digest(data["Attributes"]["KmsMasterKeyId"])
+        return result("ok", state="observed", facts=facts, version=digest({"policy": facts["sha256"], "encryption": facts["encryption_identity"]}))
 
     def table(runner, b):
         return policy_read(runner, "dynamodb", "get-resource-policy", ["--resource-arn", b["resource_arn"]], "Policy")
@@ -330,14 +343,20 @@ def adapters(result):
     return dict(zip(BINDING_FIELDS, (role, inline, managed, bucket, queue, table, key, task)))
 
 
-def compare_baseline(baseline, observation):
+def compare_baseline(baseline, observation, queue=False):
     if not baseline or not baseline.get("complete"):
+        return "incomplete-baseline"
+    if queue and not baseline.get("encryption_identity"):
         return "incomplete-baseline"
     facts = observation.get("facts", {})
     if observation.get("outcome") != "ok" or facts.get("complete") is not True or not facts.get("sha256") or baseline.get("format") != facts.get("format"):
         return "insufficient-evidence"
+    if queue and not facts.get("encryption_identity"):
+        return "insufficient-evidence"
     if baseline["sha256"] != facts["sha256"]:
         return "policy-drift" if facts["format"] == "policy" else "configuration-drift"
+    if queue and baseline["encryption_identity"] != facts["encryption_identity"]:
+        return "configuration-drift"
     if baseline.get("raw_sha256") and baseline["raw_sha256"] != facts.get("raw_sha256"):
         return "representation-only"
     return "matches-baseline"
@@ -388,13 +407,28 @@ def build_view(manifest, bindings, subjects, evidence, observations, interval, n
                 state = "stale"
             elif state == "observed" and obs.get("adapter", "").startswith("aws.") and (obs.get("scope", {}).get("account_verified") is not True or not obs.get("scope", {}).get("collector_identity")):
                 state = "unknown"
-        baseline = "not-applicable" if state == "not-applicable" else compare_baseline(d.get("baseline"), obs or {})
+        declaration = next((o for o in declarations[d["subject"]].get("observe", []) if o["id"] == d.get("observation")), None)
+        queue = bool(declaration and declaration["adapter"] == "aws.sqs_policy")
+        baseline = "not-applicable" if state == "not-applicable" else compare_baseline(d.get("baseline"), obs or {}, queue)
         deps[d["id"]] = dict(d, state=state, comparison=baseline,
                               coverage="not-required" if state == "not-applicable" else "imported" if imported else "observed" if obs else "missing-evidence" if d.get("evidence") else "uncollected" if d.get("observation") else "unmapped",
                               checked_at=(obs or {}).get("checked_at"), scope=(obs or {}).get("scope"),
                               resource_identity=(obs or {}).get("binding_digest"), version=(obs or {}).get("version"),
                               facts=(obs or {}).get("facts", {}), error=(obs or {}).get("error"),
                               source=(obs or {}).get("adapter"), provenance=named.get("provenance") if imported else None, reads=(obs or {}).get("reads", []))
+    for d in deps.values():
+        if "key_dependency" not in d or d["state"] != "observed":
+            continue
+        key = deps[d["key_dependency"]]
+        key_declaration = next(o for o in declarations[key["subject"]]["observe"] if o["id"] == key["observation"])
+        key_entry = bindings.get("bindings", {}).get(key_declaration["binding"])
+        expected = digest(key_entry["key_id"]) if not binding_problem("aws.kms_policy", key_entry) else None
+        if d["comparison"] in ("matches-baseline", "representation-only") and (not expected or d["facts"].get("kms_key_identity") != expected or key["state"] != "observed" or key["comparison"] not in ("matches-baseline", "representation-only")):
+            d["comparison"] = "insufficient-evidence"
+    for d in deps.values():
+        declaration = next((o for o in declarations[d["subject"]].get("observe", []) if o["id"] == d.get("observation")), None)
+        if declaration and declaration["adapter"] == "aws.sqs_policy" and d["state"] == "observed" and d["facts"].get("kms_key_identity") and "key_dependency" not in d:
+            d["comparison"] = "insufficient-evidence"
     # Inventory completeness is separate from role existence and trust. Every
     # policy in the bounded attachment inventory needs its own current read.
     observed_policies = {d["facts"].get("policy_identity") for d in deps.values() if d["kind"] in ("identity-policy", "permissions-boundary") and d["state"] == "observed" and d["comparison"] in ("matches-baseline", "representation-only")}
