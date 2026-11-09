@@ -57,6 +57,10 @@ _access_spec = importlib.util.spec_from_file_location("fm_system_map_access", os
 access = importlib.util.module_from_spec(_access_spec)
 _access_spec.loader.exec_module(access)
 
+_catalog_spec = importlib.util.spec_from_file_location("fm_system_map_catalog", os.path.join(os.path.dirname(os.path.abspath(__file__)), "fm_system_map_catalog.py"))
+catalog = importlib.util.module_from_spec(_catalog_spec)
+_catalog_spec.loader.exec_module(catalog)
+
 MANIFEST_SCHEMA = "fm-system-map.manifest.v1"
 BINDINGS_SCHEMA = "fm-system-map.bindings.v1"
 EVIDENCE_SCHEMA = "fm-system-map.evidence.v1"
@@ -1319,6 +1323,7 @@ def _collect_locked(home, cfg, project, started):
         "collector": {"status": status, "error": scope_error, "failed_observations": len(failed), "total_observations": len(outcomes), "fixture": fixture},
         "scope": public_scope,
         "observations": observations,
+        "catalog": catalog.collect(home.pdata(project, "catalog.json"), iso()),
         "ingested_evidence": moved,
         "rejected_receipts": rejected,
     }
@@ -1683,6 +1688,7 @@ def build_view(home, cfg, project):
         "order": {"components": [c["id"] for c in manifest["components"]], "connections": [c["id"] for c in manifest["connections"]]},
         "acceptance": acceptance,
         "timeline": timeline,
+        "catalog": catalog.view((snapshot or {}).get("catalog"), home.pdata(project, "catalog.json"), now_ts()),
         "readiness": prerequisite_view(manifest, bindings, subjects, evidence, observations, interval),
         "credentials": credential_view(manifest),
         "access": access.build_view(manifest, bindings, subjects, evidence, observations, interval, now_ts(), parse_iso, observation_binding_digest, binding_problem),

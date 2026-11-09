@@ -2177,6 +2177,72 @@ test_presentation_preserves_evidence_distinctions
 
 test_access_relationships_and_conservative_comparison
 
+test_optional_catalog_projection() {
+  local home out
+  home=$(new_home catalog)
+  python3 - "$home" <<'PYTEST'
+import datetime, hashlib, json, pathlib, sys
+home = pathlib.Path(sys.argv[1]); root = home / "data/system-map/example"
+source = root / "owner.json"; source.write_text('{"selected":"current"}')
+now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+link = [{"label": "Source receipt", "url": "https://example.com/repo/receipt"}]
+def evidence(status, identity=None):
+    return dict(status=status, checked_at=now, note="Storage is independent of runtime wiring", sources=link, identity=identity)
+images = [dict(id="image-"+status, title=status, identity="sha256:"+"a"*64, category="selected-binding", platform="linux/amd64", families=["F1"], sources=link, storage=evidence(status, "sha256:"+"a"*64), note="Exact selected pin only") for status in ("remote-verified", "local-only", "missing", "unknown")]
+data = dict(schema="fm-system-map.catalog.v1", title="Example families", generated_at=now, max_age_seconds=3600, scope="Partial source projection; unresolved services remain unknown", sources=[dict(path=str(source), sha256=hashlib.sha256(source.read_bytes()).hexdigest(), label="Owner selection")], scenarios=[dict(id="F1",title="One candidate",candidate="version 1", objective="Observe an authorized result",topology="Two hosts in one segment",images=[i["id"] for i in images],binding_note="Additional bindings unresolved",sources=link,wiring=evidence("unresolved"),validation=evidence("not-demonstrated"))],images=images, private_extra="never-return-this")
+(root/"catalog.json").write_text(json.dumps(data))
+(root/"catalog.original").write_text(json.dumps(data))
+PYTEST
+  map "$home" collect example >/dev/null
+  out=$(map "$home" view example --compact)
+  printf '%s' "$out" | python3 -c 'import json,sys; v=json.load(sys.stdin); c=v["catalog"]; assert c["status"]=="ok"; assert len(c["scenarios"])==1; assert {r["storage"]["status"] for r in c["images"]}=={"remote-verified","local-only","missing","unknown"}; assert all(r["storage"]["freshness"]=="fresh" for r in c["images"]); assert "path" not in c["sources"][0]; assert "private_extra" not in c; assert c["scenarios"][0]["validation"]["status"]=="not-demonstrated"' || fail "catalog separates storage, wiring, proof and private fields"
+  python3 - "$home" <<'PYTEST'
+import json, pathlib, sys
+p=pathlib.Path(sys.argv[1])/"data/system-map/example/catalog.json"; d=json.loads(p.read_text()); d["images"][0]["storage"]["checked_at"]="2000-01-01T00:00:00Z"; p.write_text(json.dumps(d))
+PYTEST
+  out=$(map "$home" view example --compact)
+  printf '%s' "$out" | python3 -c 'import json,sys; c=json.load(sys.stdin)["catalog"]; assert c["status"]=="stale" and c["refresh_needed"]; assert c["images"][0]["storage"]["freshness"]=="stale"' || fail "changed projection must invalidate displayed claims"
+  map "$home" collect example >/dev/null
+  out=$(map "$home" view example --compact)
+  printf '%s' "$out" | python3 -c 'import json,sys; c=json.load(sys.stdin)["catalog"]; assert c["images"][0]["storage"]["freshness"]=="stale"; assert c["images"][1]["storage"]["freshness"]=="fresh"' || fail "old receipt must not become fresh at collection"
+  printf 'changed source' > "$home/data/system-map/example/owner.json"
+  map "$home" collect example >/dev/null
+  out=$(map "$home" view example --compact)
+  printf '%s' "$out" | python3 -c 'import json,sys; c=json.load(sys.stdin)["catalog"]; assert c["status"]=="error" and "source changed" in c["error"]; assert not c.get("images")' || fail "source drift must not retain green claims"
+  python3 - "$home" "$MAP" <<'PYTEST'
+import hashlib,json,os,pathlib,subprocess,sys
+root=pathlib.Path(sys.argv[1])/"data/system-map/example"; env=dict(os.environ,FM_HOME=sys.argv[1],FM_SYSTEM_MAP_AWS=sys.argv[1]+"/fakebin/aws",FM_SYSTEM_MAP_FIXTURE="1",FAKE_AWS_LOG=sys.argv[1]+"/aws.log")
+original=json.loads((root/"catalog.original").read_text()); original["sources"][0]["sha256"]=hashlib.sha256((root/"owner.json").read_bytes()).hexdigest()
+def check(data):
+ (root/"catalog.json").write_text(json.dumps(data))
+ subprocess.run([sys.argv[2],"collect","example"],env=env,check=True,stdout=subprocess.DEVNULL)
+ v=json.loads(subprocess.check_output([sys.argv[2],"view","example","--compact"],env=env)); assert v["catalog"]["status"]=="error",v["catalog"]
+for url in ("javascript:alert(1)","http://example.com/x","https://user:pass@example.com/x","https://localhost/x","https://127.0.0.1/x","https://127.1/x","https://0x7f.1/x","https://example.com:444/x","file:///etc/passwd"):
+ data=json.loads(json.dumps(original)); data["images"][0]["sources"][0]["url"]=url; check(data)
+data=json.loads(json.dumps(original)); data["images"][0]["storage"]["identity"]="wrong-digest"; check(data)
+data=json.loads(json.dumps(original)); data["scenarios"][0]["validation"]["status"]="passed"; check(data)
+data=json.loads(json.dumps(original)); data["images"][0]["storage"]["checked_at"]="2999-01-01T00:00:00Z"; check(data)
+data=json.loads(json.dumps(original)); data["images"][0]["families"]=[]; check(data)
+for field in ("sources","images","scenarios"):
+ data=json.loads(json.dumps(original)); data[field]=[None]; check(data)
+data=json.loads(json.dumps(original)); data["images"][0]["storage"]["source_ids"]=["not-declared"]; check(data)
+data=json.loads(json.dumps(original)); data["images"][0]["storage"]["sources"]=[]; data["images"][0]["storage"]["source_ids"]=["Owner selection"]
+(root/"catalog.json").write_text(json.dumps(data))
+subprocess.run([sys.argv[2],"collect","example"],env=env,check=True,stdout=subprocess.DEVNULL)
+v=json.loads(subprocess.check_output([sys.argv[2],"view","example","--compact"],env=env)); assert v["catalog"]["status"]=="ok" and v["catalog"]["images"][0]["storage"]["source_ids"]==["Owner selection"]
+(root/"catalog.json").write_text("{broken")
+subprocess.run([sys.argv[2],"collect","example"],env=env,check=True,stdout=subprocess.DEVNULL)
+v=json.loads(subprocess.check_output([sys.argv[2],"view","example","--compact"],env=env)); assert v["catalog"]["status"]=="error"
+PYTEST
+  rm "$home/data/system-map/example/catalog.json"
+  map "$home" collect example >/dev/null
+  out=$(map "$home" view example --compact)
+  printf '%s' "$out" | python3 -c 'import json,sys; assert json.load(sys.stdin)["catalog"]["status"]=="disabled"' || fail "optional catalog must stay opt-in"
+  pass "optional catalog projects linked records; source drift, old/unknown evidence and unsafe links never turn green"
+}
+
+test_optional_catalog_projection
+
 test_proactive_prerequisites_and_lineage
 test_lineage_report_requires_current_binding
 test_prerequisite_receipt_requires_current_version

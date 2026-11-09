@@ -28,6 +28,8 @@
 <main class="page">
   <div class="tabs" role="tablist" aria-label="Views">
     <button role="tab" id="tab-map" aria-controls="view-map" aria-selected="true">Map</button>
+    <button role="tab" id="tab-scenarios" aria-controls="view-scenarios" aria-selected="false" tabindex="-1">Scenarios</button>
+    <button role="tab" id="tab-images" aria-controls="view-images" aria-selected="false" tabindex="-1">Images</button>
     <button role="tab" id="tab-access" aria-controls="view-access" aria-selected="false" tabindex="-1">Access coverage</button>
     <button role="tab" id="tab-ready" aria-controls="view-ready" aria-selected="false" tabindex="-1">Prerequisites</button>
     <button role="tab" id="tab-diff" aria-controls="view-diff" aria-selected="false" tabindex="-1">Differences <span class="count" id="diff-count"></span></button>
@@ -64,6 +66,30 @@
       <div class="tablewrap"><table class="table" id="edge-table"><thead><tr><th scope="col">Connection</th><th scope="col">From</th><th scope="col">To</th><th scope="col">Implementation</th><th scope="col">Runtime</th><th scope="col">Proof</th></tr></thead><tbody></tbody></table></div>
     </div>
     <aside class="detail" id="detail" aria-label="Selected item" tabindex="-1"></aside>
+  </section>
+
+  <section id="view-scenarios" role="tabpanel" aria-labelledby="tab-scenarios" class="view" hidden>
+    <h2 class="h2">Selected scenarios</h2>
+    <p class="hint">Candidate blueprints, required source images and unresolved physical bindings. Storage availability, actual wiring and live validation are independent.</p>
+    <div id="scenarios-health" class="catalog-health" aria-live="polite"></div>
+    <div class="access-filters">
+      <label>Find a family, objective or image<input id="scenarios-query" type="search"></label>
+      <label>Wiring<select id="scenarios-filter"><option value="all">All</option><option value="unresolved">Unresolved</option><option value="unknown">Unknown</option><option value="wired">Wired</option></select></label>
+    </div>
+    <p id="scenarios-count" class="hint" aria-live="polite"></p>
+    <div id="scenarios-list" class="catalog-list"></div>
+  </section>
+
+  <section id="view-images" role="tabpanel" aria-labelledby="tab-images" class="view" hidden>
+    <h2 class="h2">Images and custody</h2>
+    <p class="hint">Required selected bindings, extra unbound candidates and platform support. A registry upload establishes storage custody only; it does not prove admission, wiring, boot or scenario success.</p>
+    <div id="images-health" class="catalog-health" aria-live="polite"></div>
+    <div class="access-filters">
+      <label>Find an image, digest or family<input id="images-query" type="search"></label>
+      <label>Image category<select id="images-filter"><option value="all">All</option><option value="selected-binding">Required selected binding</option><option value="unbound-candidate">Extra unbound candidate</option><option value="platform-support">Platform support</option></select></label>
+    </div>
+    <p id="images-count" class="hint" aria-live="polite"></p>
+    <div id="images-list" class="catalog-list"></div>
   </section>
 
   <section id="view-access" role="tabpanel" aria-labelledby="tab-access" class="view" hidden>

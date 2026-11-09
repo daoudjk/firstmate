@@ -14,6 +14,7 @@
     // reloads and auto-refresh until saved or explicitly discarded.
     drafts: {},
     accessPhase: "all", accessQuery: "",
+    catalogTarget: null, scenarioQuery: "", imageQuery: "", scenarioFilter: "all", imageFilter: "all",
     zoom: 1
   };
   function draftKeys(prefix) { return Object.keys(state.drafts).filter(function (k) { return k.indexOf(prefix) === 0; }); }
@@ -110,6 +111,7 @@
     if (params.get("tab")) state.tab = params.get("tab");
     if (params.get("lens")) state.lens = params.get("lens");
     if (params.get("subject")) state.selected = params.get("subject");
+    state.catalogTarget = params.get("catalog");
     if (params.get("project")) state.project = params.get("project");
   }
   function writeHash() {
@@ -118,6 +120,7 @@
     params.set("tab", state.tab);
     params.set("lens", state.lens);
     if (state.selected) params.set("subject", state.selected);
+    if (state.catalogTarget) params.set("catalog", state.catalogTarget);
     history.replaceState(null, "", "#" + params.toString());
   }
 
@@ -169,6 +172,7 @@
     renderReadiness();
     renderAccess();
     renderCredentials();
+    renderCatalog();
     showTab(state.tab, false);
   }
 
@@ -897,8 +901,93 @@
     });
   }
 
+  // Optional private catalog. Every text field uses DOM text nodes; source
+  // links are checked again here in case a saved snapshot predates validation.
+  function sourceLinks(items) {
+    return h("ul", { class: "catalog-sources" }, (items || []).map(function (item) {
+      try {
+        var u = new URL(item.url);
+        if (u.protocol !== "https:" || u.username || u.password || (u.port && u.port !== "443")) return null;
+        return h("li", null, h("a", { href: u.href, rel: "noreferrer noopener", target: "_blank", text: item.label }));
+      } catch (e) { return null; }
+    }));
+  }
+  function catalogEvidence(label, record) {
+    record = record || { status: "unknown", freshness: "undated" };
+    var historical = record.freshness !== "fresh";
+    var positive = ["remote-verified", "wired", "passed"].indexOf(record.status) >= 0;
+    var tone = historical ? "warn" : positive ? "info" : record.status === "failed" || record.status === "missing" ? "bad" : "unknown";
+    return h("div", { class: "catalog-evidence" }, h("strong", { text: label + " " }),
+      h("span", { class: "chip chip--" + tone, text: historical ? record.freshness + " · " + record.status : record.status }),
+      h("div", { class: "hint" }, "Last verified: ", stamp(record.checked_at)),
+      h("p", { text: record.note || "No evidence recorded." }), sourceLinks(record.sources),
+      (record.source_ids || []).map(function (id) { return h("p", { class: "hint", text: "Receipt source: " + id }); }));
+  }
+  function catalogLink(kind, id, title) {
+    var params = new URLSearchParams({ project: state.project, tab: kind, catalog: id });
+    return h("a", { href: "#" + params.toString(), text: title, onclick: function (ev) {
+      ev.preventDefault(); state.catalogTarget = id;
+      state[kind === "scenarios" ? "scenarioQuery" : "imageQuery"] = "";
+      state[kind === "scenarios" ? "scenarioFilter" : "imageFilter"] = "all";
+      $(kind + "-query").value = ""; $(kind + "-filter").value = "all";
+      renderCatalog(); showTab(kind, false); focusCatalog();
+    } });
+  }
+  function focusCatalog() {
+    var row = document.getElementById("catalog-" + state.tab + "-" + state.catalogTarget);
+    if (row) { row.focus(); row.scrollIntoView({ block: "nearest" }); }
+  }
+  function renderCatalog() {
+    var c = state.view && state.view.catalog || { status: "uncollected" };
+    var images = {}, scenarios = {};
+    (c.images || []).forEach(function (r) { images[r.id] = r; });
+    (c.scenarios || []).forEach(function (r) { scenarios[r.id] = r; });
+    ["scenarios", "images"].forEach(function (kind) {
+      var health = clear($(kind + "-health")), el = clear($(kind + "-list"));
+      if (c.status === "disabled") {
+        append(health, h("p", { class: "hint", text: "No catalog configured. Install a private catalog.json projection for this map project, then collect to load its sources." }));
+      } else if (c.status === "error") {
+        append(health, h("p", { class: "banner banner--danger", text: "Catalog collection failed: " + c.error + ". Repair the declared projection or source and collect again." }));
+      } else if (c.status === "uncollected") {
+        append(health, h("p", { class: "banner banner--warn", text: "Catalog has not been collected. Collect now to validate the private projection and its sources." }));
+      } else {
+        if (c.status === "stale") append(health, h("p", { class: "banner banner--warn", text: "Catalog evidence is stale" + (c.refresh_needed ? " or the projection changed" : "") + ". Refresh the projection from its authoritative sources and collect again. Earlier claims below are historical." }));
+        append(health, [h("p", { text: c.scope }), h("p", { class: "hint" }, "Projection: ", stamp(c.generated_at), " · Last collection: ", stamp(c.checked_at)),
+          h("details", null, h("summary", { text: "Declared source fingerprints (" + c.sources.length + ")" }), sourceLinks(c.sources.filter(function (s) { return s.url; })),
+            h("ul", { class: "catalog-sources" }, c.sources.map(function (s) { return h("li", null, s.label + " · ", h("code", { text: s.sha256 })); }))) ]);
+      }
+      var query = state[kind === "scenarios" ? "scenarioQuery" : "imageQuery"].trim().toLowerCase();
+      var filter = state[kind === "scenarios" ? "scenarioFilter" : "imageFilter"];
+      var all = c[kind] || [];
+      var rows = all.filter(function (r) {
+        return (filter === "all" || (kind === "scenarios" ? r.wiring.status : r.category) === filter) && JSON.stringify(r).toLowerCase().indexOf(query) >= 0;
+      });
+      $(kind + "-count").textContent = rows.length + " of " + all.length + (kind === "scenarios" ? " selected families" : " image records") + ".";
+      if (!rows.length && c.status !== "disabled" && c.status !== "error" && c.status !== "uncollected") append(el, h("p", { class: "empty", text: all.length ? "No matches. Clear the search or choose All." : "The projection contains no " + kind + ". Check the source selection before claiming coverage." }));
+      rows.forEach(function (r) {
+        var heading = h("h3", { class: "h3", text: r.id + " · " + r.title });
+        var body, related, evidence;
+        if (kind === "scenarios") {
+          body = h("div", null, heading, h("p", { text: "Candidate · " + r.candidate.split(" · ")[0] }), h("p", { text: r.objective }), h("p", { class: "hint", text: r.topology }),
+            h("details", null, h("summary", { text: "Exact selection and sources" }), h("code", { text: r.candidate }), sourceLinks(r.sources)));
+          related = h("div", null, h("h4", { text: "Required source bindings" }), h("ul", { class: "catalog-sources" }, r.images.map(function (id) {
+            return h("li", null, catalogLink("images", id, images[id].title), " · " + images[id].storage.status + (images[id].storage.freshness === "fresh" ? "" : " (" + images[id].storage.freshness + ")"));
+          })), h("p", { class: "hint", text: r.binding_note }), h("details", null, h("summary", { text: "Other related assets and shared support" }),
+            h("ul", { class: "catalog-sources" }, (c.images || []).filter(function (i) { return i.families.indexOf(r.id) >= 0 && r.images.indexOf(i.id) < 0; }).map(function (i) { return h("li", null, catalogLink("images", i.id, i.title), " · " + i.category); }))));
+          evidence = h("div", null, catalogEvidence("Wiring", r.wiring), catalogEvidence("Live validation", r.validation));
+        } else {
+          body = h("div", null, heading, h("span", { class: "chip chip--none", text: { "selected-binding": "Required selected binding", "unbound-candidate": "Extra unbound candidate", "platform-support": "Platform support" }[r.category] }),
+            h("p", { class: "hint", text: "Platform: " + r.platform }), h("details", null, h("summary", { text: "Image identity and source records" }), h("code", { text: r.identity }), sourceLinks(r.sources)));
+          related = h("div", null, h("h4", { text: "Related families" }), h("div", { class: "catalog-related" }, r.families.map(function (id) { return catalogLink("scenarios", id, id); })), h("p", { class: "hint", text: r.note }));
+          evidence = catalogEvidence("Storage", r.storage);
+        }
+        append(el, h("article", { class: "catalog-entry", id: "catalog-" + kind + "-" + r.id, tabindex: "-1", "aria-label": r.id + " " + r.title }, body, related, evidence));
+      });
+    });
+  }
+
   // ---------------------------------------------------------------- tabs
-  var TABS = { map: "tab-map", access: "tab-access", ready: "tab-ready", diff: "tab-diff", life: "tab-life", accept: "tab-accept", cred: "tab-cred" };
+  var TABS = { map: "tab-map", scenarios: "tab-scenarios", images: "tab-images", access: "tab-access", ready: "tab-ready", diff: "tab-diff", life: "tab-life", accept: "tab-accept", cred: "tab-cred" };
   function showTab(name, focus) {
     if (!TABS[name]) name = "map";
     state.tab = name; writeHash();
@@ -945,6 +1034,11 @@
     $("zoom-fit").addEventListener("click", function () { state.zoom = state.zoom === "fit" ? 1 : "fit"; renderMap(); });
     $("diff-category").addEventListener("change", function () { state.dcategory = this.value; renderDiff(); });
     $("diff-query").addEventListener("input", function () { state.dquery = this.value; renderDiff(); });
+    ["scenarios", "images"].forEach(function (kind) {
+      $(kind + "-query").addEventListener("input", function () { state[kind === "scenarios" ? "scenarioQuery" : "imageQuery"] = this.value; renderCatalog(); });
+      $(kind + "-filter").addEventListener("change", function () { state[kind === "scenarios" ? "scenarioFilter" : "imageFilter"] = this.value; renderCatalog(); });
+    });
+    window.addEventListener("hashchange", function () { readHash(); renderCatalog(); showTab(state.tab, false); focusCatalog(); });
     $("identity-query").addEventListener("input", function () { state.identityQuery = this.value; renderCredentials(); });
     radios("[data-dfilter]", "dfilter", function (f) { state.dfilter = f; renderDiff(); });
     document.addEventListener("keydown", function (ev) {

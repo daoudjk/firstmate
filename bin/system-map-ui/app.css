@@ -282,3 +282,21 @@ details.edit summary { cursor: pointer; font-weight: 700; color: var(--text-stro
   .difference-member .layers { grid-template-columns: minmax(0, 1fr); gap: 3px; }
   .difference-member .layers dt { margin-top: 8px; }
 }
+
+/* Catalog rows reuse map type, controls and semantic status tokens. */
+.catalog-health { margin-block: 14px 20px; }
+.catalog-health > p { max-width: 78ch; }
+.catalog-entry { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 24px; padding: 22px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.catalog-entry h3, .catalog-entry h4 { margin: 0 0 8px; color: var(--text-strong); }
+.catalog-entry h4 { font-size: .9rem; }
+.catalog-entry p { margin: 8px 0; max-width: 70ch; }
+.catalog-sources { padding-left: 20px; margin: 8px 0; }
+.catalog-sources li { margin: 5px 0; }
+.catalog-evidence + .catalog-evidence { margin-top: 18px; }
+.catalog-related { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.catalog-entry details { margin-top: 12px; }
+.catalog-entry summary { cursor: pointer; }
+.catalog-entry:target { background: var(--surface-warm); }
+@media (max-width: 850px) {
+  .catalog-entry { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+}

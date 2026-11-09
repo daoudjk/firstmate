@@ -131,6 +131,47 @@ An imported assessment qualifies only when its `resource_identities` entry for t
 They retain that record's observed/recorded time and provenance and never become collector observations; future-dated prerequisite assessments are rejected at intake.
 Only the new prerequisite references are validated at intake; the existing deferred criterion/phase receipt-validation work remains separate.
 
+### Optional scenario and image catalog
+
+Scenarios and Images are linked, searchable views in the existing UI.
+They consume an optional private `data/system-map/<project>/catalog.json` projection during ordinary collection; no catalog configuration leaves them explicitly unconfigured.
+Repositories and owner receipts remain authoritative; this projection is a display input, never a registry, launch catalog or runtime selection.
+The collector executes no projection command, contacts no image registry, and exposes no source-file endpoint.
+An operator regenerates the projection from the declared source selections/receipts, installs it atomically, and runs the existing `collect` command (or uses Collect now).
+Reload reads the published snapshot and does not regenerate source content.
+
+The `fm-system-map.catalog.v1` object requires `title`, `generated_at` (timezone-qualified ISO time), `scope` (coverage and limits), `sources`, `scenarios` and `images`.
+`max_age_seconds` defaults to 86400 and accepts 60 through 2592000.
+Each declared source is `{label, path, sha256, url?}` with an absolute local path, a lowercase 64-digit SHA-256 and an optional HTTPS repository/receipt URL.
+The collector hashes bounded regular files (8 MiB maximum each), rejects changed/missing/unreadable sources and returns only labels, fingerprints and validated URLs, never paths or file contents.
+Source snapshots may reside outside the home when explicitly declared, but their contents are never served.
+Use source snapshots and dated receipts appropriate to the selection, rather than unreviewed live files or raw credential-bearing outputs.
+
+A scenario requires a unique `id`, `title`, exact `candidate` identity, `objective`, `topology` summary, `images` (required selected image IDs), `binding_note`, `sources` (links), `wiring` and `validation`.
+An image requires a unique `id`, `title`, exact `identity` (or explicit unknown), `category`, `platform` (or unknown), `families` (related scenario IDs), `sources`, `storage` and `note` (scope/limits).
+IDs contain only letters, digits, underscore, dot and dash, up to 100 characters.
+`category` is `selected-binding`, `unbound-candidate` or `platform-support`; related family membership alone does not make a candidate a required binding.
+Every scenario image reference must have matching image-side family membership.
+Shared support appears once with links to its consumers; unresolved service or substrate closure belongs in scope/notes rather than a fabricated exhaustive total.
+Links are `{label, url}` records, restricted to HTTPS without credentials, nonstandard ports or local/private hosts.
+All displayed content uses text nodes, and source links open with no referrer.
+
+Every assessment (`storage`, `wiring`, `validation`) requires `status`, `note`, `checked_at` (timezone-qualified ISO time or null), and `sources` (links).
+Storage states are `remote-verified`, `local-only`, `missing`, and `unknown`; wiring states are `wired`, `unresolved`, and `unknown`; validation states are `passed`, `failed`, `not-demonstrated`, and `unknown`.
+`remote-verified`, `wired` and `passed` additionally require dated provenance and `identity` matching the exact image identity (with digest), or scenario candidate respectively.
+Provenance may also use optional `source_ids`, a list of declared source labels, for private receipts that have no browsable URL.
+A registry receipt establishes storage only; it cannot promote wiring or validation.
+Report the receipt's original check time, not the time the projection was regenerated.
+Future evidence is rejected; undated evidence remains visibly undated and old evidence remains stale after collection.
+
+Catalog status is `disabled`, `uncollected`, `ok`, `stale` or `error`.
+Collection errors replace current catalog claims with an explicit failure, independently of infrastructure observations.
+The derived view marks old projection/collection times or a changed/removed projection stale, while retaining earlier claims as historical.
+Each assessment independently exposes `fresh`, `stale` or `undated` freshness.
+Source fingerprint failures are detected by collection, so keep using the existing refresh cadence; this feature adds no service or scheduler.
+An empty projection remains visibly empty, not successful coverage.
+`tests/fm-system-map.test.sh` verifies the optional catalog through the public CLI, including source drift, old/unknown evidence, identity qualification and link rejection.
+
 ### Access relationships
 
 Optional `access_dependencies` holds shared checks referenced by optional `interactions`; these extend the manifest rather than create a second ledger.
