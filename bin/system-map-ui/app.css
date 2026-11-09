@@ -297,6 +297,30 @@ details.edit summary { cursor: pointer; font-weight: 700; color: var(--text-stro
 .catalog-entry details { margin-top: 12px; }
 .catalog-entry summary { cursor: pointer; }
 .catalog-entry:target { background: var(--surface-warm); }
+.proof-overview { margin-block: 24px 32px; }
+.proof-overview > p { max-width: 75ch; }
+.proof-table { width: 100%; table-layout: fixed; }
+.proof-table th, .proof-table td { overflow-wrap: anywhere; vertical-align: top; }
+.proof-table th:first-child { width: 30%; }
+.proof-table th[scope="row"] { font-weight: 500; }
+.proof-fixture { color: var(--warn-ink); font-size: .86rem; }
+.proof-history { grid-column: 1 / -1; scroll-margin-block-start: 5rem; }
+.proof-history > summary { width: fit-content; color: var(--link); text-decoration: underline; text-underline-offset: 3px; }
+.proof-run { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border-soft); }
+.proof-result { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.proof-facts { display: grid; grid-template-columns: 9rem minmax(0, 1fr); gap: 6px 16px; margin-block: 14px; }
+.proof-facts dt { color: var(--text-muted); }
+.proof-facts dd { margin: 0; }
+@media (max-width: 700px) {
+  .proof-table, .proof-table tbody, .proof-table tr, .proof-table th[scope="row"], .proof-table td { display: block; width: 100%; }
+  .proof-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .proof-table tr { padding-block: 12px; border-top: 1px solid var(--border); }
+  .proof-table th[scope="row"], .proof-table td { border: 0; padding: 6px 0; }
+  .proof-table td::before { content: attr(data-label); display: block; font-weight: 600; color: var(--text-strong); }
+  .proof-facts { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .proof-facts dd { margin-bottom: 8px; }
+  .proof-history { scroll-margin-block-start: 16rem; }
+}
 @media (max-width: 850px) {
   .catalog-entry { scroll-margin-block-start: 16rem; grid-template-columns: minmax(0, 1fr); gap: 18px; }
 }

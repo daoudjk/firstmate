@@ -2234,6 +2234,65 @@ v=json.loads(subprocess.check_output([sys.argv[2],"view","example","--compact"],
 subprocess.run([sys.argv[2],"collect","example"],env=env,check=True,stdout=subprocess.DEVNULL)
 v=json.loads(subprocess.check_output([sys.argv[2],"view","example","--compact"],env=env)); assert v["catalog"]["status"]=="error"
 PYTEST
+  python3 - "$home" "$MAP" <<'PYTEST'
+import copy, hashlib, json, os, pathlib, subprocess, sys
+root=pathlib.Path(sys.argv[1])/"data/system-map/example"
+env=dict(os.environ,FM_HOME=sys.argv[1],FM_SYSTEM_MAP_AWS=sys.argv[1]+"/fakebin/aws",FM_SYSTEM_MAP_FIXTURE="1",FAKE_AWS_LOG=sys.argv[1]+"/aws.log")
+data=json.loads((root/"catalog.original").read_text())
+data["sources"][0]["sha256"]=hashlib.sha256((root/"owner.json").read_bytes()).hexdigest()
+proof_source=root/"proof-owner.json"; proof_source.write_text('{"fixture":true,"evidence":"synthetic"}')
+data["sources"].append(dict(path=str(proof_source),label="Synthetic proof owner",sha256=hashlib.sha256(proof_source.read_bytes()).hexdigest()))
+identity=dict(scenario_id="stable-scenario",version="2.0",bundle_fingerprint="sha256:"+"a"*64,spec_digest="sha256:"+"b"*64)
+def record(run="historical-run", **changes):
+ r=dict(identity,agent_kind="scripted-reference",agent_identity="Synthetic reference",run_id=run,record_id=run,platform="old-aws",occurred_at="2000-01-02T03:04:05Z",objective_result="win",limitations="SYNTHETIC FIXTURE; no actual scenario claim",source_ids=["Synthetic proof owner"],sources=[])
+ r.update(changes); return r
+first=copy.deepcopy(data["scenarios"][0]); first["proof"]=dict(fixture=True,review_status="complete",selected=identity,records=[],note="SYNTHETIC FIXTURE - interface evidence only")
+data["scenarios"]=[first]
+for i in range(2,16):
+ row=copy.deepcopy(first); row.update(id="F"+str(i),images=[]); data["scenarios"].append(row)
+data["scenarios"][0]["proof"]["records"]=[record(version="1.0",bundle_fingerprint="sha256:"+"c"*64),record("unversioned",version=None,agent_kind="model",agent_identity="Synthetic model",bundle_fingerprint=None,spec_digest=None)]
+data["scenarios"][1]["proof"]["records"]=[record("selected-reference", success={"n":1},private_extra="never-serve-proof-raw")]
+data["scenarios"][3]["proof"]["review_status"]="pending"
+data["scenarios"][4]["proof"]["records"]=[record("identity-unknown",bundle_fingerprint=None)]
+data["scenarios"][6]["proof"]["records"]=[record("offline-current",agent_kind="mock-offline",objective_result="no-result",offline_access="declared-winnable",occurred_at=None)]
+data["scenarios"][7]["proof"]["records"]=[record("offline-predecessor",version="1.0",bundle_fingerprint="sha256:"+"c"*64,agent_kind="mock-offline",objective_result="no-result",offline_access="declared-winnable",occurred_at=None)]
+data["scenarios"][5]["proof"]["records"]=[record("nonwin-"+result,objective_result=result,success={"n":1}) for result in ("scored","complete","admitted","constructor","mocked","partial","no-result","loss","unknown")]
+def publish(payload):
+ (root/"catalog.json").write_text(json.dumps(payload))
+ subprocess.run([sys.argv[2],"collect","example"],env=env,check=True,stdout=subprocess.DEVNULL)
+ return json.loads(subprocess.check_output([sys.argv[2],"view","example","--compact"],env=env))["catalog"]
+c=publish(data); assert c["status"]=="ok",c
+assert len(c["scenarios"])==15
+p=c["scenarios"][0]["proof"]; assert p["fixture"] and p["summary"]==dict(historical_wins=2,proven_versions=["1.0"],unversioned_wins=1,scripted_reference_wins=1,selected_version_wins=0,selected_reference_wins=0,model_wins=1,selected_new_aws_wins=0,offline_declared_versions=[],offline_declared=False,selected_offline_declared=False),p
+assert [r["selected_match"] for r in p["records"]]==["different","unknown"]
+p=c["scenarios"][1]["proof"]; assert p["summary"]["selected_reference_wins"]==1 and p["records"][0]["selected_match"]=="exact"
+assert p["records"][0]["occurred_at"]=="2000-01-02T03:04:05Z" and "success" not in p["records"][0] and "private_extra" not in p["records"][0]
+assert c["scenarios"][2]["proof"]["review_status"]=="complete" and not c["scenarios"][2]["proof"]["summary"]["historical_wins"]
+assert c["scenarios"][3]["proof"]["review_status"]=="pending"
+assert c["scenarios"][4]["proof"]["records"][0]["selected_match"]=="unknown"
+assert c["scenarios"][5]["proof"]["summary"]["historical_wins"]==0
+assert c["scenarios"][6]["proof"]["summary"]["selected_offline_declared"] and c["scenarios"][6]["proof"]["summary"]["historical_wins"]==0
+assert c["scenarios"][7]["proof"]["summary"]["offline_declared_versions"]==["1.0"] and not c["scenarios"][7]["proof"]["summary"]["selected_offline_declared"]
+# Distinct snapshots of the same run are evidence records, not independent trials.
+snapshots=copy.deepcopy(data); snapshot=copy.deepcopy(snapshots["scenarios"][1]["proof"]["records"][0]); snapshot["record_id"]="separate-snapshot"; snapshots["scenarios"][1]["proof"]["records"].append(snapshot)
+assert len(publish(snapshots)["scenarios"][1]["proof"]["records"])==2
+assert "path" not in c["sources"][-1] and "never-serve-proof-raw" not in json.dumps(c)
+c=publish(data); assert c["scenarios"][1]["proof"]["records"][0]["occurred_at"]=="2000-01-02T03:04:05Z"
+for changes in ({"offline_access":"declared-winnable"},{"agent_kind":"mock-offline"},{"agent_kind":"unit-test"},{"agent_kind":"unknown"},{"occurred_at":None},{"source_ids":[]},{"version":"2.0","bundle_fingerprint":"bad"},{"scenario_id":"other-scenario"},{"platform":"guessed"},{"sources":[dict(label="Private",url="file:///secret")]},{"source_ids":["undeclared"]},{"occurred_at":"2999-01-01T00:00:00Z"}):
+ bad=copy.deepcopy(data); bad["scenarios"][1]["proof"]["records"][0].update(changes)
+ assert publish(bad)["status"]=="error",changes
+bad=copy.deepcopy(data); bad["scenarios"][1]["proof"]["records"]*=2
+assert publish(bad)["status"]=="error"
+bad=copy.deepcopy(data); bad["scenarios"][1]["proof"]["records"][0]["selected_match"]="different"
+assert publish(bad)["scenarios"][1]["proof"]["records"][0]["selected_match"]=="exact"
+# No selected immutable identity and same-version missing spec both remain unknown.
+for changes in ({"bundle_fingerprint":None,"spec_digest":None},{"version":None}):
+ unknown=copy.deepcopy(data); unknown["scenarios"][1]["proof"]["selected"].update(changes)
+ assert publish(unknown)["scenarios"][1]["proof"]["records"][0]["selected_match"]=="unknown"
+publish(data); proof_source.write_text("owner revised the evidence")
+assert publish(data)["status"]=="error"
+PYTEST
+  pass "proof history distinguishes offline access from historical, scripted and exact-selected wins; pending, nonwins, immutable identity, privacy and original times survive collection"
   rm "$home/data/system-map/example/catalog.json"
   map "$home" collect example >/dev/null
   out=$(map "$home" view example --compact)

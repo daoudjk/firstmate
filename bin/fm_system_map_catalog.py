@@ -87,6 +87,85 @@ def assessment(value, allowed, identity=None, source_ids=()):
     return out
 
 
+def scenario_identity(value):
+    require(isinstance(value, dict), "scenario identity must be an object")
+    out = {"scenario_id": text(value.get("scenario_id"), "stable scenario id", 200)}
+    for key in ("version", "bundle_fingerprint", "spec_digest"):
+        val = value.get(key)
+        out[key] = text(val, "scenario " + key, 200) if val is not None else None
+        if val is not None and key != "version":
+            require(re.fullmatch(r"sha256:[0-9a-f]{64}", val) is not None, "invalid scenario digest")
+    return out
+
+
+def selection_match(record, selected):
+    # A version label alone cannot prove an immutable selected bundle/spec.
+    keys = ("scenario_id", "version", "bundle_fingerprint", "spec_digest")
+    if any(record[k] is not None and selected[k] is not None and record[k] != selected[k] for k in keys):
+        return "different"
+    if not record["version"] or not selected["version"]:
+        return "unknown"
+    if not any(selected[k] for k in ("bundle_fingerprint", "spec_digest")):
+        return "unknown"
+    if any(selected[k] and not record[k] for k in ("bundle_fingerprint", "spec_digest")):
+        return "unknown"
+    return "exact"
+
+
+def proof_history(value, source_ids):
+    require(isinstance(value, dict) and value.get("review_status") in ("pending", "complete"), "invalid proof review status")
+    require(type(value.get("fixture", False)) is bool, "invalid proof fixture flag")
+    out = {"review_status": value["review_status"], "fixture": value.get("fixture", False),
+           "selected": scenario_identity(value.get("selected")), "records": [],
+           "note": text(value.get("note"), "proof scope")}
+    records = value.get("records")
+    require(isinstance(records, list) and len(records) <= 500, "invalid proof records")
+    seen = set()
+    for index, record in enumerate(records):
+        require(isinstance(record, dict), "proof record must be an object")
+        row = scenario_identity(record)
+        require(row["scenario_id"] == out["selected"]["scenario_id"], "proof must bind the stable scenario id")
+        require(record.get("agent_kind") in ("scripted-reference", "model", "human", "mock-offline", "unit-test", "unknown"), "invalid proof agent kind")
+        require(record.get("objective_result") in ("win", "loss", "failure", "no-result", "not-observed", "unknown", "partial", "scored", "complete", "admitted", "constructor", "mocked"), "invalid objective result")
+        require(record.get("platform") in ("local", "old-aws", "new-aws", "unknown"), "invalid proof platform")
+        row.update(record_id=text(record.get("record_id", str(index + 1)), "proof record id", 200),
+                   agent_kind=record["agent_kind"], objective_result=record["objective_result"], platform=record["platform"],
+                   agent_identity=text(record.get("agent_identity"), "agent identity", 500),
+                   run_id=text(record.get("run_id"), "run identity", 500), occurred_at=record.get("occurred_at"),
+                   limitations=text(record.get("limitations"), "proof limitations"), sources=links(record.get("sources", [])))
+        timestamp(row["occurred_at"])
+        refs = record.get("source_ids", [])
+        require(isinstance(refs, list) and all(isinstance(v, str) and v in source_ids for v in refs), "invalid proof source reference")
+        row["source_ids"] = refs
+        offline = record.get("offline_access")
+        require(offline in (None, "declared-winnable", "not-demonstrated", "unknown"), "invalid offline access check")
+        row["offline_access"] = offline
+        if offline == "declared-winnable":
+            require(row["agent_kind"] in ("mock-offline", "unit-test") and row["objective_result"] == "no-result" and (row["sources"] or refs), "offline access check needs provenance and cannot be an objective win")
+        if row["objective_result"] == "win":
+            require(row["agent_kind"] in ("scripted-reference", "model", "human"), "mock/unknown agents cannot establish an objective win")
+            require(row["occurred_at"] and (row["sources"] or refs), "objective win needs original time and retained provenance")
+        require(row["record_id"] not in seen, "duplicate proof record id")
+        seen.add(row["record_id"])
+        row["selected_match"] = selection_match(row, out["selected"])
+        out["records"].append(row)
+    wins = [r for r in out["records"] if r["objective_result"] == "win"]
+    out["summary"] = {
+        "historical_wins": len(wins),
+        "proven_versions": sorted({r["version"] for r in wins if r["version"]}),
+        "unversioned_wins": sum(r["version"] is None for r in wins),
+        "scripted_reference_wins": sum(r["agent_kind"] == "scripted-reference" for r in wins),
+        "model_wins": sum(r["agent_kind"] == "model" for r in wins),
+        "selected_version_wins": sum(r["selected_match"] == "exact" for r in wins),
+        "selected_reference_wins": sum(r["selected_match"] == "exact" and r["agent_kind"] == "scripted-reference" for r in wins),
+        "selected_new_aws_wins": sum(r["selected_match"] == "exact" and r["platform"] == "new-aws" for r in wins),
+        "offline_declared_versions": sorted({r["version"] for r in out["records"] if r["offline_access"] == "declared-winnable" and r["version"]}),
+        "offline_declared": any(r["offline_access"] == "declared-winnable" for r in out["records"]),
+        "selected_offline_declared": any(r["offline_access"] == "declared-winnable" and r["selected_match"] == "exact" for r in out["records"]),
+    }
+    return out
+
+
 def validate(data):
     require(isinstance(data, dict) and data.get("schema") == SCHEMA, "invalid catalog schema")
     timestamp(data.get("generated_at"))
@@ -140,6 +219,8 @@ def validate(data):
                                  "sources": links(item.get("sources", [])),
                                  "wiring": assessment(item.get("wiring"), ("wired", "unresolved", "unknown"), candidate, [s["label"] for s in out["sources"]]),
                                  "validation": assessment(item.get("validation"), ("passed", "failed", "not-demonstrated", "unknown"), candidate, [s["label"] for s in out["sources"]])})
+        if "proof" in item:
+            out["scenarios"][-1]["proof"] = proof_history(item["proof"], [s["label"] for s in out["sources"]])
     # Both directions are derived from the same membership, never two catalogs.
     for s in out["scenarios"]:
         for i in s["images"]:

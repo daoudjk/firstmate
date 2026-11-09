@@ -164,6 +164,23 @@ A registry receipt establishes storage only; it cannot promote wiring or validat
 Report the receipt's original check time, not the time the projection was regenerated.
 Future evidence is rejected; undated evidence remains visibly undated and old evidence remains stale after collection.
 
+A scenario may additionally carry `proof`, a historical objective-evidence projection separate from wiring, live validation and infrastructure proof.
+It requires `review_status` (`pending` or `complete`), `note`, `selected` and `records` (at most 500); optional boolean `fixture` visibly marks synthetic demonstration data throughout the proof UI.
+`selected` contains stable `scenario_id`, `version`, `bundle_fingerprint` and `spec_digest`; unknown values other than the scenario ID are null, and known digests use `sha256:` plus 64 lowercase hexadecimal digits.
+The projector must bind this identity to the scenario's actual selected candidate, independently of historical family labels.
+Each record contains those same identity fields, `agent_kind` (`scripted-reference`, `model`, `human`, `mock-offline`, `unit-test` or `unknown`), `agent_identity`, `run_id`, `platform` (`local`, `old-aws`, `new-aws` or `unknown`), `occurred_at` (original timezone-qualified record time or null), `objective_result`, `limitations`, and optional `sources`/`source_ids` using the same validated links and declared private source labels as assessments.
+Only explicit `win` with a known non-mock actor, original outcome time and retained provenance counts as an objective win.
+Other outcomes are `loss`, `failure`, `no-result`, `not-observed`, `unknown`, `partial`, `scored`, `complete`, `admitted`, `constructor` and `mocked`; sample counts and unknown extra fields cannot establish wins.
+Optional `record_id` is unique within the family and defaults to the one-based position; several distinct snapshots may describe the same run, so evidence-record totals are never independent trial counts.
+The collector derives historical win-record counts, known proven version labels, unversioned win-record counts, scripted-reference/model wins, selected-identity wins, selected scripted-reference wins and selected new-AWS wins from these records, never from supplied totals or match flags.
+Optional `offline_access` is `declared-winnable`, `not-demonstrated` or `unknown`; a positive requires retained provenance, a mock/offline or unit-test actor and `objective_result=no-result`, with no execution date inferred from a source date.
+The family summary separately exposes offline declared-winnable versions and whether such a check matches the selected identity; declared access establishes neither bootability, deployed equivalence nor an objective episode.
+A selected match requires the same stable ID and known version, at least one selected immutable digest, and equality for every known selected digest; a known conflict is different, and insufficient identity is unknown.
+An unknown version can support a disclosed historical objective result but cannot establish exact-version proof.
+The family table links to every retained evidence record, including non-winning evidence and its limitations; pending review, absent history and completed review without proof remain distinct.
+Regeneration and collection never advance outcome times, and historical wins do not promote live validation or infrastructure proof.
+No retained proof means not demonstrated, not impossible; synthetic fixture results are illustrative only.
+
 Catalog status is `disabled`, `uncollected`, `ok`, `stale` or `error`.
 Collection errors replace current catalog claims with an explicit failure, independently of infrastructure observations.
 The derived view marks old projection/collection times or a changed/removed projection stale, while retaining earlier claims as historical.

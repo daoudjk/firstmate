@@ -14,7 +14,7 @@
     // reloads and auto-refresh until saved or explicitly discarded.
     drafts: {},
     accessPhase: "all", accessQuery: "",
-    catalogTarget: null, scenarioQuery: "", imageQuery: "", scenarioFilter: "all", imageFilter: "all",
+    catalogTarget: null, scenarioQuery: "", imageQuery: "", scenarioFilter: "all", imageFilter: "all", proofOpen: {},
     zoom: 1
   };
   function draftKeys(prefix) { return Object.keys(state.drafts).filter(function (k) { return k.indexOf(prefix) === 0; }); }
@@ -937,6 +937,70 @@
     var row = document.getElementById("catalog-" + state.tab + "-" + state.catalogTarget);
     if (row) { row.focus(); row.scrollIntoView({ block: "nearest" }); }
   }
+  function proofLabel(proof, field) {
+    if (!proof) return "History not supplied";
+    var s = proof.summary, pending = proof.review_status === "pending" ? " · review pending" : "";
+    if (field === "historical") {
+      return (s.historical_wins ? s.historical_wins + (s.historical_wins === 1 ? " win record · " : " win records · ") +
+        (s.proven_versions.length ? "v" + s.proven_versions.join(", v") : "version unknown") +
+        (s.unversioned_wins && s.proven_versions.length ? " · " + s.unversioned_wins + " unversioned" : "") :
+        proof.review_status === "pending" ? "Pending review" : "Not demonstrated") + (s.historical_wins ? pending : "");
+    }
+    var count = s[field];
+    return (count ? count + (count === 1 ? " win record" : " win records") : proof.review_status === "pending" ? "Pending review" : "Not demonstrated") + (count ? pending : "");
+  }
+  function proofTable(rows) {
+    var holder = h("div", { class: "proof-overview" }, h("h3", { class: "h3", text: "Winnability proof by family" }),
+      h("p", { class: "hint", text: "Offline checks model declared access; they do not prove bootability, deployed equivalence or an objective win. Scored, complete, admitted, constructor, mocked and partial results are not wins; n=1 is a sample count. Entries are evidence records, not independent trials. Historical wins do not establish current runtime validation. No retained proof means not demonstrated, not impossible." }));
+    var table = h("table", { class: "table proof-table", id: "proof-table" },
+      h("caption", { class: "sr-only", text: "Historical and selected-version objective proof" }),
+      h("thead", null, h("tr", null, ["Family / scenario", "Offline declared access", "Historical objective wins", "Reference / model", "Selected identity"].map(function (v) { return h("th", { scope: "col", text: v }); }))));
+    var body = h("tbody");
+    rows.forEach(function (r) {
+      var p = r.proof;
+      var link = catalogLink("scenarios", r.id, r.id + " · " + r.title);
+      link.addEventListener("click", function () {
+        var detail = document.getElementById("proof-history-" + r.id);
+        if (detail) { detail.open = true; detail.querySelector("summary").focus(); detail.scrollIntoView({ block: "nearest" }); }
+      });
+      append(body, h("tr", null, h("th", { scope: "row" }, link,
+        p ? [h("div", { class: "hint", text: p.selected.scenario_id }), p.fixture ? h("strong", { class: "proof-fixture", text: "SYNTHETIC FIXTURE" }) : null] : null),
+        h("td", { "data-label": "Offline declared access" }, p && p.summary.offline_declared ? [h("div", { text: "Declared winnable · " + (p.summary.offline_declared_versions.length ? "v" + p.summary.offline_declared_versions.join(", v") : "version unknown") }),
+          h("div", { class: "hint", text: p.summary.selected_offline_declared ? "Matches selected identity · offline only" : "Selected identity not established by this check" })] :
+          h("span", { text: !p ? "History not supplied" : p.review_status === "pending" ? "Pending review" : "Not demonstrated" })),
+        h("td", { "data-label": "Historical objective wins", text: proofLabel(p, "historical") }),
+        h("td", { "data-label": "Reference / model" }, h("div", { text: "Scripted: " + proofLabel(p, "scripted_reference_wins") }), h("div", { class: "hint", text: "Live model: " + proofLabel(p, "model_wins") })),
+        h("td", { "data-label": "Selected identity" }, p ? h("div", { class: "hint", text: "v" + (p.selected.version || "unknown") }) : null,
+          h("div", { text: proofLabel(p, "selected_version_wins") }),
+          p ? [h("div", { class: "hint", text: "Scripted: " + proofLabel(p, "selected_reference_wins") }), h("div", { class: "hint", text: "New AWS: " + proofLabel(p, "selected_new_aws_wins") })] : null)));
+    });
+    append(table, body); append(holder, table);
+    return holder;
+  }
+  function proofDetail(r) {
+    var p = r.proof;
+    if (!p) return h("div", { class: "proof-history hint", text: "Proof history not supplied. Wiring and live validation above do not establish historical objective wins." });
+    return h("details", { class: "proof-history", id: "proof-history-" + r.id, open: state.proofOpen[r.id], ontoggle: function () { state.proofOpen[r.id] = this.open; } },
+      h("summary", { text: "Proof history · " + p.records.length + (p.records.length === 1 ? " evidence record · " : " evidence records · ") + (p.review_status === "pending" ? "review pending" : "review complete") }),
+      p.fixture ? h("p", { class: "banner banner--warn", text: "SYNTHETIC FIXTURE - illustrative records for interface verification. These are not actual scenario wins." }) : null,
+      h("p", { text: p.note }), h("p", { class: "hint", text: "Records may be snapshots, source checks or attempts; this is not a count of independent trials. Original recorded dates are preserved; source dates are not execution dates." }),
+      h("p", { class: "hint", text: "Selected: " + p.selected.scenario_id + " · v" + (p.selected.version || "unknown") }),
+      h("code", { text: "bundle " + (p.selected.bundle_fingerprint || "unknown") + " · spec " + (p.selected.spec_digest || "unknown") }),
+      p.records.length ? p.records.map(function (run) {
+        return h("section", { class: "proof-run", "aria-label": "Run " + run.run_id },
+          h("h4", { text: run.scenario_id + " · " + (run.version ? "v" + run.version : "version unknown") }),
+          h("div", { class: "proof-result" }, h("strong", { text: "Objective outcome: " + run.objective_result }),
+            h("span", { class: "chip chip--" + (run.selected_match === "exact" ? "info" : "quiet"), text: { exact: "Matches selected identity", different: "Different from selected", unknown: "Selected match unknown" }[run.selected_match] })),
+          run.offline_access ? h("p", null, h("strong", { text: "Offline declared-access check: " + run.offline_access }), " · no objective episode, bootability or deployed equivalence established") : null,
+          h("dl", { class: "proof-facts" },
+            h("dt", { text: "Agent" }), h("dd", { text: run.agent_kind + " · " + run.agent_identity }),
+            h("dt", { text: "Run / platform" }), h("dd", { text: run.run_id + " · " + run.platform }),
+            h("dt", { text: "Recorded time" }), h("dd", null, stamp(run.occurred_at)),
+            h("dt", { text: "Bundle / spec" }), h("dd", null, h("code", { text: (run.bundle_fingerprint || "unknown") + " / " + (run.spec_digest || "unknown") }))),
+          h("p", { text: run.limitations }), sourceLinks(run.sources),
+          run.source_ids.map(function (label) { return h("p", { class: "hint", text: "Retained private evidence: " + label + " (fingerprint above; source files are not served)" }); }));
+      }) : h("p", { class: "hint", text: p.review_status === "pending" ? "Evidence review is pending. No conclusion about missing proof yet." : "No retained objective proof. Winnability is not demonstrated; this does not establish impossibility." }));
+  }
   function renderCatalog() {
     var c = state.view && state.view.catalog || { status: "uncollected" };
     var images = {}, scenarios = {};
@@ -963,6 +1027,7 @@
         return (filter === "all" || (kind === "scenarios" ? r.wiring.status : r.category) === filter) && JSON.stringify(r).toLowerCase().indexOf(query) >= 0;
       });
       $(kind + "-count").textContent = rows.length + " of " + all.length + (kind === "scenarios" ? " selected families" : " image records") + ".";
+      if (kind === "scenarios" && rows.length) append(el, proofTable(rows));
       if (!rows.length && c.status !== "disabled" && c.status !== "error" && c.status !== "uncollected") append(el, h("p", { class: "empty", text: all.length ? "No matches. Clear the search or choose All." : "The projection contains no " + kind + ". Check the source selection before claiming coverage." }));
       rows.forEach(function (r) {
         var heading = h("h3", { class: "h3", text: r.id === r.title ? r.title : r.id + " · " + r.title });
@@ -981,7 +1046,7 @@
           related = h("div", null, h("h4", { text: "Related families" }), h("div", { class: "catalog-related" }, r.families.map(function (id) { return catalogLink("scenarios", id, id); })), h("p", { class: "hint", text: r.note }));
           evidence = catalogEvidence("Storage", r.storage);
         }
-        append(el, h("article", { class: "catalog-entry", id: "catalog-" + kind + "-" + r.id, tabindex: "-1", "aria-label": r.id + " " + r.title }, body, related, evidence));
+        append(el, h("article", { class: "catalog-entry", id: "catalog-" + kind + "-" + r.id, tabindex: "-1", "aria-label": r.id + " " + r.title }, body, related, evidence, kind === "scenarios" ? proofDetail(r) : null));
       });
     });
   }
