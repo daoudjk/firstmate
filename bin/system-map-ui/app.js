@@ -965,7 +965,7 @@
       $(kind + "-count").textContent = rows.length + " of " + all.length + (kind === "scenarios" ? " selected families" : " image records") + ".";
       if (!rows.length && c.status !== "disabled" && c.status !== "error" && c.status !== "uncollected") append(el, h("p", { class: "empty", text: all.length ? "No matches. Clear the search or choose All." : "The projection contains no " + kind + ". Check the source selection before claiming coverage." }));
       rows.forEach(function (r) {
-        var heading = h("h3", { class: "h3", text: r.id + " · " + r.title });
+        var heading = h("h3", { class: "h3", text: r.id === r.title ? r.title : r.id + " · " + r.title });
         var body, related, evidence;
         if (kind === "scenarios") {
           body = h("div", null, heading, h("p", { text: "Candidate · " + r.candidate.split(" · ")[0] }), h("p", { text: r.objective }), h("p", { class: "hint", text: r.topology }),

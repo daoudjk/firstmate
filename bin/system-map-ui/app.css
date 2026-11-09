@@ -286,7 +286,7 @@ details.edit summary { cursor: pointer; font-weight: 700; color: var(--text-stro
 /* Catalog rows reuse map type, controls and semantic status tokens. */
 .catalog-health { margin-block: 14px 20px; }
 .catalog-health > p { max-width: 78ch; }
-.catalog-entry { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 24px; padding: 22px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.catalog-entry { scroll-margin-block-start: 5rem; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 24px; padding: 22px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
 .catalog-entry h3, .catalog-entry h4 { margin: 0 0 8px; color: var(--text-strong); }
 .catalog-entry h4 { font-size: .9rem; }
 .catalog-entry p { margin: 8px 0; max-width: 70ch; }
@@ -298,5 +298,5 @@ details.edit summary { cursor: pointer; font-weight: 700; color: var(--text-stro
 .catalog-entry summary { cursor: pointer; }
 .catalog-entry:target { background: var(--surface-warm); }
 @media (max-width: 850px) {
-  .catalog-entry { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .catalog-entry { scroll-margin-block-start: 16rem; grid-template-columns: minmax(0, 1fr); gap: 18px; }
 }
