@@ -935,7 +935,16 @@
   }
   function focusCatalog() {
     var row = document.getElementById("catalog-" + state.tab + "-" + state.catalogTarget);
-    if (row) { row.focus(); row.scrollIntoView({ block: "nearest" }); }
+    if (row) focusCatalogElement(row, row);
+  }
+  function focusCatalogElement(row, target) {
+    // Account/region text and controls can wrap at any width. Measure the
+    // current sticky header at navigation time, including after data refresh.
+    document.documentElement.style.setProperty("--catalog-header-height", document.querySelector(".bar").getBoundingClientRect().height + "px");
+    target.focus({ preventScroll: true });
+    // Expanded histories can span beyond both viewport edges; nearest would
+    // leave an offscreen heading in place rather than reveal the destination.
+    row.scrollIntoView({ block: "start" });
   }
   function proofLabel(proof, field) {
     if (!proof) return "History not supplied";
@@ -961,7 +970,7 @@
       var link = catalogLink("scenarios", r.id, r.id + " · " + r.title);
       link.addEventListener("click", function () {
         var detail = document.getElementById("proof-history-" + r.id);
-        if (detail) { detail.open = true; detail.querySelector("summary").focus(); detail.scrollIntoView({ block: "nearest" }); }
+        if (detail) { detail.open = true; focusCatalogElement(detail, detail.querySelector("summary")); }
       });
       append(body, h("tr", null, h("th", { scope: "row" }, link,
         p ? [h("div", { class: "hint", text: p.selected.scenario_id }), p.fixture ? h("strong", { class: "proof-fixture", text: "SYNTHETIC FIXTURE" }) : null] : null),
