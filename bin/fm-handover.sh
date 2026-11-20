@@ -11,7 +11,7 @@
 # header owns the record and the commands.
 #
 # Usage:
-#   fm-handover.sh prepare [--hold <task>]...
+#   fm-handover.sh prepare
 #   fm-handover.sh write [--goal-file <path>] [--notes-file <path>]
 #                        [--next <task>=<text>]... [--hold <task>]... [--replace]
 #   fm-handover.sh release
@@ -154,7 +154,7 @@ is_hold() { case "$HOLD_IDS" in *" $1 "*) return 0 ;; esac; return 1; }
 
 # Backlog presence for one worker, by the same row probe bin/fm-spawn.sh uses.
 # Prints a gap line and returns 1 when the item is missing or unreadable.
-check_backlog() {  # <id> <kind> <title-hint>
+check_backlog() {  # <id> <kind>
   local id=$1 kind=$2 rc
   fm_backlog_transition_applies "$CONFIG" "$DATA" "$kind"
   rc=$?
@@ -186,7 +186,7 @@ check_backlog() {  # <id> <kind> <title-hint>
   return 1
 }
 
-# The whole prepare check. Prints gap lines; returns the gap count (capped).
+# The whole prepare check. Prints one line per gap and sets GAP_COUNT.
 GAP_COUNT=0
 run_checks() {
   local row id kind state raw key verb summary covered n=0
@@ -383,12 +383,7 @@ render_status() {  # <digest: 0|1>
 # --- subcommands ---------------------------------------------------------------
 
 cmd_prepare() {
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --hold) [ "$#" -ge 2 ] || die "--hold needs a task"; HOLD_IDS="$HOLD_IDS$2 "; shift 2 ;;
-      *) die "prepare: unknown argument: $1" ;;
-    esac
-  done
+  [ "$#" -eq 0 ] || die "prepare: unknown argument: $1"
   read_snapshot
   run_checks
   if [ "$GAP_COUNT" -gt 0 ]; then
