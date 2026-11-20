@@ -39,6 +39,14 @@
 #                             A held lock is not proof the holder is consuming
 #                             wakes. Machine-readable lock fields live on
 #                             fm-inbox.sh ready, from the same inspect helper.
+#        fm-lock.sh release   give up this session's lock on purpose, for a
+#                             supervisor handover (bin/fm-handover.sh release).
+#                             Under the claim lock it removes state/.lock and its
+#                             sidecar only when this session owns the lock as an
+#                             acquisition would decide it; an already-free lock
+#                             exits 0, and a lock another session holds, or a
+#                             stale one this session does not own, is refused
+#                             with exit 1 and left untouched.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -142,6 +150,35 @@ on_lock_exit() {
 }
 trap on_lock_exit EXIT
 trap 'exit 1' HUP INT TERM
+
+if [ "${1:-}" = release ]; then
+  fm_lock_acquire_wait "$CLAIM_LOCK"
+  CLAIM_LOCK_HELD=1
+  if [ ! -e "$LOCK" ] && [ ! -L "$LOCK" ]; then
+    echo "lock: already free"
+    exit 0
+  fi
+  if [ ! -f "$LOCK" ] || [ -L "$LOCK" ]; then
+    echo "error: session lock is not a regular file; nothing released" >&2
+    exit 1
+  fi
+  recorded=$(cat "$LOCK" 2>/dev/null || true)
+  if [ "$recorded" = "$me" ] || fm_session_lock_owned_by_self "$STATE"; then
+    rm -f "$LOCK_SESSION" "$LOCK_SESSION_PREV" 2>/dev/null || true
+    rm -f "$LOCK" 2>/dev/null || {
+      echo "error: cannot remove the session lock; nothing released" >&2
+      exit 1
+    }
+    echo "lock released: harness pid $recorded"
+    exit 0
+  fi
+  if fm_harness_pid_alive "$recorded"; then
+    echo "error: another live firstmate session holds the lock (pid $recorded); nothing released" >&2
+  else
+    echo "error: the session lock names pid $recorded, which is not this session; nothing released (acquisition reclaims a stale lock)" >&2
+  fi
+  exit 1
+fi
 
 remember_lock_session() {
   [ "$LOCK_SESSION_PHASE" -eq 0 ] || return 0

@@ -1080,6 +1080,51 @@ EOF
   pass "digest sections are ordered safety-preamble first, live fleet state before curated memory"
 }
 
+# A supervisor handover record (bin/fm-handover.sh) prints its own section right
+# after the lock and before the wake queue, and only while the record exists.
+test_handover_section_only_while_pending() {
+  local rec root home fakebin out lock_line handover_line boot_line wake_line
+  rec=$(new_world handover)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf 'window=fm-sess:w1\nkind=ship\nharness=claude\nspawn_gen=s-new\n' > "$home/state/task-a.meta"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" "HANDOVER PENDING" "the digest printed a handover section with no record"
+
+  cat > "$home/state/handover.json" <<'JSON'
+{"schema":"fm-handover.v1","written_at":"2026-11-19T02:00:00Z","stamp":"20261119T020000Z",
+ "fm_home":"fixture","from_harness":"claude","released_at":"2026-11-19T02:05:00Z",
+ "summary_path":"data/handover/20261119T020000Z.md","goal":"Finish the scoring integration.\n","notes":null,
+ "workers":[
+  {"id":"task-a","kind":"ship","harness":"claude","model":"m1","branch":"fm/a","head":"0123456789abcdef",
+   "current_state":"state: paused · source: status-log · waiting","spawn_gen":"s-old","intent":"resume","mark":null},
+  {"id":"task-b","kind":"ship","harness":"claude","model":"m1","branch":"fm/b","head":"fedcba9876543210",
+   "current_state":"state: paused · source: status-log · waiting","spawn_gen":"s-b","intent":"hold","mark":null}],
+ "decisions":[],"backlog":[],"secondmate_homes":[]}
+JSON
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  lock_line=$(printf '%s\n' "$out" | grep -n '^LOCK$' | head -1 | cut -d: -f1)
+  handover_line=$(printf '%s\n' "$out" | grep -n '^HANDOVER PENDING$' | head -1 | cut -d: -f1)
+  boot_line=$(printf '%s\n' "$out" | grep -n '^BOOTSTRAP$' | head -1 | cut -d: -f1)
+  wake_line=$(printf '%s\n' "$out" | grep -n '^WAKE QUEUE$' | head -1 | cut -d: -f1)
+  [ -n "$handover_line" ] || fail "a pending handover printed no HANDOVER PENDING section: $out"
+  [ "$lock_line" -lt "$handover_line" ] || fail "HANDOVER PENDING preceded the lock section"
+  [ "$handover_line" -lt "$boot_line" ] && [ "$handover_line" -lt "$wake_line" ] \
+    || fail "HANDOVER PENDING did not precede the wake queue"
+  assert_contains "$out" "goal: Finish the scoring integration." "the section lost the goal"
+  assert_contains "$out" "resume  task-a" "the section lost the resume row"
+  assert_contains "$out" "[relaunched]" "the section did not show the relaunched worker"
+  assert_contains "$out" "hold  task-b" "the section lost the hold row"
+  assert_contains "$out" "the fleet is parked on purpose; run bin/fm-handover.sh resume-plan and relaunch the resume rows; a quiet queue is NOT progress" \
+    "the section lost the parked-fleet instruction"
+
+  pass "the digest prints HANDOVER PENDING after the lock and before the wake queue, only while a record exists"
+}
+
 # The contract has to survive tail truncation and stay honest once it precedes
 # the sections it governs, so it carries the truncated-stage escape itself.
 test_read_once_contract_is_stated_once_before_its_subject() {
@@ -3350,6 +3395,7 @@ test_session_start_preserves_ambiguous_pi_process
 test_session_start_preserves_transiently_unreadable_tmux
 test_session_start_preserves_proven_bare_shell_recovery
 test_session_start_relaunches_herdr_husk_secondmate
+test_handover_section_only_while_pending
 test_status_tail_bounding
 test_status_tail_line_cap
 test_orphan_status_logs_are_printed

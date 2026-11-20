@@ -79,6 +79,7 @@ Each effective `FM_HOME` contains private operational directories.
 - Project and secondmate registries.
 - Captain preferences and optional shared captain preferences.
 - Learnings, backlog, briefs, scout reports, and the optional per-task no-mistakes pipeline-spend ledger.
+- Readable supervisor handover summaries and per-worker relaunch notes under `data/handover/` (`bin/fm-handover.sh`).
 - Explicitly installed content-addressed extension packages under `data/extensions/packages/`.
 - The opt-in living system map's intended design, private bindings, evidence, notes, and discrepancy ledger under `data/system-map/` ([`system-map.md`](system-map.md)).
 
@@ -94,6 +95,7 @@ Each effective `FM_HOME` contains private operational directories.
 - Private secondmate config-reread generations with their retry and quarantine state.
 - Per-task steering-inbox records under `state/<id>.inbox/` (`bin/fm-task-inbox-lib.sh`).
 - Parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
+- The pending supervisor handover record `state/handover.json` and its accepted copies `state/handover.accepted.<stamp>.json` (`bin/fm-handover.sh`).
 
 `config/` holds local gitignored operating choices, including explicit extension bindings under `config/extensions.d/`.
 

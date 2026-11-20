@@ -28,6 +28,10 @@
 #
 #   1. lock          - acquire the per-home session lock FIRST, before any
 #                       mutating step runs.
+#   1a. handover     - only while state/handover.json exists: the bounded
+#                      HANDOVER PENDING section (bin/fm-handover.sh status
+#                      --digest), read-only, before anything else so a parked
+#                      fleet is never read as healthy waiting.
 #   1b. home role    - the resolved firstmate-repository role line
 #                      (bin/fm-role.sh report), purely local, no network.
 #   2. bootstrap      - home-local stale Herdr projection cleanup runs only
@@ -70,7 +74,7 @@
 #                       script points back to the emitted harness supervision
 #                       block and deliberately never arms the watcher itself.
 #
-# Those ten names are also the runtime-bound stage list below, so a truncated
+# Those eleven names are also the runtime-bound stage list below, so a truncated
 # startup can name exactly which of them never ran - and the parent banners
 # EVERY nonzero child exit, not only the bound: a child that dies or is killed
 # mid-stage must never truncate the digest silently.
@@ -287,7 +291,7 @@ done
 # The ordered stage list is the contract behind the truncation banner: the child
 # names the stage it is entering, and the parent reports every stage at or after
 # that one as never emitted. Keep it in the exact order the digest prints.
-SESSION_START_STAGES='lock role bootstrap wake-queue supervision-instructions read-once fleet-state network-checks context next-step'
+SESSION_START_STAGES='lock handover role bootstrap wake-queue supervision-instructions read-once fleet-state network-checks context next-step'
 
 stage() {  # <stage-name>: breadcrumb for the parent's truncation banner
   [ -n "${FM_SESSION_START_STAGE_FILE:-}" ] || return 0
@@ -739,6 +743,19 @@ if [ "$LOCK_RC" -ne 0 ]; then
 fi
 REBUILDING_SESSION_PID=$(fm_harness_ancestry_pid 2>/dev/null || true)
 print_agents_refresh_if_required "$REBUILDING_SESSION_PID"
+
+# --- 1a. handover ----------------------------------------------------------
+# A supervisor handover left by the previous session (bin/fm-handover.sh owns
+# the record and this rendering, the session-handover skill the procedure).
+# Read-only, so it prints in both modes, ahead of the wake queue: a parked
+# fleet with an empty queue must read as work to resume, not as quiet.
+stage handover
+if [ -e "$STATE/handover.json" ]; then
+  subsection "HANDOVER PENDING"
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" FM_CONFIG_OVERRIDE="$CONFIG" \
+    "$SCRIPT_DIR/fm-handover.sh" status --digest 2>&1 \
+    || printf 'HANDOVER PENDING: bin/fm-handover.sh status failed; read %s directly\n' "$STATE/handover.json"
+fi
 
 # --- 1b. home role -------------------------------------------------------
 # This home's firstmate-repository role: user/operator unless an explicit
