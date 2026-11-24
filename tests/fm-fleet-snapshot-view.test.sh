@@ -32,10 +32,6 @@ case "${1:-}" in
   list-windows)
     sed -n 's/^window=[^:]*://p' "${FM_HOME:?}"/state/*.meta
     ;;
-  list-panes)
-    sed -n 's/^window=[^:]*://p' "${FM_HOME:?}"/state/*.meta \
-      | while IFS= read -r w; do printf '%s|0|@1|%s.0|0.0|@1.0\n' "$w" "$w"; done
-    ;;
   display-message)
     case "$*" in
       *pane_current_command*)
@@ -1148,108 +1144,30 @@ EOF
   printf 'done: complete\n' > "$home/state/terminal-ship.status"
   out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
   printf '%s' "$out" | jq -e '
-    .valid == true
-      and .reason == null
-      and .invalidity == {kind:null,ids:[]}
-      and .active_children == []
-      and ([.retained_children[] | {id,state}] == [{id:"terminal-ship",state:"done"}])
-      and .counts.retained_children == 1
-      and .state == "no_active_work"
-  ' >/dev/null || fail "a completed ship whose row is still In flight must be retained, not active and not invalid: $out"
-
-  printf 'failed: stopped\n' > "$home/state/terminal-ship.status"
-  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
-  printf '%s' "$out" | jq -e '
     .valid == false
       and .invalidity == {kind:"terminal_in_flight",ids:["terminal-ship"]}
-      and (.reason | contains("terminal-ship=failed"))
+      and (.reason | contains("terminal-ship=done"))
       and (.reason | contains("mate=") | not)
-      and .retained_children == []
-  ' >/dev/null || fail "ordinary failed in-flight ship must still produce terminal_in_flight without listing the secondmate: $out"
-  pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight, retains completed ships"
+  ' >/dev/null || fail "ordinary terminal in-flight ship must still produce terminal_in_flight without listing the secondmate: $out"
+  pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight"
 }
 
-# A stopped child (agent process absent, endpoint shell retained) is a held,
-# owned, NOT-active obligation in the home summary, so it no longer makes the
-# home unreadable; a sibling whose state is genuinely unreadable still does.
-test_home_summary_stopped_child_is_held_not_active() {
-  local home fakebin out
-  home=$(make_home summary-stopped)
-  mkdir -p "$home/projects/stopped" "$home/projects/opaque"
-  cat > "$home/data/backlog.md" <<'EOF'
-## In flight
-- [ ] dead-secondmate-held - Held Codex work (repo: alpha) (kind: ship) (since 2026-07-11)
-
-## Queued
-
-## Done
-EOF
-  fm_write_meta "$home/state/dead-secondmate-held.meta" \
-    "window=firstmate:fm-dead-secondmate-held" \
-    "worktree=$home/projects/stopped" \
-    "project=alpha" \
-    "harness=codex" \
-    "kind=ship" \
-    "mode=no-mistakes"
-  printf 'paused: execution held for primary routing\n' > "$home/state/dead-secondmate-held.status"
-  fakebin=$(make_fakebin "$home")
-  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
-  printf '%s' "$out" | jq -e '
-    .valid == true
-      and .invalidity == {kind:null,ids:[]}
-      and .state == "externally_held"
-      and .active_children == []
-      and .retained_children == []
-      and .unavailable_children == []
-      and ([.holds[] | select(.id == "dead-secondmate-held" and .source == "child-state")
-            | .reason | contains("agent process absent")] == [true])
-      and ([.endpoints[] | select(.id == "dead-secondmate-held") | .state] == ["stopped"])
-  ' >/dev/null || fail "a stopped child must be a held non-active obligation and keep the home valid: $out"
-
-  cat > "$home/data/backlog.md" <<'EOF'
-## In flight
-- [ ] dead-secondmate-held - Held Codex work (repo: alpha) (kind: ship) (since 2026-07-11)
-- [ ] opaque-live - Codex child still running (repo: alpha) (kind: ship) (since 2026-07-11)
-
-## Queued
-
-## Done
-EOF
-  fm_write_meta "$home/state/opaque-live.meta" \
-    "window=firstmate:fm-opaque-live" \
-    "worktree=$home/projects/opaque" \
-    "project=alpha" \
-    "harness=codex" \
-    "kind=ship" \
-    "mode=no-mistakes"
-  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary)
-  printf '%s' "$out" | jq -e '
-    .valid == false
-      and .invalidity == {kind:"child_current_unavailable",ids:["opaque-live"]}
-      and .state == "unknown"
-      and ([.unavailable_children[].id] == ["opaque-live"])
-      and ([.holds[].id] == ["dead-secondmate-held"])
-      and .active_children == []
-  ' >/dev/null || fail "an unreadable running sibling must stay unavailable beside the stopped child: $out"
-  pass "home-summary: a stopped child is held and non-active, an unreadable sibling stays unavailable"
-}
-
-test_empty_fleet_json
-test_fixture_snapshot_json
-test_home_summary_excludes_secondmate_from_child_inventory
-test_home_summary_stopped_child_is_held_not_active
-test_undated_captain_hold_phrasing_and_aging
-test_hold_buckets_are_total_and_text_blind
-test_main_inventory_orphan_and_unstructured_disclosure
-test_normalized_roles_and_plural_blocker_readiness
-test_event_hints_follow_reconciled_current_state
-test_open_decision_survives_later_unrelated_event
-test_secondmate_open_decision_survives_live_endpoint
-test_open_decision_transfers_to_captain_hold
-test_open_decision_clears_on_keyed_resolution
-test_completed_scout_report_is_pointer_not_pending
-test_parked_scout_decision_stays_pending
-test_scout_reports_include_teardown_reports
-test_backlog_tasks_axi_forms_and_overrides
-test_view_renders_snapshot
-test_view_renders_dead_secondmate_agent_status
+fm_test_run \
+  test_empty_fleet_json \
+  test_fixture_snapshot_json \
+  test_home_summary_excludes_secondmate_from_child_inventory \
+  test_undated_captain_hold_phrasing_and_aging \
+  test_hold_buckets_are_total_and_text_blind \
+  test_main_inventory_orphan_and_unstructured_disclosure \
+  test_normalized_roles_and_plural_blocker_readiness \
+  test_event_hints_follow_reconciled_current_state \
+  test_open_decision_survives_later_unrelated_event \
+  test_secondmate_open_decision_survives_live_endpoint \
+  test_open_decision_transfers_to_captain_hold \
+  test_open_decision_clears_on_keyed_resolution \
+  test_completed_scout_report_is_pointer_not_pending \
+  test_parked_scout_decision_stays_pending \
+  test_scout_reports_include_teardown_reports \
+  test_backlog_tasks_axi_forms_and_overrides \
+  test_view_renders_snapshot \
+  test_view_renders_dead_secondmate_agent_status

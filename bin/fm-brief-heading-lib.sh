@@ -92,3 +92,4 @@ fm_brief_task_heading_present() {  # <file> <heading>
   task=$(fm_brief_heading_body "$1" "# Task")
   fm_brief_heading_parse - "$2" present >/dev/null <<<"$task"
 }
+

@@ -6,6 +6,9 @@
 # clean fast-forward, never forcing, merging, or stashing" used by every sync
 # path:
 #   - /updatefirstmate (bin/fm-update.sh) pulls from origin: base_mode "origin".
+#     With an optional config/self-update-source, it instead fetches that one
+#     remote branch for the primary and passes it as a local base, and its
+#     secondmates follow the primary's resulting commit (bin/fm-update.sh owns it).
 #   - the local-HEAD secondmate sync (bin/fm-spawn.sh on launch, bin/fm-bootstrap.sh
 #     on startup) follows the PRIMARY checkout's current default-branch commit:
 #     base_mode is that local commit, with NO fetch and no origin dependency.
@@ -25,9 +28,8 @@
 # (data/, state/, config/, projects/, .no-mistakes/), so it cannot disturb a
 # secondmate's backlog, projects, or in-flight work.
 # The seeded .fm-secondmate-home identity marker is gitignored too; the local
-# sync tolerates that marker during the one-time upgrade of pre-ignore homes.
-# A pre-ignore .fm-secondmate-parent also requires a validated local binding to
-# this active parent and proof that the target ignores, rather than tracks, it.
+# sync tolerates only that marker during the one-time upgrade of pre-ignore
+# linked-worktree homes.
 # A clean secondmate divergence is reconciled only when a three-way tree proof
 # shows that its complete local result is already present in the target, as
 # happens after an upstream squash merge. Every other divergence stays put and
@@ -41,8 +43,6 @@
 SUB_HOME_MARKER="${SUB_HOME_MARKER:-.fm-secondmate-home}"
 # shellcheck source=bin/fm-secondmate-registry-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-secondmate-registry-lib.sh"
-# shellcheck source=bin/fm-secondmate-parent-lib.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-secondmate-parent-lib.sh"
 
 # --- helpers ---------------------------------------------------------------
 
@@ -254,33 +254,6 @@ remote_sync_failure_reason() { # <exit-status> <output>
   first_line "$2"
 }
 
-# A pre-ignore parent binding may survive an upgrade only for its validated
-# local owner and when Git proves the target ignores, rather than tracks, it.
-# Evaluate the target's root ignore file in an empty scratch repo so local or
-# global excludes cannot manufacture that proof. Never write the binding.
-secondmate_parent_ignore_upgrade() { # <dir> <target> <secondmate-id>
-  local dir=$1 target=$2 id=$3 parent active tracked mode scratch result=1
-  [ -n "$target" ] && [ -n "$id" ] || return 1
-  validate_secondmate_home "$id" "$dir" || return 1
-  fm_secondmate_parent_record_parse "$dir/.fm-secondmate-parent" || return 1
-  [ "$FM_SECONDMATE_PARENT_ROUTE" = local ] || return 1
-  parent=$(resolved_existing_dir "$FM_SECONDMATE_PARENT_HOME") || return 1
-  active=$(resolved_existing_dir "$FM_HOME") || return 1
-  [ "$parent" = "$active" ] || return 1
-  tracked=$(git -C "$dir" ls-tree --name-only "$target" -- .fm-secondmate-parent 2>/dev/null) || return 1
-  [ -z "$tracked" ] || return 1
-  mode=$(git -C "$dir" ls-tree "$target" -- .gitignore 2>/dev/null) || return 1
-  case "$mode" in 100644\ *|100755\ *) ;; *) return 1 ;; esac
-  scratch=$(mktemp -d "${TMPDIR:-/tmp}/fm-ff-parent-ignore.XXXXXX" 2>/dev/null) || return 1
-  if git -C "$dir" show "$target:.gitignore" > "$scratch/.gitignore" 2>/dev/null \
-    && git -c init.defaultBranch=main init --quiet --template= "$scratch" 2>/dev/null \
-    && git -c core.excludesFile=/dev/null -C "$scratch" check-ignore --no-index --quiet -- .fm-secondmate-parent; then
-    result=0
-  fi
-  rm -rf -- "$scratch"
-  return "$result"
-}
-
 # Translate a remote inheritance push's combined output into an operator-
 # actionable reason. The push prints one "unchanged: <item>" line per item that
 # already matched before failing on the item that stopped it, so the plain
@@ -298,14 +271,9 @@ remote_inherit_failure_reason() { # <output>
 }
 
 dirty_status() {
-  local dir=$1 ignore_seed_marker=${2:-no} target=${3:-} id=${4:-} parent_marker=''
+  local dir=$1 ignore_seed_marker=${2:-no}
   if [ "$ignore_seed_marker" = yes ]; then
-    if secondmate_parent_ignore_upgrade "$dir" "$target" "$id"; then
-      parent_marker='?? .fm-secondmate-parent'
-    fi
-    git -C "$dir" status --porcelain 2>/dev/null | awk \
-      -v marker="?? $SUB_HOME_MARKER" -v parent="$parent_marker" \
-      '$0 != marker && (parent == "" || $0 != parent) { print; exit }'
+    git -C "$dir" status --porcelain 2>/dev/null | awk -v marker="?? $SUB_HOME_MARKER" '$0 != marker { print; exit }'
   else
     git -C "$dir" status --porcelain 2>/dev/null | head -1
   fi
@@ -409,14 +377,20 @@ live_secondmate_meta_records() {
 #                  dependency (the local-HEAD secondmate sync). The commit must
 #                  already exist in the target's object store, which it always does
 #                  for a worktree of this same repo; a standalone clone that lacks
-#                  it is skipped rather than fetched.
-# Guards are identical in both modes: never force/merge/stash; skip wrong-branch
-# targets and apply this file's header for the dirty-tree guard's marker-upgrade
-# exceptions, leaving work untouched. An optional secondmate id
+#                  it is skipped rather than fetched, unless the caller sets
+#                  FF_IMPORT_FROM to a local repository path that holds it. Then
+#                  that one commit is imported from there first (objects only,
+#                  no ref of the target moves), the same read-only import the
+#                  remote home sync uses. /updatefirstmate sets it to the primary
+#                  checkout when config/self-update-source is in use, because no
+#                  origin fetch then refreshes a standalone clone.
+# Guards are identical in both modes: never force/merge/stash; skip a dirty or
+# wrong-branch target and leave its work untouched. An optional secondmate id
 # enables the content-equivalent divergence proof and durable marker described
 # in this file's header.
 FF_STATUS=""
 FF_INSTR=""
+FF_IMPORT_FROM=""
 ff_target() {
   local dir=$1 label=$2 base_mode=$3 allow_detached=${4:-no} ignore_seed_marker=${5:-no}
   local secondmate_id=${6:-} reconciliation_state=${7:-}
@@ -451,6 +425,10 @@ ff_target() {
     base="origin/$default"
   else
     base="$base_mode"
+    if [ -n "$FF_IMPORT_FROM" ] \
+      && ! git -C "$dir" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+      git -C "$dir" fetch --quiet --no-tags -- "$FF_IMPORT_FROM" "$base" >/dev/null 2>&1 || true
+    fi
   fi
 
   if ! git -C "$dir" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
@@ -468,7 +446,7 @@ ff_target() {
     return 0
   fi
 
-  if [ -n "$(dirty_status "$dir" "$ignore_seed_marker" "$base" "$secondmate_id")" ]; then
+  if [ -n "$(dirty_status "$dir" "$ignore_seed_marker")" ]; then
     echo "$label: skipped: dirty working tree"
     return 0
   fi

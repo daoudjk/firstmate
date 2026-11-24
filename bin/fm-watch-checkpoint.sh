@@ -16,13 +16,6 @@
 # "supervision-host:" line other than the park boundary passes through as a
 # wake; the boundary alone is the ordinary quiet checkpoint. On a home that
 # does not run the host nothing below changes.
-# --stop-owned selects the native Codex Stop boundary: the host keeps its own
-# park and engine handling, with a 540-second turn limit and a 550-second outer
-# watchdog plus 40 seconds for cleanup inside the hook's 600 seconds. Away widening applies only to
-# standalone checkpoints. Cancellation reaps only this checkpoint's owned
-# watcher or host; fm-watch.sh owns its sleeps, check groups and event waits.
-# Both timers keep their child in the caller's process group so native hook
-# cancellation reaches it even when the hook shell cannot run its EXIT trap.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,11 +24,10 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 SECONDS_ARG=${FM_CODEX_WATCH_CHECKPOINT:-180}
-STOP_OWNED=0
 
 usage() {
   cat <<'EOF'
-Usage: fm-watch-checkpoint.sh [--seconds <n>] [--stop-owned]
+Usage: fm-watch-checkpoint.sh [--seconds <n>]
 
 Run bin/fm-watch.sh in the foreground for a bounded checkpoint.
 On an actionable watcher wake, pass through the watcher output and exit 0.
@@ -45,7 +37,6 @@ EOF
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --stop-owned) STOP_OWNED=1; shift ;;
     --seconds)
       [ "$#" -gt 1 ] || { echo "error: --seconds requires a value" >&2; exit 2; }
       SECONDS_ARG=$2
@@ -82,35 +73,10 @@ ERR=$(mktemp "${TMPDIR:-/tmp}/fm-watch-checkpoint.err.XXXXXX") || {
   rm -f "$OUT"
   exit 1
 }
-CHECKPOINT_PID=
-# shellcheck disable=SC2329 # Registered by the EXIT trap below.
-cleanup_checkpoint() {
-  local watcher_pid watcher_parent
-  if [ -n "$CHECKPOINT_PID" ]; then
-    watcher_pid=$(cat "$STATE/.watch.lock/pid" 2>/dev/null || true)
-    watcher_parent=
-    case "$watcher_pid" in
-      ''|*[!0-9]*) ;;
-      *) watcher_parent=$(ps -o ppid= -p "$watcher_pid" 2>/dev/null | tr -d ' ') ;;
-    esac
-    if [ "$watcher_parent" = "$CHECKPOINT_PID" ]; then
-      # Signal the owned watcher first so the timeout parent reaps it normally.
-      # Signalling GNU timeout first can return before the watcher EXIT cleanup.
-      kill -TERM "$watcher_pid" 2>/dev/null || true
-    else
-      kill -TERM "$CHECKPOINT_PID" 2>/dev/null || true
-    fi
-    wait "$CHECKPOINT_PID" 2>/dev/null || true
-  fi
-  rm -f "$OUT" "$ERR"
-}
-trap cleanup_checkpoint EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'rm -f "$OUT" "$ERR"' EXIT
 
 run_with_perl_timeout() {  # <seconds> <signal> <kill-after-seconds> <command...>
-  exec perl -e '
+  perl -e '
     use POSIX qw(:sys_wait_h);
     my $seconds = shift;
     my $signal = shift;
@@ -118,29 +84,21 @@ run_with_perl_timeout() {  # <seconds> <signal> <kill-after-seconds> <command...
     my $pid = fork;
     die "fork failed\n" unless defined $pid;
     if (!$pid) {
-      $SIG{INT} = $SIG{TERM} = $SIG{HUP} = "DEFAULT";
+      setpgrp(0, 0);
       exec @ARGV;
       die "exec failed: $!\n";
     }
     my $timed_out = 0;
     local $SIG{ALRM} = sub {
       if ($timed_out) {
-        kill "KILL", $pid;
+        kill "KILL", -$pid;
         waitpid $pid, 0;
         exit 124;
       }
       $timed_out = 1;
-      kill $signal, $pid;
+      kill $signal, -$pid;
       alarm($kill_after) if $kill_after;
     };
-    my $cancel = sub {
-      kill "TERM", $pid;
-      alarm($kill_after || 5);
-      $timed_out = 1;
-    };
-    local $SIG{HUP} = $cancel;
-    local $SIG{INT} = $cancel;
-    local $SIG{TERM} = $cancel;
     alarm $seconds;
     while (1) {
       my $waited = waitpid $pid, WNOHANG;
@@ -151,6 +109,22 @@ run_with_perl_timeout() {  # <seconds> <signal> <kill-after-seconds> <command...
       select undef, undef, undef, 0.05;
     }
   ' "$@"
+}
+
+TIMEOUT_COMMAND=''
+
+# Only GNU coreutils timeout is trusted with --signal/--kill-after; another
+# implementation named timeout (for example uutils) falls through to perl.
+find_gnu_timeout() {
+  local candidate
+  for candidate in timeout gtimeout; do
+    if command -v "$candidate" >/dev/null 2>&1 \
+      && "$candidate" --version 2>/dev/null | grep -q 'GNU coreutils'; then
+      TIMEOUT_COMMAND=$candidate
+      return
+    fi
+  done
+  TIMEOUT_COMMAND=perl
 }
 
 run_bounded() {  # <seconds> <signal> <kill-after-seconds> <command...>
@@ -166,29 +140,14 @@ run_bounded() {  # <seconds> <signal> <kill-after-seconds> <command...>
     [ "$cleanup_lock_bound" -gt "$kill_after" ] || cleanup_lock_bound=$kill_after
     kill_after=$cleanup_lock_bound
   fi
-  if command -v timeout >/dev/null 2>&1; then
-    if [ "$kill_after" -gt 0 ]; then
-      exec timeout --foreground --signal="$signal" --kill-after="${kill_after}s" "$seconds" "$@"
-    else
-      exec timeout --foreground --signal="$signal" "$seconds" "$@"
-    fi
-  elif command -v gtimeout >/dev/null 2>&1; then
-    if [ "$kill_after" -gt 0 ]; then
-      exec gtimeout --foreground --signal="$signal" --kill-after="${kill_after}s" "$seconds" "$@"
-    else
-      exec gtimeout --foreground --signal="$signal" "$seconds" "$@"
-    fi
-  else
+  [ -n "$TIMEOUT_COMMAND" ] || find_gnu_timeout
+  if [ "$TIMEOUT_COMMAND" = perl ]; then
     run_with_perl_timeout "$seconds" "$signal" "$kill_after" "$@"
+  elif [ "$kill_after" -gt 0 ]; then
+    "$TIMEOUT_COMMAND" --signal="$signal" --kill-after="${kill_after}s" "$seconds" "$@"
+  else
+    "$TIMEOUT_COMMAND" --signal="$signal" "$seconds" "$@"
   fi
-}
-
-run_checkpoint() {
-  run_bounded "$@" >"$OUT" 2>"$ERR" &
-  CHECKPOINT_PID=$!
-  RC=0
-  wait "$CHECKPOINT_PID" || RC=$?
-  CHECKPOINT_PID=
 }
 
 positive_or() {  # <value> <default>
@@ -207,29 +166,12 @@ if fm_supervision_host_enabled "$CONFIG" codex; then
   # The host's park boundary stays below the 28800-second registration.
   [ "$BOUND" -lt 27000 ] 2>/dev/null || BOUND=27000
   LIMIT=$(( BOUND + $(positive_or "${FM_SUPERVISION_HOST_TURN_TIMEOUT:-}" 1200) + $(positive_or "${FM_SUPERVISION_ENGINE_GRACE:-}" 30) ))
-  if [ "$STOP_OWNED" -eq 1 ]; then
-    # Native Stop has a 600-second registration. Reserve cleanup headroom,
-    # and let the host return a close whose engine could exceed this limit.
-    BOUND=$SECONDS_ARG
-    [ "$BOUND" -le 540 ] || { echo "error: Stop checkpoint exceeds 540s" >&2; exit 2; }
-    LIMIT=540
-    TURN_BOUND=$(positive_or "${FM_SUPERVISION_HOST_TURN_TIMEOUT:-}" 1200)
-    ENGINE_GRACE=$(positive_or "${FM_SUPERVISION_ENGINE_GRACE:-}" 30)
-    AVAILABLE=$((LIMIT - BOUND - ENGINE_GRACE - 1))
-    [ "$AVAILABLE" -gt 0 ] || AVAILABLE=1
-    [ "$TURN_BOUND" -le "$AVAILABLE" ] || TURN_BOUND=$AVAILABLE
-    export FM_SUPERVISION_HOST_TURN_TIMEOUT=$TURN_BOUND
-    OUTER_LIMIT=550
-    HOST_KILL_AFTER=40
-  else
-    OUTER_LIMIT=$((LIMIT + 120))
-    HOST_KILL_AFTER=0
-  fi
   set +e
   # The host ends its own park; the outer bound only catches a host that
   # outlived every one of its own bounds.
   FM_SUPERVISION_HOST_PRIMARY=codex FM_SUPERVISION_HOST_PARK_SECONDS=$BOUND FM_SUPERVISION_HOST_PARK_LIMIT=$LIMIT \
-    run_checkpoint "$OUTER_LIMIT" TERM "$HOST_KILL_AFTER" "$SCRIPT_DIR/fm-supervision-host.sh" park
+    run_bounded $((LIMIT + 120)) TERM 0 "$SCRIPT_DIR/fm-supervision-host.sh" park >"$OUT" 2>"$ERR"
+  RC=$?
   set -e
   if grep -E '^(signal:|stale:|check:|heartbeat($|:)|supervision-host:)' "$OUT" 2>/dev/null \
     | grep -Ev '^supervision-host: cycle boundary' >/dev/null; then
@@ -252,8 +194,9 @@ if fm_supervision_host_enabled "$CONFIG" codex; then
 fi
 
 set +e
-# Interrupt the watcher so its native EXIT cleanup retires its owned check group and releases its lock; ordinary shutdown still uses TERM.
-run_checkpoint "$SECONDS_ARG" INT 5 "$SCRIPT_DIR/fm-watch.sh"
+# Interrupt the checkpoint's active check group so the watcher's native EXIT cleanup can release its lock; ordinary watcher shutdown still uses TERM.
+run_bounded "$SECONDS_ARG" INT 5 "$SCRIPT_DIR/fm-watch.sh" >"$OUT" 2>"$ERR"
+RC=$?
 set -e
 
 if grep -E '^(signal:|stale:|check:|heartbeat($|:))' "$OUT" >/dev/null 2>&1; then

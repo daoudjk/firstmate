@@ -55,9 +55,7 @@
 #   6. fleet digest   - a compact data/backlog.md identity/metadata listing,
 #                       every state/*.meta, a bounded state/*.status tail,
 #                       the away posture (state/.afk-contract and the legacy
-#                       state/.afk daemon flag), the opt-in system map's
-#                       bounded local summary (bin/fm-system-map.sh summary,
-#                       only with config/system-map), and a cheap per-task
+#                       state/.afk daemon flag), and a cheap per-task
 #                       endpoint-liveness read, each bounded and crash-
 #                       isolated so one task's read can never abort the
 #                       digest: read-only, always runs. The per-task reads
@@ -149,16 +147,10 @@
 #   - `done` rows are never listed. Retained completion history belongs to the
 #     reporting surfaces (bin/fm-bearings-snapshot.sh, /ahoy), and at startup it
 #     is pure weight - 10 done rows cost 3.3KB in an observed main-home digest.
-#   - Every in-flight, held, and blocked row is listed, with its id, state,
-#     hold_kind, hold_reason, and blocked_by. Those are the rows AGENTS.md
-#     sections 7 and 10 make actionable at startup, so no row is ever bounded
-#     away. Only the DISPLAY of a long hold reason is bounded, by
-#     FM_SESSION_START_HOLD_REASON_LIMIT characters (default
-#     FM_LINE_CAP_DEFAULT from bin/fm-line-cap-lib.sh, 0 = unbounded): the
-#     reason keeps its exact opening text plus an explicit truncation marker
-#     with the shown and total counts and the exact full-record command for
-#     that id. bin/fm-hold-reason-lib.sh's fm_hold_reason_bound_stream owns the
-#     cut; the stored reason is never rewritten or summarized.
+#   - Every in-flight, held, and blocked row is listed IN FULL, with its
+#     hold_kind/hold_reason and blocked_by. Those are the rows AGENTS.md
+#     sections 7 and 10 make actionable at startup, so they are never bounded
+#     away.
 #   - Only the plain queued (dispatchable-now) listing is bounded, by
 #     FM_SESSION_START_QUEUED_LIMIT, default 20. Anything it omits is disclosed
 #     with an exact remainder count and the command that shows the rest, so a
@@ -393,18 +385,19 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 # One tasks-axi compatibility verdict per session start. The probe costs three
 # tasks-axi subprocesses and this digest needs the same answer twice - here for
 # the backlog listing and again inside the fm-bootstrap.sh child, which reports
-# an incompatible build as MISSING. Computing it once and handing it to that
-# child collapses six subprocesses to three. fm-tasks-axi-lib.sh owns both reuse
-# layers and the one-hop consumption rule that keeps the verdict out of any
-# agent's environment.
+# an incompatible build as OUTDATED. Computing it once and handing it, with the
+# reason behind it, to that child collapses six subprocesses to three; the reason
+# travels too so the child's OUTDATED requirement text names a missing capability
+# without running the child's own `--help` probes over again. fm-tasks-axi-lib.sh
+# owns both reuse layers and the one-hop consumption rule that keeps them out of
+# any agent's environment.
 if fm_tasks_axi_compatible; then TASKS_AXI_COMPATIBLE=1; else TASKS_AXI_COMPATIBLE=0; fi
+TASKS_AXI_CHECK_REASON=$(fm_tasks_axi_check_reason)
 
 STATUS_TAIL=${FM_SESSION_START_STATUS_TAIL:-5}
 case "$STATUS_TAIL" in ''|*[!0-9]*) STATUS_TAIL=5 ;; esac
 QUEUED_LIMIT=${FM_SESSION_START_QUEUED_LIMIT:-20}
 case "$QUEUED_LIMIT" in ''|*[!0-9]*|0) QUEUED_LIMIT=20 ;; esac
-HOLD_REASON_LIMIT=${FM_SESSION_START_HOLD_REASON_LIMIT:-$FM_LINE_CAP_DEFAULT}
-case "$HOLD_REASON_LIMIT" in ''|*[!0-9]*) HOLD_REASON_LIMIT=$FM_LINE_CAP_DEFAULT ;; esac
 # One per-task endpoint read may never outlive this bound: a hung backend CLI
 # becomes that task's endpoint: error line instead of the digest's whole
 # runtime budget.
@@ -439,22 +432,6 @@ print_file_or_absent() {
   fi
 }
 
-# The listing header's one statement of how hold reasons are displayed.
-hold_reason_bound_note() {
-  if [ "$HOLD_REASON_LIMIT" -gt 0 ]; then
-    printf 'hold reasons over %s chars truncated with a marker naming the full-record command' "$HOLD_REASON_LIMIT"
-  else
-    printf 'hold reasons shown in full'
-  fi
-}
-
-# Decode, then bound for display, one tasks-axi listing group.
-print_axi_group() {
-  printf '%s\n' "$1" | fm_hold_reason_decode_stream \
-    | fm_hold_reason_bound_stream "$HOLD_REASON_LIMIT" toon 'bin/fm-tasks-axi.sh show %s --full' \
-    | strip_axi_help
-}
-
 print_backlog_pointer() {
   printf 'Full task bodies remain available on demand: bin/fm-tasks-axi.sh show <id> --full when compatible tasks-axi is available, or data/backlog.md.\n'
 }
@@ -468,8 +445,8 @@ MANUAL_KEEP_RE='[(]hold|blocked-by:'
 
 print_backlog_manual_compact() {
   local path=$1 reason=$2
-  printf 'compact backlog listing (%s; done rows omitted; every in-flight, held, and blocked title line kept; %s; other queued bounded to %s; indented task bodies omitted)\n' \
-    "$reason" "$(hold_reason_bound_note)" "$QUEUED_LIMIT"
+  printf 'compact backlog listing (%s; done rows omitted; every in-flight, held, and blocked title line kept; other queued bounded to %s; indented task bodies omitted)\n' \
+    "$reason" "$QUEUED_LIMIT"
   awk -v max="$QUEUED_LIMIT" -v keep_re="$MANUAL_KEEP_RE" '
     function state_for_heading(line, heading) {
       heading = line
@@ -506,8 +483,7 @@ print_backlog_manual_compact() {
         }
       }
     }
-  ' "$path" | fm_hold_reason_decode_stream markdown \
-    | fm_hold_reason_bound_stream "$HOLD_REASON_LIMIT" markdown 'data/backlog.md entry %s'
+  ' "$path" | fm_hold_reason_decode_stream markdown
 }
 
 # tasks-axi closes every listing with its own help block. This section composes
@@ -556,14 +532,14 @@ print_backlog_tasks_axi_compact() {
   elif ! ready=$(tasks-axi ready --file "$path" 2>&1); then
     err=$ready
   else
-    printf 'compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, and blocked row shown; %s; ready queued bounded to %s; task bodies omitted)\n' \
-      "$(hold_reason_bound_note)" "$QUEUED_LIMIT"
+    printf 'compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, and blocked row shown in full; ready queued bounded to %s; task bodies omitted)\n' \
+      "$QUEUED_LIMIT"
     printf '\nin flight:\n'
-    print_axi_group "$in_flight"
+    printf '%s\n' "$in_flight" | fm_hold_reason_decode_stream | strip_axi_help
     printf '\nheld (captain- or time-gated; an in-flight item that is also held appears in both groups):\n'
-    print_axi_group "$held"
+    printf '%s\n' "$held" | fm_hold_reason_decode_stream | strip_axi_help
     printf '\nblocked queued:\n'
-    print_axi_group "$blocked"
+    printf '%s\n' "$blocked" | fm_hold_reason_decode_stream | strip_axi_help
     printf '\nready queued (dispatchable now):\n'
     print_ready_queued_bounded "$ready"
     return 0
@@ -800,14 +776,17 @@ stage bootstrap
 subsection "BOOTSTRAP"
 if [ "$READ_ONLY" -eq 1 ]; then
   BOOT_OUT=$(FM_BOOTSTRAP_DETECT_ONLY=1 FM_BOOTSTRAP_NETWORK=skip \
-    FM_TASKS_AXI_COMPATIBLE="$TASKS_AXI_COMPATIBLE" "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
+    FM_TASKS_AXI_COMPATIBLE="$TASKS_AXI_COMPATIBLE" \
+    FM_TASKS_AXI_CHECK_REASON="$TASKS_AXI_CHECK_REASON" "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
 elif [ "$REEMIT" -eq 1 ]; then
   BOOT_OUT=$(FM_BOOTSTRAP_DETECT_ONLY=1 FM_BOOTSTRAP_LOCKED=1 FM_BOOTSTRAP_NETWORK=skip \
-    FM_TASKS_AXI_COMPATIBLE="$TASKS_AXI_COMPATIBLE" "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
+    FM_TASKS_AXI_COMPATIBLE="$TASKS_AXI_COMPATIBLE" \
+    FM_TASKS_AXI_CHECK_REASON="$TASKS_AXI_CHECK_REASON" "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1)
 else
   BOOT_OUT=$(
     "$SCRIPT_DIR/fm-herdr-session-cleanup.sh" 2>&1 || true
     FM_BOOTSTRAP_NETWORK=skip FM_TASKS_AXI_COMPATIBLE="$TASKS_AXI_COMPATIBLE" \
+      FM_TASKS_AXI_CHECK_REASON="$TASKS_AXI_CHECK_REASON" \
       "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1
   )
 fi
@@ -1064,15 +1043,6 @@ if fm_pf_relay_active "$FM_HOME" \
   fi
 fi
 
-# The living system map (bin/fm-system-map.sh) is opt-in: a home without
-# config/system-map runs one [ -f ] test and prints nothing. Its summary reads
-# only local snapshot and ledger files, under a short bound, never the network.
-if [ -f "$CONFIG/system-map" ]; then
-  subsection "System map"
-  fm_run_timed "${FM_SESSION_START_MAP_TIMEOUT:-5}" "$SCRIPT_DIR/fm-system-map.sh" summary 2>&1 \
-    || printf 'system map summary unavailable (bin/fm-system-map.sh status)\n'
-fi
-
 # --- 7. network checks ------------------------------------------------------
 # Deliberately here and not later: these lines are actionable (a stuck clone, a
 # secondmate that could not be relaunched, broken GitHub auth), and the section
@@ -1152,9 +1122,7 @@ EOF
 if [ "$READ_ONLY" -eq 0 ] && [ "$REEMIT" -eq 0 ]; then
   COMPLETION_RECORDED=0
   COMPLETION_PID=$(cat "$STATE/.lock" 2>/dev/null || true)
-  case "$COMPLETION_PID" in
-    ''|*[!0-9]*) COMPLETION_PID= ;;
-  esac
+  fm_session_pid_valid "$COMPLETION_PID" || COMPLETION_PID=
   COMPLETION_TMP=$(mktemp "$STATE/.session-start-complete.XXXXXX" 2>/dev/null || true)
   if [ -n "$COMPLETION_PID" ] && [ -n "$COMPLETION_TMP" ] \
     && printf '%s\n' "$COMPLETION_PID" > "$COMPLETION_TMP" 2>/dev/null \

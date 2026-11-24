@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
 # Behavior tests for bin/fm-brief.sh.
+#
+# Regression coverage for the heredoc-in-command-substitution parse bug (issues
+# #166, #958, #1069). Building a variable with `VAR=$(cat <<EOF ... EOF)` is
+# unsafe on Bash 3.2 (macOS /bin/bash): the lexer scans for the matching `)` of
+# the command substitution textually and tracks quote state through the heredoc
+# body, so a single apostrophe, unbalanced quote, or unbalanced paren anywhere
+# in that body breaks parsing of the *entire rest of the script* - `bash -n`
+# fails, not just the generated brief. The DOD and Herdr-section builders now
+# use `IFS= read -r -d '' VAR <<EOF || true` instead, which removes the `$(...)`
+# wrapper and eliminates the whole defect class regardless of future prose.
+# test_no_heredoc_in_command_substitution guards that structure directly.
+# Ambient `bash -n` here is Bash 5 and cannot see the bug, so the real
+# cross-version enforcement lives in the macos-stock-bash CI job.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -9,12 +22,152 @@ TMP_ROOT=$(fm_test_tmproot fm-brief)
 BRIEF_HOME="$TMP_ROOT/home"
 mkdir -p "$BRIEF_HOME/data"
 
+# The script itself must always parse under the ambient bash. That is Bash 5 in
+# CI and locally, where the issue #958/#1069 parser bug does not fire, so this
+# is a weak guard on its own; test_no_heredoc_in_command_substitution and the
+# macos-stock-bash CI job carry the real cross-version enforcement.
 test_script_parses() {
   local out rc
   out=$(bash -n "$ROOT/bin/fm-brief.sh" 2>&1); rc=$?
   expect_code 0 "$rc" "bash -n bin/fm-brief.sh must parse cleanly (got: $out)"
   [ -z "$out" ] || fail "bash -n bin/fm-brief.sh emitted unexpected output: $out"
   pass "fm-brief.sh: bash -n succeeds"
+}
+
+# Structural class guard (issues #166, #958, #1069): never build a variable by
+# wrapping a heredoc in a command substitution (`VAR=$(cat <<EOF ... EOF)`).
+# That construct is what breaks Bash 3.2 parsing, and pinning one historical
+# apostrophe phrase (as the old test did) missed the #945 reintroduction. This
+# guards the *shape* directly against the whole file, so any future DOD or
+# section builder that reintroduces the class fails here regardless of prose.
+test_no_heredoc_in_command_substitution() {
+  local unsafe safe
+  unsafe="$TMP_ROOT/heredoc-in-substitution.sh"
+  safe="$TMP_ROOT/plain-heredoc.sh"
+  # shellcheck disable=SC2016 # Literal shell fixtures must remain unexpanded.
+  printf '%s\n' 'value=$(' '  cat <<EOF' 'body' 'EOF' ')' > "$unsafe"
+  # shellcheck disable=SC2016 # Literal shell fixtures must remain unexpanded.
+  printf '%s\n' 'cat <<EOF' '$(' '  cat <<INNER' 'INNER' ')' 'EOF' > "$safe"
+  if no_heredoc_in_command_substitution "$unsafe"; then
+    fail "structural guard accepted a multiline heredoc nested in a command substitution"
+  fi
+  no_heredoc_in_command_substitution "$safe" \
+    || fail "structural guard treated heredoc body prose as shell structure"
+  no_heredoc_in_command_substitution "$ROOT/bin/fm-brief.sh" \
+    || fail "fm-brief.sh wraps a heredoc in a command substitution (breaks Bash 3.2 parsing)"
+  pass "fm-brief.sh: no heredoc is nested inside a command substitution (Bash 3.2 parse-safe)"
+}
+
+no_heredoc_in_command_substitution() {
+  perl - "$1" <<'PERL'
+use strict;
+use warnings;
+
+my $path = shift;
+open my $source, '<', $path or die "$path: $!\n";
+my @frames;
+my @heredocs;
+my $quote = '';
+my $line_number = 0;
+
+while (my $line = <$source>) {
+  $line_number++;
+  if (@heredocs) {
+    my $candidate = $line;
+    $candidate =~ s/\r?\n\z//;
+    $candidate =~ s/^\t+// if $heredocs[0]{strip_tabs};
+    shift @heredocs if $candidate eq $heredocs[0]{delimiter};
+    next;
+  }
+
+  my $length = length $line;
+  for (my $i = 0; $i < $length; $i++) {
+    my $char = substr($line, $i, 1);
+    if ($quote eq "'") {
+      $quote = '' if $char eq "'";
+      next;
+    }
+    if ($char eq '\\') {
+      $i++;
+      next;
+    }
+    if ($quote eq '"' && $char eq '"') {
+      $quote = '';
+      next;
+    }
+    if ($char eq "'" && $quote eq '') {
+      $quote = "'";
+      next;
+    }
+    if ($char eq '"' && $quote eq '') {
+      $quote = '"';
+      next;
+    }
+    if ($char eq '#' && $quote eq '' && ($i == 0 || substr($line, $i - 1, 1) =~ /[\s;|&()]/)) {
+      last;
+    }
+    if ($char eq '$' && substr($line, $i + 1, 1) eq '(') {
+      push @frames, { depth => 1, quote => $quote };
+      $quote = '';
+      $i++;
+      next;
+    }
+    if (@frames && $quote eq '' && $char eq '(') {
+      $frames[-1]{depth}++;
+      next;
+    }
+    if (@frames && $quote eq '' && $char eq ')') {
+      $frames[-1]{depth}--;
+      if ($frames[-1]{depth} == 0) {
+        my $frame = pop @frames;
+        $quote = $frame->{quote};
+      }
+      next;
+    }
+    next unless $quote eq '' && $char eq '<' && substr($line, $i + 1, 1) eq '<';
+    if (@frames) {
+      print STDERR "$path:$line_number\n";
+      exit 1;
+    }
+
+    my $j = $i + 2;
+    my $strip_tabs = substr($line, $j, 1) eq '-';
+    $j++ if $strip_tabs;
+    $j++ while substr($line, $j, 1) =~ /[ \t]/;
+    my $delimiter = '';
+    my $delimiter_quote = '';
+    for (; $j < $length; $j++) {
+      my $token = substr($line, $j, 1);
+      if ($delimiter_quote) {
+        if ($token eq $delimiter_quote) {
+          $delimiter_quote = '';
+        } elsif ($token eq '\\' && $delimiter_quote eq '"') {
+          $j++;
+          $delimiter .= substr($line, $j, 1);
+        } else {
+          $delimiter .= $token;
+        }
+        next;
+      }
+      if ($token eq "'" || $token eq '"') {
+        $delimiter_quote = $token;
+        next;
+      }
+      if ($token eq '\\') {
+        $j++;
+        $delimiter .= substr($line, $j, 1);
+        next;
+      }
+      last if $token =~ /[\s;|&()<>]/;
+      $delimiter .= $token;
+    }
+    push @heredocs, { delimiter => $delimiter, strip_tabs => $strip_tabs };
+    $i = $j - 1;
+  }
+}
+
+exit 0;
+PERL
 }
 
 test_help_includes_entire_header() {
@@ -513,10 +666,11 @@ test_herdr_lab_contract_is_explicit_and_complete() {
     "Herdr lab brief missing the per-call session option contract"
   assert_grep "direct \`herdr server stop\`" "$brief" \
     "Herdr lab brief missing the forbidden server-global command list"
-  assert_grep "records the live default session before provisioning" "$brief" \
-    "Herdr lab brief missing the before tripwire"
-  assert_grep "verifies the identical fleet state after teardown" "$brief" \
-    "Herdr lab brief missing the after tripwire"
+  # shellcheck disable=SC2016 # literal backticks are matched verbatim
+  assert_grep 'See the `bin/fm-herdr-lab.sh` header for the fleet-state tripwire and `FM_HERDR_LAB_FLEET_SESSION` rule.' "$brief" \
+    "Herdr lab brief missing the tripwire owner pointer"
+  assert_grep "A missing, stopped, or changed fleet session is a hard tripwire failure" "$brief" \
+    "Herdr lab brief missing the hard tripwire failure guidance"
   assert_no_grep "Herdr lifecycle declaration - NOT ENABLED" "$brief" \
     "Herdr lab brief retained the unguarded declaration"
   pass "fm-brief.sh: --herdr-lab emits the complete hard safety contract"
@@ -917,6 +1071,8 @@ test_ship_and_scout_teach_validation_round_pause() {
       "$kind brief's Waiting section does not declare the validation round once and then hold it"
     assert_no_grep "is not a \`paused:\` wait" "$brief" \
       "$kind brief still tells workers never to declare a wait they hold in a command"
+    assert_no_grep "heavy-test slot" "$brief" \
+      "$kind brief names a heavy-test slot that nothing defines"
     assert_grep "your own validation round" "$brief" \
       "$kind brief did not teach workers to declare their validation-round wait"
     assert_grep 'Before ending your turn with your own background shell or monitor still running' "$brief" \
@@ -948,6 +1104,29 @@ test_scout_and_secondmate_load_decision_hold_policy() {
   assert_grep "load \`captain-hold-lifecycle\`" "$charter" \
     "secondmate charter did not load the shared captain-call policy for detailed investigations"
   pass "fm-brief.sh: investigation and visual-review completions load the shared decision policy"
+}
+
+test_scout_completion_write_exception_is_task_scoped() {
+  local home id brief command
+  home="$TMP_ROOT/scout completion home"
+  mkdir -p "$home/data"
+  for id in inventory-alpha inventory-beta; do
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" sample --scout >/dev/null \
+      || fail "scout completion scaffold failed"
+    brief="$home/data/$id/brief.md"
+    command="FM_HOME='$home' bash '$ROOT/bin/fm-captain-hold.sh' complete '$id' --none"
+    assert_grep "except for the task's empty-inventory attestation through \`fm-captain-hold.sh complete --none\`, exactly as specified under Definition of done." "$brief" \
+      "scout outside-write rule did not name its exact completion gate"
+    assert_grep "Only when the reviewed inventory is empty, run \`$command\`." "$brief" \
+      "scout did not receive the empty-inventory command for its own task and home"
+    assert_grep 'This exception permits only that command, not direct metadata edits, another task, or any backlog write.' "$brief" \
+      "scout completion exception granted broader write authority"
+    assert_grep 'If any captain call remains, ask firstmate to register the inventory and attest completion before you report done.' "$brief" \
+      "scout was instructed to write a non-empty inventory itself"
+    assert_grep 'If the command refuses, report the refusal to firstmate and stop rather than bypassing the completion gate.' "$brief" \
+      "scout was allowed to bypass a refused completion"
+  done
+  pass "fm-brief.sh: scouts may attest only their own empty inventory through the guarded command"
 }
 
 # A scout brief offers the Lavish review loop for every compatible board version,
@@ -1106,6 +1285,35 @@ test_wait_no_turns_absent_keeps_the_previous_brief() {
   pass "fm-brief: without config/wait-no-turns the brief and drive text stay as they were"
 }
 
+test_inbox_guidance_explains_marked_body_terminator() {
+  local home brief kind id
+  home="$TMP_ROOT/inbox-guidance"
+  for kind in no-mistakes scout secondmate; do
+    id="inbox-$kind"
+    case "$kind" in
+      no-mistakes)
+        FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null \
+          || fail "ship scaffold failed"
+        ;;
+      scout)
+        FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null \
+          || fail "scout scaffold failed"
+        ;;
+      secondmate)
+        FM_HOME="$home" FM_SECONDMATE_CHARTER='Supervise assigned work.' \
+          "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects >/dev/null \
+          || fail "secondmate scaffold failed"
+        ;;
+    esac
+    brief="$home/data/$id/brief.md"
+    assert_grep 'fm_task_inbox_body' "$brief" "$kind scaffold omitted the format-aware inbox reader"
+    assert_grep 'body-terminator=1' "$brief" "$kind scaffold omitted the body terminator marker"
+    assert_grep 'not part of the logical message body' "$brief" "$kind scaffold omitted the synthetic terminator meaning"
+    assert_grep 'preserve any intentional trailing newlines' "$brief" "$kind scaffold omitted trailing-newline preservation"
+  done
+  pass "fm-brief: inbox guidance explains marked synthetic terminators in every scaffold"
+}
+
 test_worker_role_scope() {
   local kind home brief
   home="$TMP_ROOT/worker-role"
@@ -1128,97 +1336,6 @@ test_worker_role_scope() {
   pass "fm-brief: scaffolds leave the worker role scope to the launch boundary and keep the secondmate contract"
 }
 
-test_technical_description_reminder_reaches_only_workers() {
-  local home id brief variant status mode
-  home="$TMP_ROOT/technical-description-home"
-  write_registry "$home"
-  for variant in no-registry-proj direct-proj local-proj scout; do
-    id="technical-$variant"
-    if [ "$variant" = scout ]; then
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1; status=$?
-    else
-      case "$variant" in direct-proj) mode=direct-PR ;; local-proj) mode=local-only ;; *) mode=no-mistakes ;; esac
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$variant" --mode "$mode" >/dev/null 2>&1; status=$?
-    fi
-    expect_code 0 "$status" "$variant: scaffold should succeed"
-    brief="$home/data/$id/brief.md"
-    assert_grep 'Describe the actual component function, interfaces, contract, authorization scope and limits faithfully.' "$brief" \
-      "$variant: missing faithful technical description and visible scope reminder"
-    assert_grep 'On a provider refusal, stop and report its exact text to firstmate once.' "$brief" \
-      "$variant: missing stop and exact refusal reporting reminder"
-    assert_grep '{TASK}' "$brief" "$variant: task placeholder changed"
-  done
-  FM_HOME="$home" FM_SECONDMATE_CHARTER='authorized domain scope' \
-    "$ROOT/bin/fm-brief.sh" technical-mate --secondmate --no-projects >/dev/null 2>&1; status=$?
-  expect_code 0 "$status" "secondmate: scaffold should succeed"
-  brief="$home/data/technical-mate/brief.md"
-  assert_grep 'authorized domain scope' "$brief" "secondmate: charter text changed"
-  assert_no_grep '# Technical description and policy refusals' "$brief" "worker reminder leaked into charter"
-  pass "fm-brief.sh: technical description and refusal reminders reach ship modes and scouts only"
-}
-
-test_explicit_delivery_target() {
-  local home kind id brief rc target
-  local -a args
-  home="$TMP_ROOT/delivery-target-home"
-  write_registry "$home"
-  target=daoudjk/firstmate
-  for kind in no-registry-proj direct-proj local-proj scout; do
-    id="restricted-$kind"
-    args=()
-    case "$kind" in
-      scout) args+=(--scout) ;;
-      direct-proj) args+=(--mode direct-PR) ;;
-      local-proj) args+=(--mode local-only) ;;
-      *) args+=(--mode no-mistakes) ;;
-    esac
-    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$kind" \
-      --delivery-repo "$target" "${args[@]}" >/dev/null 2>&1; rc=$?
-    expect_code 0 "$rc" "$kind: explicit allowed delivery should succeed"
-    brief="$home/data/$id/brief.md"
-    assert_grep "Local project instructions restrict outward delivery to https://github.com/$target." "$brief" \
-      "$kind: renamed repo lost explicit target"
-    assert_grep 'the intended PR base repository' "$brief" "$kind: PR base verification missing"
-    assert_grep 'including the no-mistakes delivery configuration' "$brief" "$kind: pipeline target check missing"
-    assert_grep 'Never push or open a PR against any other repository, including an upstream repository' "$brief" \
-      "$kind: upstream PR restriction missing"
-    assert_grep 'their no-push/no-PR rules still apply' "$brief" "$kind: target granted extra authority"
-    case "$kind" in
-      local-proj|scout) assert_grep 'Never push to any remote and never open a PR.' "$brief" \
-        "$kind: no remote delivery rule lost" ;;
-    esac
-  done
-  for kind in unrelated firstmate; do
-    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "unrestricted-$kind" "$kind" --mode no-mistakes >/dev/null 2>&1
-    brief="$home/data/unrestricted-$kind/brief.md"
-    assert_no_grep '# Allowed delivery repository' "$brief" "$kind: nickname inferred restriction"
-    assert_no_grep "$target" "$brief" "$kind: private target leaked to default"
-  done
-  # Configuration errors fail before publishing a usable brief.
-  for target in '' 'owner' 'owner/repo/extra' 'owner/repo name' 'https://github.com/owner/repo'; do
-    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" invalid-target renamed --mode no-mistakes \
-      --delivery-repo "$target" >/dev/null 2>&1; rc=$?
-    expect_code 1 "$rc" "invalid delivery target accepted: $target"
-    assert_absent "$home/data/invalid-target/brief.md" 'invalid target published a brief'
-  done
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" missing-target renamed --mode no-mistakes --delivery-repo >/dev/null 2>&1; rc=$?
-  expect_code 1 "$rc" 'missing delivery target accepted'
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" equals-target renamed --mode no-mistakes \
-    --delivery-repo=owner/repo >/dev/null 2>&1; rc=$?
-  expect_code 1 "$rc" 'unsupported equals-form target was silently discarded'
-  assert_absent "$home/data/equals-target/brief.md" 'unsupported target form published a brief'
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" duplicate-target renamed --mode no-mistakes \
-    --delivery-repo owner/repo --delivery-repo other/repo >/dev/null 2>&1; rc=$?
-  expect_code 1 "$rc" 'ambiguous duplicate target accepted'
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" charter-target --secondmate --no-projects \
-    --delivery-repo owner/repo >/dev/null 2>&1; rc=$?
-  expect_code 1 "$rc" 'delivery target accepted for charter'
-  assert_absent "$home/data/charter-target/brief.md" 'invalid charter published a brief'
-  pass 'fm-brief.sh: explicit target restricts ship/scout delivery independently of nickname and preserves defaults'
-}
-
-test_technical_description_reminder_reaches_only_workers
-test_explicit_delivery_target
 # A home can carry standing worker instructions in its gitignored
 # config/brief-include.md. The include must land last on ship and scout
 # scaffolds, stay out of charters, change nothing when absent or blank, and stop
@@ -1574,34 +1691,8 @@ test_crewmate_scaffolds_forbid_pool_administration() {
   pass "fm-brief.sh: every crewmate scaffold forbids administering the shared worktree pool"
 }
 
-# Workers stall for hours when an ordinary choice reads as needing approval, so
-# every crewmate scaffold says those choices are the worker's own, while the
-# genuine escalations stay named.
-test_crewmate_scaffolds_own_ordinary_choices() {
-  local home mode brief
-  home="$TMP_ROOT/ordinary-choice-home"
-  mkdir -p "$home/data"
-  for mode in no-mistakes direct-PR local-only scout; do
-    if [ "$mode" = scout ]; then
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-choice-scout alpha --scout >/dev/null 2>&1 \
-        || fail "fm-brief.sh --scout exited non-zero"
-    else
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "brief-choice-$mode" alpha --mode "$mode" >/dev/null 2>&1 \
-        || fail "fm-brief.sh --mode $mode exited non-zero"
-    fi
-    brief="$home/data/brief-choice-$mode/brief.md"
-    assert_grep "they never wait for approval" "$brief" \
-      "$mode brief did not make ordinary reversible choices the worker's own"
-    assert_grep "destructive, irreversible, security-sensitive, or spending action" "$brief" \
-      "$mode brief dropped the genuine escalations"
-    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
-    assert_grep 'needs-decision [at=<epoch>]: {summary of options}' "$brief" \
-      "$mode brief lost the decision escalation format"
-  done
-  pass "fm-brief.sh: crewmate scaffolds own ordinary choices and still escalate genuine decisions"
-}
-
 test_script_parses
+test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_forge_selection_renders_correct_cli
@@ -1626,11 +1717,13 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_ship_and_scout_teach_validation_round_pause
 test_scout_and_secondmate_load_decision_hold_policy
+test_scout_completion_write_exception_is_task_scoped
 test_scout_and_secondmate_scaffold
 test_scout_lavish_line_follows_presentation_floor
 test_inbox_listing_command_is_safe_on_empty_inbox
 test_workers_wait_without_spending_turns
 test_wait_no_turns_absent_keeps_the_previous_brief
+test_inbox_guidance_explains_marked_body_terminator
 test_home_brief_include_is_appended_last
 test_base_branch_is_rendered_and_bounded
 test_ship_branch_prefix_defaults_to_legacy_fm
@@ -1640,4 +1733,3 @@ test_branch_prefix_is_refused_where_it_does_not_apply
 test_branch_prefix_value_is_validated
 test_branch_prefix_command_is_shell_safe
 test_crewmate_scaffolds_forbid_pool_administration
-test_crewmate_scaffolds_own_ordinary_choices

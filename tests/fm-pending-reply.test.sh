@@ -36,6 +36,8 @@
 #      uncached status read - accepting any verb - immediately before firing
 #  18. A same-kind escalation after an operator close appends again and reopens
 #      the decision; a retry while that decision is still open appends nothing
+#  19. A request summary keeps accented letters, drops control characters, and
+#      caps at 120 characters without splitting one under any caller locale
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -1513,50 +1515,6 @@ test_tick_leaves_settled_records_alone() {
   pass "the tick leaves settled records alone and still does the selected records' work"
 }
 
-test_preselection_preserves_record_read_contract() {
-  local dir selected path home state corr
-  dir="$TMP_ROOT/selector-contract"
-  mkdir -p "$dir"
-  printf 'phase=resolved\nphase=awaiting_report\n' > "$dir/last-open"
-  printf 'phase=awaiting_report\nphase=resolved\n' > "$dir/last-closed"
-  printf 'phase=resolved\nescalated_epoch=10\nescalation_closed_epoch=20\nescalation_closed_epoch=\n' > "$dir/last-unclosed"
-  printf 'phase=resolved\nescalated_epoch=10\nescalation_closed_epoch=20\n' > "$dir/closed-escalation"
-  printf 'corr_id=missing-phase\n' > "$dir/missing-phase"
-  printf 'phase=resolved\n' > "$dir/unreadable"
-  chmod 000 "$dir/unreadable"
-  selected=$(_fm_pending_reply_select_needing_work "$dir"/* "$dir/absent")
-  for path in last-open last-unclosed missing-phase absent; do
-    printf '%s\n' "$selected" | grep -Fxq "$dir/$path" || fail "preselection omitted $path"
-  done
-  for path in last-closed closed-escalation; do
-    if printf '%s\n' "$selected" | grep -Fxq "$dir/$path"; then
-      fail "preselection ignored last-key semantics for $path"
-    fi
-  done
-  if [ ! -r "$dir/unreadable" ]; then
-    printf '%s\n' "$selected" | grep -Fxq "$dir/unreadable" || fail "unreadable record was silently omitted"
-  else
-    printf '# unreadable-file permission case unavailable for this uid; absent-file read failure checked\n'
-  fi
-  chmod 600 "$dir/unreadable"
-  home=$(setup_parent selector-newline)
-  state="$home/state"
-  corr=$(fm_pending_reply_create "$home" "$state" child "newline record path")
-  path=$(fm_pending_reply_path "$state" "$corr")
-  fm_pending_reply_set "$path" phase resolved
-  fm_pending_reply_set "$path" escalated_epoch 10
-  mv "$path" "${path}"$'\nrecord'
-  (
-    # Observe dispatch to the original per-record owner; record-path selection
-    # must not silently drop a newline filename before that owner can decide it.
-    # shellcheck disable=SC2329
-    fm_pending_reply_close_escalation() { printf '%s\n' "$2" >> "$home/dispatched"; }
-    fm_pending_reply_tick "$state"
-  )
-  [ "$(cat "$home/dispatched" 2>/dev/null)" = "$corr" ] || fail "newline record path bypassed its per-record owner"
-  pass "reply selection preserves last-key values, missing/unreadable records, and newline paths"
-}
-
 test_correlations_reuse_only_for_matching_open_task() {
   local dir fb log home state got corr1 corr2 corr3 rec
   dir="$TMP_ROOT/corr-reuse"; mkdir -p "$dir"
@@ -2145,6 +2103,26 @@ test_same_kind_escalation_reopens_after_operator_close() {
   pass "a same-kind escalation after an operator close opens the decision again"
 }
 
+test_summary_keeps_accents_and_caps_by_character() {
+  local out long cap_chars loc
+  out=$(fm_pending_reply_summarize "não faça a correção")
+  [ "$out" = "não faça a correção" ] || fail "accented summary must survive unchanged, got '$out'"
+  out=$(fm_pending_reply_summarize "$(printf 'a\001b\033c\177d\tnão\r\nfaça')")
+  [ "$out" = "abcd não  faça" ] || fail "control characters must be removed and whitespace flattened, got '$out'"
+  long=$(printf 'ç%.0s' $(seq 1 130))
+  for loc in C "" en_US.UTF-8; do
+    out=$(LC_ALL=${loc:-C} fm_pending_reply_summarize "$long")
+    cap_chars=$(printf '%s' "$out" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c | tr -d ' ')
+    [ "$cap_chars" = 120 ] || fail "capped accented text must hold 120 characters under locale '${loc:-C}', got $cap_chars"
+    printf '%s' "$out" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 \
+      || fail "capped accented text must stay valid UTF-8 under locale '${loc:-C}'"
+    [ "$out" = "$(printf 'ç%.0s' $(seq 1 117))..." ] || fail "capped text must be 117 characters plus an ellipsis under locale '${loc:-C}'"
+  done
+  out=$(fm_pending_reply_summarize "$(printf 'x%.0s' $(seq 1 120))")
+  [ "${#out}" = 120 ] || fail "a 120-character summary must not be capped, got ${#out}"
+  pass "the summary keeps accented letters, drops control characters, and caps by character"
+}
+
 # --- run --------------------------------------------------------------------
 
 test_normal_correlated_reply_resolves_once
@@ -2182,7 +2160,6 @@ test_unknown_backend_state_uses_capture_fallback
 test_kimi_capture_fallback_uses_recorded_harness
 test_tick_skips_terminal_and_reuses_target_observation
 test_tick_leaves_settled_records_alone
-test_preselection_preserves_record_read_contract
 test_correlations_reuse_only_for_matching_open_task
 test_tick_end_to_end_missed_then_escalate
 test_failed_send_discards_undelivered_expectation
@@ -2196,5 +2173,6 @@ test_remote_parent_replies_is_not_wrong_home
 test_local_parent_replies_is_wrong_home_evidence
 test_escalated_undelivered_correlation_stays_retryable
 test_same_kind_escalation_reopens_after_operator_close
+test_summary_keeps_accents_and_caps_by_character
 
 printf 'ok - all pending-reply tests passed\n'
